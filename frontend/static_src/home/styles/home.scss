@@ -29,8 +29,17 @@
 /* ---------- sparkline cards ---------- */
 .spark-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
+  /* phone: a tight 2-up grid so the nine cards are not one long column.
+     minmax(0, 1fr) lets a card shrink under its mono price rather than
+     overflow. Wider screens get the auto-fill flow in the media query. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 11px;
+}
+
+@media (min-width: $bp-sm) {
+  .spark-grid {
+    grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
+  }
 }
 
 .spark-card {

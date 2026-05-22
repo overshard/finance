@@ -56,7 +56,11 @@ body {
   font-family: var(--font-ui);
   color: var(--ink);
   background: var(--paper);
+  /* flex column so the footer pins to the bottom of the viewport on short
+     pages (404, empty states) instead of floating up with paper beneath it */
   min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -393,16 +397,18 @@ code {
 }
 
 /* ---------- main + footer ---------- */
+/* main grows to fill the flex column, pushing the footer to the bottom. */
 main {
-  padding-bottom: 84px;
-  min-height: 62dvh;
+  flex: 1 0 auto;
 }
 
 .footer {
   border-top: 1px solid var(--rule);
   background: var(--paper-edge);
   margin-top: 52px;
-  padding: 22px 16px;
+  /* the extra bottom room clears the fixed bottom nav on phones; the
+     desktop block below trims it back since desktop has no bottom nav */
+  padding: 22px 16px calc(22px + 64px + env(safe-area-inset-bottom));
   color: var(--ink-faint);
   font-size: 0.8rem;
   text-align: center;
@@ -591,8 +597,9 @@ main {
     display: none;
   }
 
-  main {
-    padding-bottom: 32px;
+  /* no bottom nav on desktop, so the footer needs no clearance for it */
+  .footer {
+    padding-bottom: 22px;
   }
 
   .wrap {
