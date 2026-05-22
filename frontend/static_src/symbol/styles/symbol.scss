@@ -1009,6 +1009,147 @@
   color: var(--ink-dim);
 }
 
+/* ── Phase 28: ETF "About this fund" + returns + growth-of-$10k ────────── */
+
+/* About-this-fund panel: the headline ETF figures (expense / yield / NAV /
+   inception / family / category) over the issuer's strategy paragraph. The
+   stat strip mirrors .fund__stats so the two panels feel of a piece, with
+   each value typed bigger than the eyebrow caption above it. */
+.fund-about {
+  padding: 16px 18px;
+}
+
+.fund-about__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 36px;
+}
+
+.fund-about__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.fund-about__cap {
+  @include eyebrow;
+  font-size: 0.58rem;
+}
+
+.fund-about__val {
+  font-size: 1.4rem;
+  font-weight: 700;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+/* The premium / discount caption that rides on the NAV cell — a small
+   semantic-coloured pill that reads "+0.12% to price" in the right hue. */
+.fund-about__sub {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--well);
+  color: var(--ink-dim);
+
+  &--good { color: var(--ok); background: rgba(47, 125, 79, 0.10); }
+  &--ok   { color: var(--warn); background: rgba(178, 121, 50, 0.12); }
+  &--bad  { color: var(--bad); background: rgba(178, 59, 50, 0.10); }
+}
+
+.fund-about__summary {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--rule);
+  color: var(--ink-dim);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+/* The fund-profile mix sections each got their own heading in Phase 28, so
+   the Asset / Sector / Geography bars stack with a clear divider between. */
+.fund__mix-label {
+  @include eyebrow;
+  font-size: 0.58rem;
+  margin: 0 0 9px;
+}
+
+/* Trailing-returns table (Phase 28). Tight, readable; the % column is the
+   primary read, with annualised muted as a secondary cue. */
+.ret-panel {
+  padding: 12px 18px 14px;
+}
+
+.ret-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.ret-table th,
+.ret-table td {
+  text-align: left;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 0.9rem;
+}
+
+.ret-table th[scope="row"] {
+  font-weight: 500;
+  color: var(--ink-dim);
+}
+
+.ret-table .num {
+  text-align: right;
+  font-weight: 600;
+}
+
+.ret-table thead th {
+  @include eyebrow;
+  font-size: 0.58rem;
+  color: var(--ink-faint);
+  font-weight: 600;
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+.ret-cell--up   { color: var(--ok); }
+.ret-cell--down { color: var(--bad); }
+.ret-cell--ann  { color: var(--ink-dim); font-weight: 500; }
+
+.ret-panel__src {
+  margin-top: 11px;
+  color: var(--ink-faint);
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+/* Growth-of-$10k chart panel. Mirrors the price chart's panel framing, but
+   shorter — the chart is a single-line area, not a multi-pane workspace. */
+.growth-panel {
+  padding: 16px 18px;
+}
+
+#growth-chart {
+  width: 100%;
+  height: 240px;
+}
+
+.growth-empty {
+  color: var(--ink-dim);
+  font-size: 0.88rem;
+  padding: 28px 12px;
+  text-align: center;
+}
+
+.growth-panel__src {
+  margin-top: 11px;
+  color: var(--ink-faint);
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
 /* on a narrow phone the position value yields to the weight, the key figure */
 @media (max-width: $bp-sm) {
   .hold {

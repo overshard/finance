@@ -241,7 +241,13 @@ fn job_meta(job: &str) -> (&str, &str) {
         ),
         "dividends" => (
             "Dividend payouts",
-            "Per-payout dividend history from Yahoo for each stock, refreshed weekly.",
+            "Per-payout dividend / distribution history from Yahoo for each \
+             stock and ETF, refreshed weekly.",
+        ),
+        "fund_metadata" => (
+            "ETF fund metadata",
+            "Yahoo quoteSummary snapshot for each ETF — expense ratio, yield, \
+             NAV, inception, category, fund family, strategy. Refreshed monthly.",
         ),
         other => (other, ""),
     }
@@ -253,9 +259,10 @@ fn job_rank(job: &str) -> u8 {
         "seed" => 0,
         "history" => 1,
         "sec" => 2,
-        "dividends" => 3,
-        "intraday" => 4,
-        "daily_close" => 5,
+        "fund_metadata" => 3,
+        "dividends" => 4,
+        "intraday" => 5,
+        "daily_close" => 6,
         _ => 9,
     }
 }

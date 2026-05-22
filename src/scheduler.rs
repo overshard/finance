@@ -35,9 +35,9 @@ use crate::market;
 use crate::providers::sec::SecProvider;
 use crate::providers::yahoo::YahooProvider;
 use crate::providers::{
-    self, stooq::StooqProvider, DividendEvent, Fact, FilingRecord, FundId, FundShape,
-    FundamentalsProvider, HistoryProvider, IntradayBar, OwnershipPerson, PortfolioData, Quote,
-    QuoteProvider,
+    self, stooq::StooqProvider, DividendEvent, Fact, FilingRecord, FundId, FundMetadata,
+    FundShape, FundamentalsProvider, HistoryProvider, IntradayBar, OwnershipPerson,
+    PortfolioData, Quote, QuoteProvider,
 };
 use crate::stream::{Hub, QuoteUpdate, StreamEvent};
 use crate::{seed, Config};
@@ -97,6 +97,15 @@ const LEADERSHIP_MAX_FILINGS: usize = 30;
 const DIVIDENDS_INTERVAL_SECS: i64 = 24 * 3600;
 const DIVIDENDS_STALE_SECS: i64 = 7 * 24 * 3600;
 
+/// ETF fund metadata refresh (Phase 28). The Yahoo `quoteSummary` figures —
+/// expense ratio, distribution yield, NAV, inception, category, fund family,
+/// strategy summary — change slowly (the prospectus is updated once a year),
+/// so a monthly staleness window is enough. The due-check is daily so a
+/// newly-stale ETF is picked up within a day, but the steady-state cost is
+/// one request per ETF per month.
+const FUND_METADATA_INTERVAL_SECS: i64 = 24 * 3600;
+const FUND_METADATA_STALE_SECS: i64 = 30 * 24 * 3600;
+
 /// Spawn the scheduler. The returned handle is normally dropped: dropping it
 /// detaches the task, which then runs for the lifetime of the process.
 pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle<()> {
@@ -142,6 +151,14 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
         // resumable and the no-stale fast path is free.
         if let Err(e) = schedule_next(&pool, "dividends", now_ms()).await {
             tracing::warn!("[scheduler] bring dividends job forward: {e}");
+        }
+
+        // Fund-metadata job (Phase 28): same pattern as the SEC and dividends
+        // jobs — bring it forward to the first tick so a deploy that adds the
+        // table backfills the ETF universe within a tick rather than waiting
+        // out the daily interval. Resumable; the no-stale fast path is free.
+        if let Err(e) = schedule_next(&pool, "fund_metadata", now_ms()).await {
+            tracing::warn!("[scheduler] bring fund_metadata job forward: {e}");
         }
 
         // Prune's last-run time is loop-local: a restart simply re-prunes once,
@@ -191,10 +208,11 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
                 }
             }
 
-            // Dividend payouts (Phase 26): sweep stocks whose dividend
-            // history has gone stale (weekly). Runs only when Yahoo is
-            // reachable; gated nowhere else — declared dividends drift after
-            // the ex-date passes, so a fresh pull every week is enough.
+            // Dividend payouts (Phase 26 + 28): sweep stocks AND ETFs whose
+            // dividend / distribution history has gone stale (weekly). Runs
+            // only when Yahoo is reachable; gated nowhere else — declared
+            // events drift after the ex-date passes, so a fresh pull every
+            // week is enough.
             match is_due(&pool, "dividends", now_ms()).await {
                 Ok(true) => {
                     if let Err(e) = run_dividends(&pool, &config, &hub).await {
@@ -203,6 +221,20 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
                 }
                 Ok(false) => {}
                 Err(e) => tracing::warn!("[scheduler] dividends due-check: {e}"),
+            }
+
+            // ETF fund metadata (Phase 28): sweep ETFs whose Yahoo
+            // quoteSummary snapshot has gone stale (monthly). Same Yahoo
+            // guard as intraday + daily-close + dividends; expense / yield /
+            // NAV / strategy change rarely, so this is cheap in steady state.
+            match is_due(&pool, "fund_metadata", now_ms()).await {
+                Ok(true) => {
+                    if let Err(e) = run_fund_metadata(&pool, &config, &hub).await {
+                        tracing::warn!("[scheduler] fund_metadata: {e:#}");
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!("[scheduler] fund_metadata due-check: {e}"),
             }
 
             // Intraday quotes: demand-driven (only symbols a browser is
@@ -1009,9 +1041,12 @@ async fn run_dividends(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow:
     let started = now_ms();
     let next = started + DIVIDENDS_INTERVAL_SECS * 1000;
     let cutoff = started - DIVIDENDS_STALE_SECS * 1000;
+    // Phase 28: dividends now covers ETF distributions too — same Yahoo
+    // event series, same store path. Indexes and futures still skipped (the
+    // former do not pay anything, the latter have no concept of dividends).
     let stale: Vec<String> = sqlx::query_scalar(
         "SELECT ticker FROM symbols \
-         WHERE kind = 'stock' \
+         WHERE kind IN ('stock', 'etf') \
            AND (dividends_synced_at IS NULL OR dividends_synced_at < ?) \
          ORDER BY ticker",
     )
@@ -1027,7 +1062,7 @@ async fn run_dividends(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow:
 
     mark_fetching(pool, "dividends").await?;
     notify_health(hub);
-    tracing::info!("[scheduler] dividends: refreshing {} stocks", stale.len());
+    tracing::info!("[scheduler] dividends: refreshing {} symbols", stale.len());
 
     let yahoo = YahooProvider::new(providers::http::build_client(config));
     let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
@@ -1066,7 +1101,7 @@ async fn run_dividends(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow:
     }
 
     let dur = t0.elapsed().as_millis() as i64;
-    let detail = format!("{ok}/{} stocks, {payouts} payouts, {errors} errors", stale.len());
+    let detail = format!("{ok}/{} symbols, {payouts} payouts, {errors} errors", stale.len());
     match stopped {
         Some(why) => {
             let full = format!("stopped early ({why}); {detail}");
@@ -1123,6 +1158,163 @@ async fn mark_dividends_synced(pool: &SqlitePool, ticker: &str) -> sqlx::Result<
         .bind(ticker)
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+// ────────────────── ETF fund_metadata sweep (Phase 28) ────────────────────
+
+/// Sweep ETFs whose Yahoo `quoteSummary` snapshot has gone stale (monthly).
+/// One request per ETF through the shared `yahoo` `EndpointGuard`; expense
+/// ratio, distribution yield, NAV, inception, category, fund family, and
+/// the strategy paragraph are all returned by one request, so even the full
+/// 28-ETF sweep is well inside the hourly budget. Mirrors `run_dividends`'s
+/// shape — guard-paced, resumable, broadcast-to-/health.
+async fn run_fund_metadata(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Result<()> {
+    let started = now_ms();
+    let next = started + FUND_METADATA_INTERVAL_SECS * 1000;
+    let cutoff = started - FUND_METADATA_STALE_SECS * 1000;
+    let stale: Vec<String> = sqlx::query_scalar(
+        "SELECT ticker FROM symbols \
+         WHERE kind = 'etf' \
+           AND (fund_metadata_synced_at IS NULL OR fund_metadata_synced_at < ?) \
+         ORDER BY ticker",
+    )
+    .bind(cutoff)
+    .fetch_all(pool)
+    .await?;
+
+    if stale.is_empty() {
+        // Fast path: no ETFs need refreshing. No fetching banner, no log row.
+        mark_ok(pool, "fund_metadata", Some(next)).await?;
+        return Ok(());
+    }
+
+    mark_fetching(pool, "fund_metadata").await?;
+    notify_health(hub);
+    tracing::info!("[scheduler] fund_metadata: refreshing {} ETFs", stale.len());
+
+    let yahoo = YahooProvider::new(providers::http::build_client(config));
+    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    let t0 = Instant::now();
+    let mut ok = 0i64;
+    let mut empty = 0i64;
+    let mut errors = 0i64;
+    let mut stopped: Option<String> = None;
+
+    for ticker in &stale {
+        match guard.acquire().await? {
+            Permit::Granted => {}
+            Permit::Denied(why) => {
+                stopped = Some(why);
+                break;
+            }
+        }
+        match yahoo.fund_metadata(ticker).await {
+            Ok(Some(meta)) => {
+                guard.record_success().await?;
+                if let Err(e) = store_fund_metadata(pool, ticker, &meta).await {
+                    tracing::warn!("[scheduler] fund_metadata store {ticker}: {e:#}");
+                    errors += 1;
+                    continue;
+                }
+                mark_fund_metadata_synced(pool, ticker).await?;
+                ok += 1;
+            }
+            // Yahoo answered cleanly but the ETF has no fund modules (a tiny
+            // or obscure ticker): stamp it checked so we do not re-fetch the
+            // same empty answer next tick, but log the empty.
+            Ok(None) => {
+                guard.record_success().await?;
+                mark_fund_metadata_synced(pool, ticker).await?;
+                empty += 1;
+            }
+            Err(e) => {
+                guard.record_failure(&e).await?;
+                errors += 1;
+                tracing::warn!("[scheduler] fund_metadata {ticker}: {e:#}");
+            }
+        }
+    }
+
+    let dur = t0.elapsed().as_millis() as i64;
+    let detail = format!(
+        "{ok}/{} ETFs ({empty} empty, {errors} errors)",
+        stale.len()
+    );
+    match stopped {
+        Some(why) => {
+            let full = format!("stopped early ({why}); {detail}");
+            tracing::warn!("[scheduler] fund_metadata: {full}");
+            log_fetch(
+                pool, "fund_metadata", "yahoo", "skipped",
+                Some(&full), Some(ok), dur, started,
+            ).await?;
+        }
+        None => {
+            tracing::info!("[scheduler] fund_metadata: {detail}");
+            log_fetch(
+                pool, "fund_metadata", "yahoo", "ok",
+                Some(&detail), Some(ok), dur, started,
+            ).await?;
+        }
+    }
+    mark_ok(pool, "fund_metadata", Some(next)).await?;
+    notify_health(hub);
+    Ok(())
+}
+
+/// Upsert one ETF's Yahoo `quoteSummary` metadata. Yahoo serves the full
+/// current snapshot each call, so the row is replaced wholesale: a field
+/// Yahoo no longer carries on a refresh becomes `NULL` here, rather than
+/// keeping a stale value. `pub(crate)`: the add-symbol backfill reuses it.
+pub(crate) async fn store_fund_metadata(
+    pool: &SqlitePool,
+    ticker: &str,
+    m: &FundMetadata,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO fund_metadata \
+           (ticker, expense_ratio, yield_pct, trailing_yield_pct, nav_price, \
+            inception_date, category, fund_family, strategy_summary, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(ticker) DO UPDATE SET \
+           expense_ratio = excluded.expense_ratio, \
+           yield_pct = excluded.yield_pct, \
+           trailing_yield_pct = excluded.trailing_yield_pct, \
+           nav_price = excluded.nav_price, \
+           inception_date = excluded.inception_date, \
+           category = excluded.category, \
+           fund_family = excluded.fund_family, \
+           strategy_summary = excluded.strategy_summary, \
+           updated_at = excluded.updated_at",
+    )
+    .bind(ticker)
+    .bind(m.expense_ratio)
+    .bind(m.yield_pct)
+    .bind(m.trailing_yield_pct)
+    .bind(m.nav_price)
+    .bind(&m.inception_date)
+    .bind(&m.category)
+    .bind(&m.fund_family)
+    .bind(&m.strategy_summary)
+    .bind(now_ms())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Stamp an ETF as freshly fund-metadata-synced. ETFs only — the column is
+/// `NULL` forever on every non-ETF row.
+async fn mark_fund_metadata_synced(pool: &SqlitePool, ticker: &str) -> sqlx::Result<()> {
+    let now = now_ms();
+    sqlx::query(
+        "UPDATE symbols SET fund_metadata_synced_at = ?, updated_at = ? WHERE ticker = ?",
+    )
+    .bind(now)
+    .bind(now)
+    .bind(ticker)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -1306,19 +1498,23 @@ async fn store_fund_portfolio(
     ticker: &str,
     p: &PortfolioData,
 ) -> anyhow::Result<()> {
-    // Asset mix is variable-length, so it rides in one JSON column rather than
-    // its own table: [["Equity", 99.8], ["Cash & equivalents", 0.2], ...].
+    // Asset / sector / geography mixes are each variable-length, so they ride
+    // in JSON columns rather than their own tables:
+    // [["Equity", 99.8], ["Cash & equivalents", 0.2], ...].
     let asset_mix = serde_json::to_string(&p.asset_mix)?;
+    let sector_mix = serde_json::to_string(&p.sector_mix)?;
+    let geography_mix = serde_json::to_string(&p.geography_mix)?;
     let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO fund_profiles \
            (ticker, kind, net_assets, total_assets, holdings_count, report_date, \
-            asset_mix, updated_at) \
-         VALUES (?, 'portfolio', ?, ?, ?, ?, ?, ?) \
+            asset_mix, sector_mix, geography_mix, updated_at) \
+         VALUES (?, 'portfolio', ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(ticker) DO UPDATE SET \
            kind = excluded.kind, net_assets = excluded.net_assets, \
            total_assets = excluded.total_assets, holdings_count = excluded.holdings_count, \
            report_date = excluded.report_date, asset_mix = excluded.asset_mix, \
+           sector_mix = excluded.sector_mix, geography_mix = excluded.geography_mix, \
            updated_at = excluded.updated_at",
     )
     .bind(ticker)
@@ -1327,6 +1523,8 @@ async fn store_fund_portfolio(
     .bind(p.holdings_count)
     .bind(&p.report_date)
     .bind(&asset_mix)
+    .bind(&sector_mix)
+    .bind(&geography_mix)
     .bind(now_ms())
     .execute(&mut *tx)
     .await?;
@@ -1510,10 +1708,16 @@ async fn guarded<T>(
 /// the normal scheduler sweeps pick up whatever this run missed.
 pub(crate) async fn backfill_symbol(pool: &SqlitePool, config: &Config, ticker: &str, kind: &str) {
     backfill_history(pool, config, ticker, kind).await;
-    // Dividends are stocks-only and ride the Yahoo guard, not SEC, so they
-    // run independently of the SEC contact-email gate below.
-    if kind == "stock" {
+    // Phase 26 + Phase 28: dividends covers stock dividends and ETF
+    // distributions (same Yahoo event series). Rides the Yahoo guard, so it
+    // runs independently of the SEC contact-email gate below.
+    if kind == "stock" || kind == "etf" {
         backfill_dividends(pool, config, ticker).await;
+    }
+    // Phase 28: ETFs get their Yahoo fund_metadata pulled too — expense
+    // ratio, yield, NAV, inception, category, family, strategy summary.
+    if kind == "etf" {
+        backfill_fund_metadata(pool, config, ticker).await;
     }
 
     // SEC data covers stocks and ETFs; indexes and futures do not file. The
@@ -1531,10 +1735,34 @@ pub(crate) async fn backfill_symbol(pool: &SqlitePool, config: &Config, ticker: 
     }
 }
 
-/// Pull and store a freshly-added stock's dividend history (Phase 26). Stocks
-/// only — the caller already filters; routed through the same `yahoo` guard
-/// the dividends sweep uses. Best-effort: a guard denial or upstream error
-/// leaves the stock for the next normal sweep.
+/// Pull and store a freshly-added ETF's Yahoo `quoteSummary` metadata (Phase
+/// 28). Mirrors `backfill_dividends`: same `yahoo` guard, best-effort, no
+/// failure propagated to the add-symbol response.
+async fn backfill_fund_metadata(pool: &SqlitePool, config: &Config, ticker: &str) {
+    let yahoo = YahooProvider::new(providers::http::build_client(config));
+    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    match guarded(&guard, yahoo.fund_metadata(ticker)).await {
+        Some(Ok(Some(meta))) => match store_fund_metadata(pool, ticker, &meta).await {
+            Ok(()) => {
+                let _ = mark_fund_metadata_synced(pool, ticker).await;
+                tracing::info!("[backfill] {ticker} <- fund_metadata");
+            }
+            Err(e) => tracing::warn!("[backfill] store fund_metadata {ticker}: {e:#}"),
+        },
+        // Yahoo answered cleanly but had no fund modules for this ETF — stamp
+        // it checked so the next sweep does not re-fetch the same empty.
+        Some(Ok(None)) => {
+            let _ = mark_fund_metadata_synced(pool, ticker).await;
+        }
+        Some(Err(e)) => tracing::warn!("[backfill] fund_metadata {ticker}: {e:#}"),
+        None => {}
+    }
+}
+
+/// Pull and store a freshly-added symbol's dividend / distribution history
+/// (Phase 26 + Phase 28: stocks and ETFs both use this path). Routed through
+/// the same `yahoo` guard the dividends sweep uses. Best-effort: a guard
+/// denial or upstream error leaves the symbol for the next normal sweep.
 async fn backfill_dividends(pool: &SqlitePool, config: &Config, ticker: &str) {
     let yahoo = YahooProvider::new(providers::http::build_client(config));
     let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);

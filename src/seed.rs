@@ -23,6 +23,12 @@ struct SeedSymbol {
     name: String,
     kind: String,
     exchange: Option<String>,
+    /// Phase 28: the curated benchmark index a fund tracks (e.g. `^SPX`),
+    /// for the relative-performance overlay on the ETF symbol page. Only
+    /// the broad-market ETFs carry one in `starter.csv`; everything else
+    /// (including stocks, futures, indexes, sector / bond / commodity ETFs)
+    /// leaves it empty and the overlay is hidden.
+    benchmark: Option<String>,
 }
 
 fn parse_universe(path: &Path) -> Result<Vec<SeedSymbol>> {
@@ -36,16 +42,13 @@ fn parse_universe(path: &Path) -> Result<Vec<SeedSymbol>> {
         if ticker.is_empty() {
             continue;
         }
-        let exchange = cell(3);
+        let opt = |s: String| if s.is_empty() { None } else { Some(s) };
         out.push(SeedSymbol {
             ticker,
             name: cell(1),
             kind: cell(2),
-            exchange: if exchange.is_empty() {
-                None
-            } else {
-                Some(exchange)
-            },
+            exchange: opt(cell(3)),
+            benchmark: opt(cell(4)),
         });
     }
     Ok(out)
@@ -59,20 +62,26 @@ pub async fn run(pool: &SqlitePool, config: &Config, history: &dyn HistoryProvid
     let symbols = parse_universe(&path)?;
     tracing::info!("seed: {} symbols in {}", symbols.len(), path.display());
 
-    // Upsert every symbol. Local only, no network.
+    // Upsert every symbol. Local only, no network. Phase 28: the curated
+    // benchmark column is set from the CSV on each seed pass, so a re-run
+    // picks up any newly-curated mapping. A `NULL` benchmark stays `NULL`
+    // (don't overwrite a user-edited one — they all live in the CSV).
     for s in &symbols {
         let now = now_ms();
         sqlx::query(
-            "INSERT INTO symbols (ticker, name, kind, exchange, is_seeded, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, 1, ?, ?) \
+            "INSERT INTO symbols \
+               (ticker, name, kind, exchange, benchmark, is_seeded, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, 1, ?, ?) \
              ON CONFLICT(ticker) DO UPDATE SET \
                name = excluded.name, kind = excluded.kind, \
-               exchange = excluded.exchange, is_seeded = 1, updated_at = excluded.updated_at",
+               exchange = excluded.exchange, benchmark = excluded.benchmark, \
+               is_seeded = 1, updated_at = excluded.updated_at",
         )
         .bind(&s.ticker)
         .bind(&s.name)
         .bind(&s.kind)
         .bind(&s.exchange)
+        .bind(&s.benchmark)
         .bind(now)
         .bind(now)
         .execute(pool)

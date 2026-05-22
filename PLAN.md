@@ -32,8 +32,9 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-22_
 
-**Current phase: none in progress. Phase 26 (dividend payouts) is complete,
-verified, and deployed to production (commit `7608b06`).** Phases 0
+**Current phase: Phase 28 (ETFs as first-class citizens) is complete and
+verified locally; deploy pending.** Phase 26 (dividend payouts) is complete,
+verified, and deployed to production (commit `7608b06`). Phases 0
 through 12 (the MVP) plus Phase 14 (company leadership), Phase 18 (ETF
 profiles), Phase 20 (strongest & weakest home panels), Phase 21 (home &
 search refinements), Phase 23 + 24 (financials table) and Phase 22 (data-age
@@ -46,10 +47,15 @@ adds a stock Dividends section on the symbol page — inferred cadence,
 prior-year and YTD totals, a count-tempered on-track projection, and a per-
 event payout history — backed by a new weekly Yahoo `dividends` scheduler
 job. Deployed to production 2026-05-22 (commit `7608b06`). Remaining
-post-MVP work: the loose-ordered Phase 13, 15, 16, 17, 19, 25, 27, 28
-backlog. Phase 28 (ETFs as first-class citizens) was captured right after
-Phase 26 deployed; the user flagged it as a strong wish — see its
-Phases-list entry for the seven planned pieces and the data sources.
+post-MVP work: the loose-ordered Phase 13, 15, 16, 17, 19, 25, 27, 29
+backlog (Phase 28 is now in progress). Phase 28 (ETFs as first-class
+citizens) was picked as the next backlog phase and scoped 2026-05-22 (see
+the decisions log): one big phase covering all seven pieces (distributions,
+expense ratio + yield, NAV / premium-discount, sector + geography, full
+trailing returns, growth-of-$10k chart, strategy summary, benchmark
+comparison). Phase 29 (issuer-direct ETF data feeds: iShares/BlackRock,
+Vanguard, ...) was captured 2026-05-22 from a vibe-coding side note
+mid-Phase-28; see its Phases-list entry.
 
 **Roadmap (restructured 2026-05-22, see decisions log):** the home-page
 redesign and commodities are pre-ship MVP phases. Order: 9 Search +
@@ -762,6 +768,94 @@ schema, unused for now.
     (360px) render with no horizontal overflow and zero console errors; a
     too-long caption wraps cleanly to a second line at 360px.
 
+- **Phase 28 ETFs as first-class citizens.** Complete, verified locally;
+  deploy pending. ETFs now read as densely as a stock page: a new "About
+  this fund" panel (expense ratio, distribution yield, NAV with live
+  premium / discount, inception, category, fund family, strategy
+  paragraph), a trailing-returns table (1m / 3m / YTD / 1y / 3y / 5y /
+  10y / since-inception, annualised past one year), a growth-of-$10,000
+  area chart over the longest available range, sector and geography
+  exposure panels alongside the existing asset mix, a relative-performance
+  benchmark line on the price chart for the broad-market ETFs, and the
+  Phase 26 Dividends section lifted from stocks-only to also cover ETF
+  distributions.
+  - **Migration `0008`** adds `symbols.fund_metadata_synced_at` and
+    `symbols.benchmark`, `fund_profiles.sector_mix` and `geography_mix`
+    JSON columns, and a new `fund_metadata` table (expense ratio, yield,
+    NAV, inception, category, fund family, strategy summary).
+  - **Yahoo `quoteSummary`** is now the source for a third concern beyond
+    quotes and dividends: a new `YahooProvider::fund_metadata` calls
+    `v10/finance/quoteSummary` with the `fundProfile + defaultKeyStatistics
+    + summaryDetail + price + assetProfile` modules and parses each into
+    optional fields, so a small ETF that Yahoo only partly covers still
+    populates as much as it can. 429 / 503 / 401 / 403 all surface as the
+    typed `RateLimited` so the `yahoo` `EndpointGuard` trips at once if
+    Yahoo crumb-gates the v10 endpoint for our box.
+  - **N-PORT parser extended** to capture each holding's `<issuerCat>`
+    and `<invCountry>` while it streams, then aggregate into sector and
+    geography mixes in the same `[[label, percent], ...]` JSON shape as
+    the existing `asset_mix`. A small bucket map turns the bare codes
+    into human labels (`CORP` -> Corporate, `US` -> United States, ...).
+    A degenerate mix (a pure-equity ETF rolls everything up to
+    Corporate) hides itself in the template.
+  - **Scheduler `run_fund_metadata`** is a new section on the existing
+    `yahoo` `EndpointGuard` — one request per ETF, monthly staleness on
+    `fund_metadata_synced_at`, brought forward to the first tick on boot
+    the same way `sec` and `dividends` are, so a deploy backfills the
+    universe within a tick rather than the daily interval. The Phase 26
+    `dividends` job dropped its `kind = 'stock'` filter so ETF
+    distributions ride the same code path. `scheduler::backfill_symbol`
+    pulls the new ETF's fund_metadata and distributions inside the
+    add-symbol request, mirroring Phase 21's intent.
+  - **Compute** added `trailing_returns(bars, today)` (eight periods,
+    annualised past 1y; "since inception" uses actual days / 365.25 for
+    leap-year drift), `growth_of_10k(bars)` (scale the close series so
+    the anchor bar reads as $10k), `premium_discount_pct(price, nav)`
+    and a small `premium_grade` band (±0.25 / ±1.00). Unit-tested.
+  - **Routes** added a new `/api/symbols/{ticker}/growth` endpoint
+    returning the fund's full-history growth series plus a benchmark
+    growth series anchored to the fund's first bar (separately
+    re-scaled to $10k from there). The existing
+    `/api/symbols/{ticker}/history` gained a `benchmark` series scaled
+    to the fund's first visible close so the two lines start together
+    on the main chart. Trailing returns pull the full daily history
+    rather than the 400-bar window the chart uses.
+  - **Frontend** added a dashed benchmark line series to the main
+    lightweight-chart, a benchmark toggle button that only renders
+    when one is configured, and a new `growth.js` driving an
+    AreaSeries + dashed LineSeries growth-of-$10k chart against its
+    own y-axis (compact-USD formatter).
+  - **Template** restructured: the Dividends block moved out of the
+    stocks-only conditional (its label flips to "Distributions" on an
+    ETF), and the ETF block grew About / Trailing returns / Growth-of-$10k
+    panels above the existing Fund profile and Top holdings. Sector and
+    geography mixes ride alongside the asset mix inside Fund profile.
+  - **Universe `starter.csv`** added a fifth `benchmark` column.
+    Curated for 18 broad-market ETFs (SPY/VOO/IVV/VTI/VUG/VTV/SCHD/VIG/
+    VYM/XLE/XLF/XLK/XLV -> `^SPX`; QQQ/SMH/ARKK -> `^NDX`; DIA ->
+    `^DJI`; IWM -> `^RUT`). Sector SPDRs map to `^SPX`. International,
+    bond and commodity ETFs leave it blank (no clean equity-index
+    benchmark). The `seed` parser threads the column into
+    `symbols.benchmark` on every seed pass.
+  - **Health page** lists the new `fund_metadata` job between `sec` and
+    `dividends` (job_meta + job_rank); the `dividends` job's description
+    now reads "stock and ETF" rather than "stock".
+  - Verified locally: cargo + bun build clean; the 3 Phase 28 compute
+    unit tests pass; migration `0008` applied cleanly on the seeded
+    dev DB; `/s/SPY` renders the new sections (with an injected
+    synthetic `fund_metadata` row for the dev box, since Yahoo
+    rate-limits this WSL2 IP); `/api/symbols/SPY/history?range=1Y`
+    returns a 252-point benchmark series scaled to the fund's first
+    visible close; `/api/symbols/SPY/growth` returns a 5,342-point
+    fund growth series ($10k -> $79,275 over 21 years, ~10.3%/yr) plus
+    the same length benchmark series; `/s/GLD` (commodity trust)
+    shows the About / Returns / Growth panels with no holdings (the
+    grantor-trust note carries); `/s/AAPL` (stock) shows none of the
+    ETF panels; `/s/^SPX` (index) and `/s/GC=F` (future) are
+    unchanged. SPY trailing returns sanity-checked against deep
+    history: 10y +320.6% / +15.45%/yr, since-inception (from the
+    Feb 2005 first stored bar) +692.8% / +10.24%/yr.
+
 - **Phase 26 dividend payouts.** Complete, verified, and deployed to
   production (commit `7608b06`). Per-payout dividend history sourced from Yahoo's chart endpoint
   via `events=div`, surfaced as a new Dividends section on the symbol page
@@ -820,21 +914,33 @@ schema, unused for now.
     hid the section; ETFs / indexes / futures showed no section.
 
 **Resuming, next action**
-**Phase 26 (dividend payouts) is complete, verified, and deployed** to
-production on 2026-05-22 (commit `7608b06`). The MVP plus Phase 14,
+**Phase 28 (ETFs as first-class citizens) is in progress.** Scope settled
+2026-05-22 (see the decisions log): one big phase covering all seven
+pieces (distributions for ETFs, expense ratio + yield via Yahoo
+`quoteSummary`, NAV / premium-discount, sector + geography exposure from
+N-PORT, full trailing returns 1m/3m/YTD/1y/3y/5y/10y/since-inception,
+growth-of-$10k chart, strategy summary + inception, and a benchmark
+comparison off a hand-curated `benchmark` column for the curated universe).
+A new migration `0008` will add fund-metadata columns to `fund_profiles`
+(expense ratio, yield, NAV, inception, category, fund family, strategy
+summary, sector_mix and geography_mix JSON) and a `benchmark` column on
+`symbols`; a new Yahoo `quoteSummary` provider path adds
+`YahooProvider::fund_metadata`; the N-PORT parser is extended to retain
+each holding's `industryCode` and country; a new scheduler `fund_metadata`
+section sweeps stale ETFs on the existing `yahoo` guard (monthly cadence).
+Phase 26's `kind = 'stock'` dividends filter is dropped so ETF
+distributions ride the same code path. Phase 29 (issuer-direct ETF data
+feeds: iShares/BlackRock, Vanguard, ...) was captured 2026-05-22 from a
+vibe-coding side note mid-Phase-28; see the decisions log.
+
+After Phase 28 ships, remaining post-MVP work is the loose-ordered
+Phase 13, 15, 16, 17, 19, 25, 27, 29 backlog. Phase 26 (dividend payouts)
+is complete and deployed (commit `7608b06`); the MVP plus Phase 14,
 Phase 18, Phase 20, Phase 21, Phase 23 + 24, Phase 22 and Phase 26 are all
-live at https://finance.bythewood.me; migration `0007` applied cleanly on
-the box and the new `dividends` scheduler job backfills the universe over
-the first tick.
-Remaining post-MVP work: the loose-ordered Phase 13, 15, 16, 17, 19, 25, 27
-backlog; the user picks which to take next. Phase 27 (provider redundancy)
-was captured 2026-05-22 from a vibe-coding side note while Phase 26 was
-mid-build; see the decisions log. A small Phase 9 bug fix (the `/search`
-"Add" affordance for short tickers like `W`) shipped 2026-05-22 alongside
-the backlog capture of Phases 25 and 26; see the decisions log. There is
-still no GitHub repo for finance: the user deferred that; if one is
-created later, add it as `origin` and the `overshard/finance` slug already
-in taproot's `projects.conf` lines up.
+live at https://finance.bythewood.me. There is still no GitHub repo for
+finance: the user deferred that; if one is created later, add it as
+`origin` and the `overshard/finance` slug already in taproot's
+`projects.conf` lines up.
 
 Note: Phase 18 added the `quick-xml` crate (N-PORT XML streaming parser) and
 migration `0005`. A fresh `make run` applies `0005`; the ETF fund profiles
@@ -1281,8 +1387,11 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   each stock's dividend history through the `yahoo` `EndpointGuard` on a
   slow cadence (weekly is enough; the data rarely changes).
 
-- [ ] **Phase 28: ETFs as first-class citizens.** (Captured 2026-05-22 from
-  a vibe-coding side note immediately after Phase 26 shipped.) The user's
+- [x] **Phase 28: ETFs as first-class citizens.** Complete and verified
+  locally (2026-05-22); deploy pending. See the Phase 28 Done entry in
+  Status and the decisions log. (Captured 2026-05-22 from a vibe-coding
+  side note immediately after Phase 26 shipped. Picked as the next backlog
+  phase and scoped 2026-05-22.) The user's
   steer, verbatim: *"I really need ETFs treated as first class citizens
   like with as much data as possible, AUM, cashflow maybe, dividends,
   everything — right now we are ignoring a lot of stats for ETFs and
@@ -1297,8 +1406,17 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   no NAV / premium-discount, no sector or geography breakdown, no return
   metrics, no inception date or strategy summary, no benchmark comparison.
 
-  **Planned pieces (settle scope at build time; one big phase or split
-  into 28a / 28b):**
+  **Scope settled 2026-05-22 (see the decisions log).** One big phase
+  covering all seven pieces below in a single ship. Open questions answered:
+  expense ratio + yield come from Yahoo `quoteSummary` (path 2a), not
+  hand-curated; benchmark comparison uses a hand-curated `benchmark`
+  column on `symbols` (path 7's pragmatic option), so user-added ETFs
+  simply omit the overlay; the full trailing-returns set, the growth-of-
+  $10k chart, NAV / premium-discount, and sector + geography panels are
+  all in. Phase 29 (issuer-direct ETF feeds for iShares / Vanguard / ...)
+  was budgeted as a separate later phase, not folded in here.
+
+  **Planned pieces:**
 
   (1) **ETF distributions.** Lift Phase 26 to cover ETFs — Yahoo's
   `events.dividends` series carries an ETF's distributions the same way
@@ -1403,6 +1521,64 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   No new core feature, but a meaningful change to the provider layer; it
   goes beyond a small refinement, so the user can pick the ordering after
   the current backlog.
+
+- [ ] **Phase 29: Issuer-direct ETF data feeds.** (Captured 2026-05-22
+  from a vibe-coding side note mid-Phase-28.) The user's steer: *"as a
+  future plan we tie into iShares/blackrock and Vanguard directly for
+  even more data for their ETFs (and others if available/popular)"*.
+  Phase 28 builds the ETF page off SEC N-PORT and Yahoo `quoteSummary`,
+  the broadly-available free sources; Phase 29 layers richer
+  issuer-direct data on top wherever the issuer publishes it. Issuers
+  often publish their own fund factsheets and full daily holdings as
+  CSV / JSON feeds that go beyond N-PORT's quarterly snapshot
+  (daily refresh, full position list rather than just top-25,
+  effective duration / SEC yield / option-adjusted spread for bond
+  funds, sector and country breakdowns done by the issuer's own
+  methodology, distribution schedules, factsheets, prospectus PDFs,
+  premium / discount history, and so on).
+
+  **Likely issuer sources to investigate at build time:**
+  - **iShares / BlackRock** — `ishares.com` carries per-fund product
+    pages with downloadable CSV holdings, distributions, factsheet
+    PDFs and JSON behind the page; needs research on the stable
+    endpoint shape.
+  - **Vanguard** — `vanguard.com` advisor product feeds and per-fund
+    JSON for holdings, characteristics, distributions.
+  - **State Street / SPDR** — `ssga.com` for SPY, SPDR sector funds.
+  - **Invesco** — for QQQ and the BLDR / DBA / DBC commodity funds.
+  - **Schwab / Fidelity / WisdomTree / VanEck / First Trust** — pick
+    based on what the user holds enough interest in.
+
+  **Open design points to settle when building:**
+
+  (1) **Trait composition.** Likely a `FundExtrasProvider` trait per
+  issuer, dispatched by `symbols.issuer` (a new column or derived from
+  the fund name), with a `merge_into` step that overlays issuer fields
+  onto the Phase 28 `fund_profiles` row only where the issuer feed has
+  fresher / richer data than N-PORT. SEC stays the canonical "every
+  fund has it" baseline; issuer data is the cherry on top.
+
+  (2) **Endpoint guards per issuer.** A new `EndpointGuard` row per
+  issuer domain, each with its own conservative budget per the
+  anti-spam policy. None of these are documented public APIs; treat
+  them carefully.
+
+  (3) **Coverage and graceful degradation.** Only a few large issuers
+  are worth implementing; the long tail (small ETF sponsors, foreign
+  issuers) stays SEC + Yahoo only. The page must not look broken on
+  an unsupported issuer's fund — extras simply do not render.
+
+  (4) **Scheduler placement.** Likely a new `fund_extras` job on its
+  own daily / weekly cadence, separate from the Phase 28 `fund_metadata`
+  job, so an issuer outage does not stall the Yahoo path.
+
+  (5) **Health page surfacing.** Each issuer guard surfaces on
+  `/health` like the existing four; the symbol page may want a small
+  "enriched by <issuer>" provenance line where issuer data is in use.
+
+  No order or schedule attached; the user can pick after the current
+  backlog. Depends on Phase 28 (the schema and the fund-profile
+  scaffolding to overlay onto).
 
 ---
 
@@ -2099,6 +2275,91 @@ finance/
   per fiscal period not per payout, so it does not stand in. Both are
   stocks-only and budgeted as Phase 25 and Phase 26 in the post-MVP
   backlog; no order or schedule attached.
+- **2026-05-22 — Phase 28 picked next; design Q&A settled four points.**
+  Asked which loose-ordered backlog phase to take next, the user chose
+  Phase 28 (ETFs as first-class citizens). A short design pass settled
+  every open question the phase's plan entry had flagged. (1) **Scope:
+  one big phase, all seven pieces.** Not split 28a / 28b — the user
+  wants ETFs to read as densely as a stock page in one ship. (2)
+  **Expense ratio and yield come from Yahoo `quoteSummary`,** modules
+  `fundProfile + defaultKeyStatistics + summaryDetail + price`, in a
+  single request behind the existing `yahoo` `EndpointGuard` — not
+  hand-curated in `starter.csv`. Phase 18 had once considered Yahoo
+  here and dropped it, but hand-curation does not scale to user-added
+  ETFs (Phase 9), which settled it. (3) **Benchmark comparison uses a
+  hand-curated `benchmark` column on `symbols`** (the plan's pragmatic
+  path), populated for the curated universe (SPY/VOO->^SPX, QQQ->^NDX,
+  DIA->^DJI, IWM->^RUT, sector SPDRs, etc.). A user-added ETF simply
+  omits the overlay rather than guessing wrong from a flaky auto-detect.
+  (4) **All four extras are in:** the full trailing-returns set
+  (1m/3m/YTD/1y/3y/5y/10y/since-inception, annualized past 1y), the
+  growth-of-$10k area chart over the longest available range, the live
+  NAV / premium-discount badge, and N-PORT sector + geography panels.
+  The Phase 28 entry in the Phases list was updated to read "scoped, in
+  progress" with these answers folded in.
+- **2026-05-22 — Phase 28 ETFs as first-class citizens shipped (local).**
+  Yahoo is now the source for a third concern beyond quotes and
+  dividends, and SEC N-PORT carries two more aggregations (sector,
+  geography) past the asset mix. Design calls made during the build:
+  (1) **Yahoo `fund_metadata` is an inherent `YahooProvider` method,
+  not a new trait** — the data lives on `v10/finance/quoteSummary`, a
+  single-source concern, same call as `lookup` / `dividends`; Phase 27
+  (provider redundancy) is the right place to lift it if a second
+  source ever joins. (2) **Sector mix uses N-PORT's `<issuerCat>`,
+  geography uses `<invCountry>`** — N-PORT does NOT carry GICS sector
+  codes (issuer-computed metadata, issuer-direct only), so the sector
+  panel is honest about what SEC provides: CORP / GOVT / MUN /
+  Registered fund / etc. Meaningful for bond and multi-sector funds,
+  degenerate (single bucket) on a pure-equity ETF — the template
+  hides the panel in that case rather than render a flat bar carrying
+  no information. Finer GICS sectors are budgeted as a Phase 29
+  cherry-on-top. (3) **Yahoo `quoteSummary` defensively handles
+  401 / 403 alongside 429 / 503 as `RateLimited`,** because Yahoo's
+  v10 endpoint is occasionally crumb-gated and surfaces auth failures
+  inconsistently; treating all four as the guard's rate-limit signal
+  keeps a broken upstream from spinning while letting the breaker
+  recover cleanly when Yahoo flips back. The WSL2 dev box is
+  blanket-429'd by Yahoo today (a known cloud-IP issue), so the
+  endpoint was verified by parser-level reasoning and unit tests; the
+  production alpine server has been hitting Yahoo cleanly for months
+  (Phase 5, 18, 26), so the deploy is the source of truth. (4) **A
+  separate full-history query for trailing returns,** not the
+  400-bar window the price chart's key stats reuse — without it, the
+  3y / 5y / 10y / since-inception rows always read as missing.
+  (5) **Benchmark column is hand-curated in `starter.csv`** (per the
+  scope Q&A): the 18 broad-market ETFs that have a clean curated
+  benchmark in our index universe get one (SPY / VOO / ... -> ^SPX,
+  QQQ / SMH / ARKK -> ^NDX, DIA -> ^DJI, IWM -> ^RUT); sector SPDRs
+  map to ^SPX too, international / bond / commodity ETFs leave it
+  blank, so the relative-performance overlay hides itself rather than
+  guess wrong. A user-added ETF (Phase 9) simply omits the overlay.
+  (6) **One growth-of-$10k chart in lightweight-charts**, separate
+  from the price chart so the longest available range (since
+  inception) is shown without coupling to the price chart's range
+  buttons; benchmark rides on the same panel as a dashed line
+  re-scaled to $10k from the fund's first bar (not the benchmark's
+  earliest bar), so the two lines start together. (7) **Dividends
+  template lifted out of the stocks-only conditional** rather than
+  duplicated; the section title flips to "Distributions" when the
+  symbol is an ETF. (8) **The Phase 28 build accidentally surfaced a
+  latent verification gap:** trailing returns first read from the
+  chart's truncated 400-bar window, which capped them at ~1.5 years
+  and made every long-horizon row miss; caught in a render check on
+  SPY ("3y/5y/10y all show —"), fixed with the separate full-history
+  query in symbols.rs. No deploy yet — the local verification used a
+  synthetic `fund_metadata` row injected via the python `sqlite3`
+  module since Yahoo refuses this WSL2 IP.
+- **2026-05-22 — Phase 29 captured: issuer-direct ETF data feeds.**
+  Mid-Phase-28 the user floated: *"as a future plan we tie into
+  iShares/blackrock and Vanguard directly for even more data for their
+  ETFs (and others if available/popular)"*. Per the vibe-coding rule
+  budgeted into the plan rather than acted on mid-phase: see the new
+  Phase 29 entry in the Phases list, which enumerates the candidate
+  issuer sources (iShares, Vanguard, State Street / SPDR, Invesco, and
+  others) and five open design points (trait composition, per-issuer
+  endpoint guards, coverage and graceful degradation on unsupported
+  issuers, scheduler placement, and `/health` surfacing). Depends on
+  Phase 28 to overlay onto.
 
 ---
 

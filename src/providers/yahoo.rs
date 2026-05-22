@@ -16,7 +16,9 @@ use async_trait::async_trait;
 use reqwest::{header::RETRY_AFTER, StatusCode};
 use serde::Deserialize;
 
-use crate::providers::{DividendEvent, IntradayBar, Quote, QuoteData, QuoteProvider, RateLimited};
+use crate::providers::{
+    DividendEvent, FundMetadata, IntradayBar, Quote, QuoteData, QuoteProvider, RateLimited,
+};
 
 /// Near-real-time quotes from Yahoo Finance.
 pub struct YahooProvider {
@@ -276,6 +278,70 @@ impl YahooProvider {
         Ok(out)
     }
 
+    /// Fetch the Yahoo `quoteSummary` ETF metadata snapshot for `ticker`
+    /// (Phase 28). One request to `v10/finance/quoteSummary` pulls the five
+    /// modules that together carry every figure the Phase 28 ETF page needs
+    /// beyond what SEC N-PORT already provides — expense ratio, distribution
+    /// yield, latest NAV, inception, category, fund family, and the issuer's
+    /// strategy paragraph.
+    ///
+    /// Returns `Ok(None)` when Yahoo answers cleanly that it has no such
+    /// symbol (a 404 or a `quoteSummary.error` body) — a definitive empty,
+    /// not a guard failure. Yahoo's gating responses (`429`, `503`, and `401
+    /// "Invalid Crumb"` which the gate sometimes returns as either) surface
+    /// as the typed [`RateLimited`] so the endpoint guard trips at once. The
+    /// returned [`FundMetadata`] may carry only a subset of fields populated
+    /// — Yahoo's coverage is uneven across small ETFs.
+    pub async fn fund_metadata(&self, ticker: &str) -> Result<Option<FundMetadata>> {
+        let sym = urlencoding::encode(&yahoo_symbol(ticker)).into_owned();
+        // The five modules that between them carry every Phase 28 field. A
+        // module Yahoo does not recognise for this symbol is silently
+        // omitted from the response (rather than failing the whole request).
+        let url = format!(
+            "https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}\
+             ?modules=fundProfile,defaultKeyStatistics,summaryDetail,price,assetProfile"
+        );
+        let resp = self.client.get(&url).send().await?;
+        let status = resp.status();
+        // The v10 endpoint is occasionally crumb-gated — Yahoo returns
+        // either a plain 401 / 403 or, confusingly, a 429 from the same gate.
+        // Treat all of them as a rate-limit signal so the guard trips and
+        // we defer the sweep rather than spinning on a broken upstream.
+        if matches!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS
+                | StatusCode::SERVICE_UNAVAILABLE
+                | StatusCode::UNAUTHORIZED
+                | StatusCode::FORBIDDEN
+        ) {
+            let retry_after_secs = resp
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<i64>().ok());
+            return Err(anyhow::Error::new(RateLimited {
+                status: status.as_u16(),
+                retry_after_secs,
+            }));
+        }
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let resp = resp.error_for_status()?;
+        let env: QuoteSummaryEnvelope = resp.json().await?;
+        if env.quote_summary.error.is_some() {
+            return Ok(None);
+        }
+        let Some(result) = env
+            .quote_summary
+            .result
+            .and_then(|mut r| if r.is_empty() { None } else { Some(r.remove(0)) })
+        else {
+            return Ok(None);
+        };
+        Ok(Some(parse_fund_metadata(result)))
+    }
+
     /// Identify a symbol: validate it exists on Yahoo and return its name,
     /// kind, exchange and currency, alongside the quote the same request
     /// carried. Used by the Phase 9 add-symbol flow.
@@ -291,6 +357,177 @@ impl YahooProvider {
         };
         let data = chart_to_quote_data(ticker, result)?;
         Ok(SymbolLookup::Found { info, data })
+    }
+}
+
+// ── v10 quoteSummary response (Phase 28) ───────────────────────────────────
+//
+// Yahoo wraps most numeric fields as `{"raw": ..., "fmt": "..."}`. A small
+// `RawF64` / `RawI64` carrier lets one serde derive handle every field of
+// that shape; an absent field, an unparsable one, or one missing the inner
+// `raw` is None — Yahoo's coverage is uneven and a partial snapshot is
+// still useful, so the parser keeps what it has rather than failing whole.
+
+#[derive(Deserialize)]
+struct QuoteSummaryEnvelope {
+    #[serde(rename = "quoteSummary")]
+    quote_summary: QuoteSummary,
+}
+
+#[derive(Deserialize)]
+struct QuoteSummary {
+    result: Option<Vec<QuoteSummaryResult>>,
+    /// Non-null on a logical failure (e.g. an unknown symbol — Yahoo returns
+    /// `200 OK` with an `error` body, not a 404).
+    error: Option<serde_json::Value>,
+}
+
+/// One module bag from the `quoteSummary` response. Every module is optional
+/// — Yahoo silently drops a module it does not recognise for this symbol
+/// rather than failing the whole request.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct QuoteSummaryResult {
+    fund_profile: Option<FundProfileModule>,
+    default_key_statistics: Option<DefaultKeyStatisticsModule>,
+    summary_detail: Option<SummaryDetailModule>,
+    price: Option<PriceModule>,
+    asset_profile: Option<AssetProfileModule>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct FundProfileModule {
+    family: Option<String>,
+    category_name: Option<String>,
+    fees_expenses_investment: Option<FeesExpensesInvestment>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct FeesExpensesInvestment {
+    annual_report_expense_ratio: Option<RawF64>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct DefaultKeyStatisticsModule {
+    /// Yahoo timestamps inception in either the unix-seconds `{raw, fmt}`
+    /// shape or, on some funds, an `fmt`-only ISO-ish string. Accept both.
+    fund_inception_date: Option<RawF64>,
+    #[serde(rename = "yield")]
+    yield_pct: Option<RawF64>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct SummaryDetailModule {
+    #[serde(rename = "yield")]
+    yield_pct: Option<RawF64>,
+    trailing_annual_dividend_yield: Option<RawF64>,
+    nav_price: Option<RawF64>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PriceModule {
+    nav_price: Option<RawF64>,
+    first_trade_date_milliseconds: Option<RawF64>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct AssetProfileModule {
+    long_business_summary: Option<String>,
+}
+
+/// Yahoo's `{ "raw": ..., "fmt": "..." }` numeric carrier. Deserialises from
+/// either form: the wrapped object, a bare number, or a string that parses
+/// as a number. Missing or unparsable -> `None`.
+#[derive(Debug, Clone, Copy)]
+struct RawF64(f64);
+
+impl<'de> serde::Deserialize<'de> for RawF64 {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Wrap {
+            raw: Option<f64>,
+        }
+        // `untagged` lets serde try each variant in order; the first one to
+        // deserialise cleanly wins.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Any {
+            Wrapped(Wrap),
+            Bare(f64),
+            Str(String),
+        }
+        let any = Any::deserialize(d)?;
+        let v = match any {
+            Any::Wrapped(w) => w.raw,
+            Any::Bare(v) => Some(v),
+            Any::Str(s) => s.trim().parse().ok(),
+        };
+        v.map(RawF64).ok_or_else(|| {
+            // Yahoo sometimes serves `{}` for a missing field; surface as a
+            // deserialiser error so serde's outer Option<RawF64> on each
+            // field captures it as None rather than failing the whole parse.
+            serde::de::Error::custom("missing raw")
+        })
+    }
+}
+
+/// Build a [`FundMetadata`] from one parsed `quoteSummary` result. Every
+/// field is best-effort: a missing module or field just leaves its slot
+/// `None` rather than rejecting the row.
+fn parse_fund_metadata(r: QuoteSummaryResult) -> FundMetadata {
+    let fp = r.fund_profile.unwrap_or_default();
+    let dks = r.default_key_statistics.unwrap_or_default();
+    let sd = r.summary_detail.unwrap_or_default();
+    let price = r.price.unwrap_or_default();
+    let ap = r.asset_profile.unwrap_or_default();
+
+    let expense_ratio = fp
+        .fees_expenses_investment
+        .and_then(|f| f.annual_report_expense_ratio)
+        .map(|v| v.0);
+    // `summaryDetail.yield` is the live figure; `defaultKeyStatistics.yield`
+    // is the same number on most funds but missing on some, so fall back.
+    let yield_pct = sd
+        .yield_pct
+        .or(dks.yield_pct)
+        .map(|v| v.0);
+    let trailing_yield_pct = sd.trailing_annual_dividend_yield.map(|v| v.0);
+    let nav_price = sd.nav_price.or(price.nav_price).map(|v| v.0);
+    // Inception comes in two shapes: a unix-seconds carrier (older API),
+    // or — on some funds — a unix-ms carrier from `price`. Normalise to a
+    // `YYYY-MM-DD` date in UTC; the inception itself is day-precision.
+    let inception_date = dks
+        .fund_inception_date
+        .map(|v| v.0 as i64)
+        .or_else(|| {
+            price
+                .first_trade_date_milliseconds
+                // Heuristic: a value > 10^11 is ms, else seconds. ETF
+                // inceptions are post-1989 so both shapes are plausible.
+                .map(|v| {
+                    let n = v.0 as i64;
+                    if n.abs() > 100_000_000_000 { n / 1000 } else { n }
+                })
+        })
+        .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
+        .map(|dt| dt.format("%Y-%m-%d").to_string());
+
+    let non_empty = |s: Option<String>| s.filter(|x| !x.trim().is_empty());
+    FundMetadata {
+        expense_ratio,
+        yield_pct,
+        trailing_yield_pct,
+        nav_price,
+        inception_date,
+        category: non_empty(fp.category_name),
+        fund_family: non_empty(fp.family),
+        strategy_summary: non_empty(ap.long_business_summary),
     }
 }
 

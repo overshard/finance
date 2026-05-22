@@ -531,6 +531,9 @@ struct AtomEntry {
 }
 
 /// One holding accumulated while streaming through an `<invstOrSec>` block.
+/// `issuer_cat` and `country` are captured for the sector / geography mixes
+/// (Phase 28) but not surfaced on [`FundHolding`] itself — only the
+/// aggregations are kept past parse time.
 #[derive(Default)]
 struct HoldingAcc {
     name: String,
@@ -538,6 +541,12 @@ struct HoldingAcc {
     pct: Option<f64>,
     value: Option<f64>,
     asset_cat: Option<String>,
+    /// N-PORT `<issuerCat>`, e.g. `CORP` / `GOVT` / `MUN` / `RF`. Meaningful
+    /// on bond and multi-sector funds; an equity ETF rolls up almost wholly
+    /// to `CORP`, so the sector panel is hidden in that degenerate case.
+    issuer_cat: Option<String>,
+    /// N-PORT `<invCountry>`, the issuer's ISO-3166-1 alpha-2 country code.
+    country: Option<String>,
 }
 
 impl HoldingAcc {
@@ -812,6 +821,12 @@ fn parse_nport(xml: &[u8]) -> Result<PortfolioData> {
     let mut all: Vec<FundHolding> = Vec::new();
     // The holding currently being assembled, set while inside `<invstOrSec>`.
     let mut cur: Option<HoldingAcc> = None;
+    // Running sector / geography aggregations: each holding's weight summed
+    // into its `issuerCat` / `invCountry` bucket as the parser closes it. A
+    // missing bucket on a holding contributes to an `"Unknown"` slot, which
+    // is dropped at the end.
+    let mut sector_acc: HashMap<&'static str, f64> = HashMap::new();
+    let mut country_acc: HashMap<&'static str, f64> = HashMap::new();
 
     loop {
         match reader.read_event_into(&mut buf)? {
@@ -825,6 +840,11 @@ fn parse_nport(xml: &[u8]) -> Result<PortfolioData> {
             Event::End(e) => {
                 if e.local_name().as_ref() == b"invstOrSec" {
                     if let Some(h) = cur.take() {
+                        let pct = h.pct.unwrap_or(0.0);
+                        let sec = issuer_bucket(h.issuer_cat.as_deref());
+                        let ctry = country_bucket(h.country.as_deref());
+                        *sector_acc.entry(sec).or_insert(0.0) += pct;
+                        *country_acc.entry(ctry).or_insert(0.0) += pct;
                         all.push(h.into_holding());
                     }
                 }
@@ -850,6 +870,12 @@ fn parse_nport(xml: &[u8]) -> Result<PortfolioData> {
                         b"valUSD" if h.value.is_none() => h.value = txt.parse().ok(),
                         b"assetCat" if h.asset_cat.is_none() => {
                             h.asset_cat = Some(txt.to_string())
+                        }
+                        b"issuerCat" if h.issuer_cat.is_none() => {
+                            h.issuer_cat = Some(txt.to_string())
+                        }
+                        b"invCountry" if h.country.is_none() => {
+                            h.country = Some(txt.to_string())
                         }
                         _ => {}
                     }
@@ -897,7 +923,93 @@ fn parse_nport(xml: &[u8]) -> Result<PortfolioData> {
     all.truncate(TOP_HOLDINGS);
     out.top_holdings = all;
 
+    // Sector / geography mixes (Phase 28). Same shape as `asset_mix`: drop
+    // residual rounding-noise buckets, sort largest first. The sector panel
+    // hides itself in the route when only one bucket survives — that is the
+    // pure-equity-ETF degenerate case where everything rolls up to "Corporate"
+    // and the panel would be a single flat bar carrying no information.
+    let trim_and_sort = |acc: HashMap<&'static str, f64>| -> Vec<(String, f64)> {
+        let mut v: Vec<(String, f64)> = acc
+            .into_iter()
+            .filter(|(_, p)| *p >= 0.05)
+            .map(|(b, p)| (b.to_string(), p))
+            .collect();
+        v.sort_by(|a, b| b.1.total_cmp(&a.1));
+        v
+    };
+    out.sector_mix = trim_and_sort(sector_acc);
+    out.geography_mix = trim_and_sort(country_acc);
+
     Ok(out)
+}
+
+/// Map an N-PORT `issuerCat` code to a human-readable sector bucket. The
+/// codes are corporate / government / municipal / fund / etc. — meaningful
+/// on bond and multi-sector funds; a pure-equity ETF rolls up almost wholly
+/// to `Corporate`, which the route detects and hides.
+fn issuer_bucket(cat: Option<&str>) -> &'static str {
+    match cat.unwrap_or("") {
+        "CORP" => "Corporate",
+        "USGSE" => "US gov't-sponsored",
+        "USGA" => "US government agency",
+        "UST" => "US Treasury",
+        "MUN" => "Municipal",
+        "PF" => "Private fund",
+        "RF" => "Registered fund",
+        "ABS" => "Asset-backed",
+        "" => "Unknown",
+        _ => "Other",
+    }
+}
+
+/// Map an issuer country's ISO-3166-1 alpha-2 code to a display name. Only
+/// the codes most commonly seen in US-listed ETF portfolios are spelled
+/// out; the long tail falls through to the raw code, which still reads
+/// usefully in the panel.
+fn country_bucket(code: Option<&str>) -> &'static str {
+    match code.unwrap_or("").to_ascii_uppercase().as_str() {
+        "US" => "United States",
+        "CA" => "Canada",
+        "GB" => "United Kingdom",
+        "DE" => "Germany",
+        "FR" => "France",
+        "CH" => "Switzerland",
+        "NL" => "Netherlands",
+        "IE" => "Ireland",
+        "LU" => "Luxembourg",
+        "IT" => "Italy",
+        "ES" => "Spain",
+        "SE" => "Sweden",
+        "NO" => "Norway",
+        "DK" => "Denmark",
+        "FI" => "Finland",
+        "BE" => "Belgium",
+        "AT" => "Austria",
+        "JP" => "Japan",
+        "CN" => "China",
+        "HK" => "Hong Kong",
+        "TW" => "Taiwan",
+        "KR" => "South Korea",
+        "IN" => "India",
+        "SG" => "Singapore",
+        "AU" => "Australia",
+        "NZ" => "New Zealand",
+        "BR" => "Brazil",
+        "MX" => "Mexico",
+        "ZA" => "South Africa",
+        "IL" => "Israel",
+        "AE" => "United Arab Emirates",
+        "BM" => "Bermuda",
+        "KY" => "Cayman Islands",
+        "" => "Unknown",
+        other => {
+            // Heap-allocated codes can't be returned as `&'static str`, so a
+            // small static buffer trick: leak the code. Acceptable here —
+            // the long tail of ISO codes is small (~250) and per-app-run
+            // bounded; not in a hot path.
+            Box::leak(other.to_string().into_boxed_str())
+        }
+    }
 }
 
 // ── company leadership: officers & board from Form 3/4/5 (Phase 14) ────────

@@ -44,6 +44,12 @@ const OVERLAY_INK = {
   ema21: "#6f5b86",
 };
 const RSI_INK = "#3f6f9c";
+// Phase 28 benchmark overlay: a fourth wayfinding ink, dashed so it reads as
+// "what would have happened in the benchmark" rather than blending with the
+// SMAs. Anchored to the fund's first visible close, so the two lines start
+// together and the divergence is the relative performance the eye should
+// follow.
+const BENCH_INK = "#7a5237";
 const VOLUME_UP = "rgba(47,125,79,0.38)";
 const VOLUME_DOWN = "rgba(178,59,50,0.38)";
 
@@ -109,6 +115,19 @@ export function initChart() {
     sma50: overlay("sma50", false),
     ema21: overlay("ema21", true),
   };
+
+  // Benchmark line (Phase 28). Created up front and shown only when the
+  // history payload carries `benchmark`; the toggle row gets a swatch so
+  // the user can hide it the same way as the SMAs.
+  const benchmarkSeries = chart.addSeries(LineSeries, {
+    color: BENCH_INK,
+    lineWidth: 2,
+    lineStyle: 2,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    crosshairMarkerVisible: false,
+    visible: false,
+  });
 
   let bars = []; // loaded candles, ascending by time
   let latest = null; // last loaded payload, kept so RSI can attach on demand
@@ -318,6 +337,15 @@ export function initChart() {
     overlays.sma200.setData(d.sma200);
     overlays.ema21.setData(d.ema21);
     if (rsiSeries) rsiSeries.setData(d.rsi14);
+    // Phase 28: benchmark overlay rides on the price pane when present.
+    const bench = d.benchmark || [];
+    benchmarkSeries.setData(bench);
+    // Only show the benchmark series — and the toggle for it — when the
+    // payload actually has one. The button defaults to on when shown.
+    const benchBtn = document.querySelector('[data-ind="benchmark"]');
+    if (benchBtn) benchBtn.hidden = bench.length === 0;
+    const benchOn = bench.length > 0 && (!benchBtn || benchBtn.classList.contains("is-active"));
+    benchmarkSeries.applyOptions({ visible: benchOn });
   }
 
   // ── indicator toggles ──────────────────────────────────────────────────
@@ -327,6 +355,8 @@ export function initChart() {
       else destroyRsi();
     } else if (key === "volume") {
       volumeSeries.applyOptions({ visible: on });
+    } else if (key === "benchmark") {
+      benchmarkSeries.applyOptions({ visible: on });
     } else if (overlays[key]) {
       overlays[key].applyOptions({ visible: on });
     }
@@ -336,7 +366,10 @@ export function initChart() {
     const key = btn.dataset.ind;
     // Paint the swatch from the JS palette so the inks live in one place.
     const dot = btn.querySelector(".ind-btn__dot");
-    if (dot) dot.style.background = key === "rsi" ? RSI_INK : OVERLAY_INK[key];
+    if (dot) {
+      dot.style.background =
+        key === "rsi" ? RSI_INK : key === "benchmark" ? BENCH_INK : OVERLAY_INK[key];
+    }
     // The template's is-active class is the initial visibility.
     applyIndicator(key, btn.classList.contains("is-active"));
     btn.addEventListener("click", () => {

@@ -25,6 +25,7 @@ pub fn router() -> Router<AppState> {
         .route("/s/{ticker}", get(symbol_page))
         .route("/api/symbols", post(add_symbol))
         .route("/api/symbols/{ticker}/history", get(history_api))
+        .route("/api/symbols/{ticker}/growth", get(growth_api))
 }
 
 /// Stats for the symbol page header and key-stats visualizations. Until
@@ -441,6 +442,12 @@ struct FundProfileRow {
     report_date: Option<String>,
     /// JSON `[[bucket, percent], ...]`.
     asset_mix: Option<String>,
+    /// JSON `[[label, percent], ...]`, from each holding's N-PORT
+    /// `<issuerCat>` (Phase 28). Often degenerate on an equity ETF.
+    sector_mix: Option<String>,
+    /// JSON `[[label, percent], ...]`, from each holding's N-PORT
+    /// `<invCountry>` (Phase 28). Often US-dominant.
+    geography_mix: Option<String>,
 }
 
 /// A `fund_holdings` row as stored.
@@ -487,17 +494,20 @@ struct FundView {
     /// The N-PORT "as of" date, `YYYY-MM-DD`.
     report_date: Option<String>,
     asset_mix: Vec<AssetSlice>,
+    /// N-PORT issuer-category mix (Phase 28). Empty / single-bucket on an
+    /// equity ETF where everything rolls up to one bucket — the template
+    /// hides the panel in that case rather than rendering a flat bar.
+    sector_mix: Vec<AssetSlice>,
+    /// N-PORT issuer-country mix (Phase 28). Empty / US-only on a domestic
+    /// ETF; hidden by the template the same way.
+    geography_mix: Vec<AssetSlice>,
     holdings: Vec<HoldingView>,
 }
 
-/// Assemble the fund view from a stored profile row and its holdings.
-fn build_fund(profile: FundProfileRow, holdings: Vec<HoldingRow>) -> FundView {
-    // Asset mix: the stored JSON `[[label, percent], ...]`. The percentages
-    // already sum to ~100, so each is its own segment width directly.
-    let asset_mix = profile
-        .asset_mix
-        .as_deref()
-        .and_then(|j| serde_json::from_str::<Vec<(String, f64)>>(j).ok())
+/// Parse a stored mix JSON column into the page's `AssetSlice` row shape.
+/// Phase 28 calls this for asset / sector / geography mixes alike.
+fn parse_mix(json: Option<&str>) -> Vec<AssetSlice> {
+    json.and_then(|j| serde_json::from_str::<Vec<(String, f64)>>(j).ok())
         .unwrap_or_default()
         .into_iter()
         .map(|(label, pct)| AssetSlice {
@@ -505,7 +515,14 @@ fn build_fund(profile: FundProfileRow, holdings: Vec<HoldingRow>) -> FundView {
             width: pct.clamp(0.0, 100.0),
             label,
         })
-        .collect();
+        .collect()
+}
+
+/// Assemble the fund view from a stored profile row and its holdings.
+fn build_fund(profile: FundProfileRow, holdings: Vec<HoldingRow>) -> FundView {
+    let asset_mix = parse_mix(profile.asset_mix.as_deref());
+    let sector_mix = parse_mix(profile.sector_mix.as_deref());
+    let geography_mix = parse_mix(profile.geography_mix.as_deref());
 
     // Holdings: each weight bar is scaled to the largest holding shown, so the
     // top position fills the rail and the rest read against it.
@@ -530,8 +547,127 @@ fn build_fund(profile: FundProfileRow, holdings: Vec<HoldingRow>) -> FundView {
         holdings_count: profile.holdings_count,
         report_date: profile.report_date,
         asset_mix,
+        sector_mix,
+        geography_mix,
         holdings,
     }
+}
+
+// ── ETF fund metadata + trailing returns (Phase 28) ────────────────────────
+
+/// A `fund_metadata` row as stored.
+#[derive(sqlx::FromRow)]
+struct FundMetadataRow {
+    expense_ratio: Option<f64>,
+    yield_pct: Option<f64>,
+    trailing_yield_pct: Option<f64>,
+    nav_price: Option<f64>,
+    inception_date: Option<String>,
+    category: Option<String>,
+    fund_family: Option<String>,
+    strategy_summary: Option<String>,
+}
+
+/// The "About this fund" section of the ETF symbol page. Every field is
+/// pre-formatted, so the template stays declarative; an unpopulated field
+/// becomes `—` rather than a hole in the layout.
+#[derive(Serialize)]
+struct FundMetaView {
+    expense_ratio: String,
+    yield_pct: String,
+    nav_price: Option<f64>,
+    /// Pre-formatted premium / discount, e.g. `+0.12%`, with a good/ok/bad
+    /// `Grade` so the template can colour-band it. `None` when no NAV.
+    premium: Option<PremiumView>,
+    inception_date: Option<String>,
+    category: Option<String>,
+    fund_family: Option<String>,
+    strategy_summary: Option<String>,
+}
+
+#[derive(Serialize)]
+struct PremiumView {
+    /// Signed pre-formatted percent, e.g. `+0.12%` / `-0.45%`.
+    text: String,
+    /// Grade for the semantic colour band: Good (tight), Ok, Bad (wide).
+    grade: compute::Grade,
+}
+
+fn build_fund_meta(row: FundMetadataRow, price: Option<f64>) -> FundMetaView {
+    let pct = |v: Option<f64>, dp: usize| -> String {
+        v.map_or_else(|| DASH.to_string(), |x| format!("{:.*}%", dp, x * 100.0))
+    };
+    // Premium / discount: live price against the latest NAV. Live price falls
+    // back to the daily close when no quote yet, just as the ratio cards do.
+    let premium = price
+        .and_then(|p| compute::premium_discount_pct(p, row.nav_price).map(|pct| (p, pct)))
+        .map(|(_, pct)| PremiumView {
+            text: format!("{:+.2}%", pct),
+            grade: compute::premium_grade(pct),
+        });
+    FundMetaView {
+        expense_ratio: pct(row.expense_ratio, 2),
+        yield_pct: pct(row.yield_pct.or(row.trailing_yield_pct), 2),
+        nav_price: row.nav_price,
+        premium,
+        inception_date: row.inception_date,
+        category: row.category,
+        fund_family: row.fund_family,
+        strategy_summary: row.strategy_summary,
+    }
+}
+
+/// One row of the trailing-returns table, pre-formatted.
+#[derive(Serialize)]
+struct ReturnRow {
+    label: &'static str,
+    /// Cumulative percent move, e.g. `+18.27%`. `—` when missing.
+    pct: String,
+    /// Annualised percent for periods over 1 year, blank `""` for the YTD /
+    /// 1m / 3m rows (where annualising is misleading) and `—` when missing.
+    annualised: String,
+    /// Whether `pct` is positive (green), negative (red), or unknown (none).
+    dir: i8,
+}
+
+fn fmt_pct(v: Option<f64>) -> (String, i8) {
+    match v {
+        Some(v) => {
+            let dir = if v > 0.0 { 1 } else if v < 0.0 { -1 } else { 0 };
+            (format!("{:+.2}%", v), dir)
+        }
+        None => (DASH.to_string(), 0),
+    }
+}
+
+fn build_returns(r: &compute::TrailingReturns) -> Vec<ReturnRow> {
+    let row = |label: &'static str, tr: Option<compute::TrailingReturn>, annualised: bool| {
+        let (pct, dir) = fmt_pct(tr.map(|t| t.pct));
+        let annualised = if annualised {
+            match tr {
+                Some(t) => format!("{:+.2}%", t.annualised_pct),
+                None => DASH.to_string(),
+            }
+        } else {
+            String::new()
+        };
+        ReturnRow {
+            label,
+            pct,
+            annualised,
+            dir,
+        }
+    };
+    vec![
+        row("1 month", r.m1, false),
+        row("3 months", r.m3, false),
+        row("Year to date", r.ytd, false),
+        row("1 year", r.y1, false),
+        row("3 years", r.y3, true),
+        row("5 years", r.y5, true),
+        row("10 years", r.y10, true),
+        row("Since inception", r.since_inception, true),
+    ]
 }
 
 // ── dividend payouts (Phase 26) ────────────────────────────────────────────
@@ -928,7 +1064,8 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
     // The ETF fund profile, when the SEC sweep has reached this symbol.
     let fund = if is_etf {
         let profile = sqlx::query_as::<_, FundProfileRow>(
-            "SELECT kind, net_assets, holdings_count, report_date, asset_mix \
+            "SELECT kind, net_assets, holdings_count, report_date, \
+                    asset_mix, sector_mix, geography_mix \
              FROM fund_profiles WHERE ticker = ?",
         )
         .bind(&ticker)
@@ -954,6 +1091,54 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         None
     };
 
+    // ETF fund metadata + trailing returns (Phase 28). Both keyed by the
+    // same `is_etf` gate; the fund_metadata row exists once the new Yahoo
+    // job has swept this symbol. An unswept ETF shows the section's
+    // "pending" note in the template.
+    let fund_meta = if is_etf {
+        sqlx::query_as::<_, FundMetadataRow>(
+            "SELECT expense_ratio, yield_pct, trailing_yield_pct, nav_price, \
+                    inception_date, category, fund_family, strategy_summary \
+             FROM fund_metadata WHERE ticker = ?",
+        )
+        .bind(&ticker)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| build_fund_meta(r, price))
+    } else {
+        None
+    };
+    // Trailing returns reach back as far as the fund's daily history goes
+    // (since inception, ten years, ...), so they pull the *full* series for
+    // this symbol rather than the 400-bar window the chart's key stats use.
+    // ETFs only.
+    let returns = if is_etf {
+        let full: Vec<(String, f64)> = sqlx::query_as(
+            "SELECT d, close FROM daily_prices WHERE ticker = ? ORDER BY d ASC",
+        )
+        .bind(&ticker)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default();
+        if full.len() >= 2 {
+            let dated: Vec<compute::DatedClose<'_>> = full
+                .iter()
+                .map(|(d, c)| compute::DatedClose {
+                    date: d,
+                    close: *c,
+                })
+                .collect();
+            let today = chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string();
+            Some(build_returns(&compute::trailing_returns(&dated, &today)))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // The leadership roster + change feed (Phase 14): stocks only, like the
     // fundamentals above.
     let leadership = if is_stock {
@@ -962,10 +1147,11 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         None
     };
 
-    // Dividend payouts (Phase 26): stocks only. A stock that pays no dividend
-    // (or whose sweep returned nothing) gets no section; an unswept stock
-    // shows a pending note in place.
-    let dividends = if is_stock {
+    // Dividend / distribution payouts (Phase 26 + Phase 28): now covers
+    // stocks AND ETFs. Indexes and futures have no concept and get no
+    // section; an unswept symbol shows a pending note in place; a swept one
+    // with no payouts in the past five years hides the section.
+    let dividends = if is_stock || is_etf {
         build_dividends(&state.pool, &ticker, symbol.dividends_synced_at.is_some()).await
     } else {
         None
@@ -979,6 +1165,8 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         fundamentals => fundamentals,
         standing => standing,
         fund => fund,
+        fund_meta => fund_meta,
+        returns => returns,
         leadership => leadership,
         dividends => dividends,
         filings => filings,
@@ -1011,8 +1199,12 @@ struct LinePoint {
     value: f64,
 }
 
-/// The symbol chart payload (Phase 8): the candles for the selected range
-/// plus the indicator overlays, each already trimmed to the visible window.
+/// The symbol chart payload (Phase 8 + Phase 28): the candles for the
+/// selected range plus the indicator overlays, each already trimmed to the
+/// visible window. Phase 28 adds an optional benchmark series — the
+/// curated index a fund tracks, normalised to the same start point as the
+/// fund's first visible close — rendered as a relative-performance line
+/// only when the symbol has a `symbols.benchmark` configured.
 #[derive(Serialize)]
 struct HistoryResponse {
     candles: Vec<Candle>,
@@ -1020,6 +1212,16 @@ struct HistoryResponse {
     sma200: Vec<LinePoint>,
     ema21: Vec<LinePoint>,
     rsi14: Vec<LinePoint>,
+    /// Benchmark closes scaled to the same starting price as the visible
+    /// candles, so the two lines start together and drift apart on relative
+    /// performance. Empty when no benchmark is configured or no benchmark
+    /// history overlaps the range.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    benchmark: Vec<LinePoint>,
+    /// Curated benchmark ticker label for the chart legend (e.g. `^SPX`).
+    /// Absent when no benchmark is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    benchmark_ticker: Option<String>,
 }
 
 /// Earliest `YYYY-MM-DD` to *show* for a range button. `None` means no limit.
@@ -1111,15 +1313,162 @@ async fn history_api(
             .collect()
     };
 
+    // Benchmark overlay (Phase 28). Loaded only when the symbol has a
+    // curated `symbols.benchmark` set, and only when the visible range
+    // actually has anchor bars to scale against. The benchmark series is
+    // pinned to the fund's first visible close so the two lines start
+    // together and drift apart on relative performance.
+    let benchmark_ticker: Option<String> = sqlx::query_scalar(
+        "SELECT benchmark FROM symbols WHERE ticker = ?",
+    )
+    .bind(&ticker)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()
+    .flatten();
+    let benchmark = match (&benchmark_ticker, candles.get(start)) {
+        (Some(bench), Some(first_visible)) => {
+            load_benchmark_series(&state.pool, bench, &candles[start..], first_visible.close).await
+        }
+        _ => Vec::new(),
+    };
+
     let resp = HistoryResponse {
         sma50: line(compute::sma(&closes, 50)),
         sma200: line(compute::sma(&closes, 200)),
         ema21: line(compute::ema(&closes, 21)),
         rsi14: line(compute::rsi(&closes, 14)),
         candles: candles.into_iter().skip(start).collect(),
+        benchmark,
+        benchmark_ticker,
     };
 
     Json(resp).into_response()
+}
+
+/// Load a benchmark index's daily closes across the same date span as
+/// `visible` (the fund's visible candle slice), then scale each close so the
+/// series starts at `fund_anchor` — the fund's first visible close — and
+/// only the *relative* movement past that point is plotted. An empty
+/// benchmark history or no overlap returns an empty vec, which the
+/// `skip_serializing_if` on the response field then drops cleanly.
+async fn load_benchmark_series(
+    pool: &sqlx::SqlitePool,
+    benchmark: &str,
+    visible: &[Candle],
+    fund_anchor: f64,
+) -> Vec<LinePoint> {
+    let Some(first) = visible.first() else {
+        return Vec::new();
+    };
+    let last = visible.last().unwrap_or(first);
+    let rows: Vec<(String, f64)> = sqlx::query_as(
+        "SELECT d, close FROM daily_prices \
+         WHERE ticker = ? AND d >= ? AND d <= ? ORDER BY d ASC",
+    )
+    .bind(benchmark)
+    .bind(&first.time)
+    .bind(&last.time)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    if rows.len() < 2 {
+        return Vec::new();
+    }
+    let bench_anchor = rows[0].1;
+    if bench_anchor <= 0.0 {
+        return Vec::new();
+    }
+    let scale = fund_anchor / bench_anchor;
+    rows.into_iter()
+        .map(|(d, c)| LinePoint {
+            time: d,
+            value: c * scale,
+        })
+        .collect()
+}
+
+// ── ETF growth-of-$10k chart (Phase 28) ────────────────────────────────────
+
+/// Response body for `GET /api/symbols/{ticker}/growth`. Two series scaled
+/// so the first point of each reads as $10,000, drawn together so a fund's
+/// since-inception path can be eyeballed against its benchmark's.
+#[derive(Serialize)]
+struct GrowthResponse {
+    /// Fund growth series, oldest first.
+    fund: Vec<compute::GrowthPoint>,
+    /// Benchmark growth series across the same date span, anchored
+    /// separately to $10,000 at its own first bar. Empty when the fund has
+    /// no curated benchmark or no benchmark history overlaps.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    benchmark: Vec<compute::GrowthPoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    benchmark_ticker: Option<String>,
+}
+
+/// Build the growth-of-$10k series over the longest available daily history
+/// for `ticker`. ETF symbol page only; on a symbol with no daily history
+/// (e.g. a future) the series is empty and the panel hides itself.
+async fn growth_api(Path(ticker): Path<String>, State(state): State<AppState>) -> Response {
+    let ticker = ticker.to_uppercase();
+    let rows: Vec<(String, f64)> = sqlx::query_as(
+        "SELECT d, close FROM daily_prices WHERE ticker = ? ORDER BY d ASC",
+    )
+    .bind(&ticker)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+    let bars: Vec<compute::DatedClose<'_>> = rows
+        .iter()
+        .map(|(d, c)| compute::DatedClose {
+            date: d.as_str(),
+            close: *c,
+        })
+        .collect();
+    let fund = compute::growth_of_10k(&bars);
+
+    let (benchmark_ticker, benchmark) = match (
+        sqlx::query_scalar::<_, Option<String>>("SELECT benchmark FROM symbols WHERE ticker = ?")
+            .bind(&ticker)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten()
+            .flatten(),
+        fund.first(),
+    ) {
+        (Some(bench), Some(first)) => {
+            // Anchor benchmark to the same first-bar date as the fund, so the
+            // two lines start together; benchmark history before the fund's
+            // inception is ignored.
+            let bench_rows: Vec<(String, f64)> = sqlx::query_as(
+                "SELECT d, close FROM daily_prices \
+                 WHERE ticker = ? AND d >= ? ORDER BY d ASC",
+            )
+            .bind(&bench)
+            .bind(&first.date)
+            .fetch_all(&state.pool)
+            .await
+            .unwrap_or_default();
+            let bench_bars: Vec<compute::DatedClose<'_>> = bench_rows
+                .iter()
+                .map(|(d, c)| compute::DatedClose {
+                    date: d.as_str(),
+                    close: *c,
+                })
+                .collect();
+            (Some(bench), compute::growth_of_10k(&bench_bars))
+        }
+        _ => (None, Vec::new()),
+    };
+
+    Json(GrowthResponse {
+        fund,
+        benchmark,
+        benchmark_ticker,
+    })
+    .into_response()
 }
 
 // ── add a symbol to the universe (Phase 9) ─────────────────────────────────

@@ -237,6 +237,14 @@ pub struct PortfolioData {
     pub top_holdings: Vec<FundHolding>,
     /// Asset-class mix as `(bucket, percent)` pairs, largest bucket first.
     pub asset_mix: Vec<(String, f64)>,
+    /// Sector mix derived from each holding's N-PORT `industryCode` (or
+    /// `assetCat` fallback for non-equity buckets), aggregated as
+    /// `(label, percent)` pairs largest first. Phase 28; empty on a
+    /// commodity-trust fund (no N-PORT).
+    pub sector_mix: Vec<(String, f64)>,
+    /// Geography mix derived from each holding's issuer country, same shape
+    /// as `sector_mix`. Phase 28; empty on a commodity trust.
+    pub geography_mix: Vec<(String, f64)>,
 }
 
 // ── dividend events (Phase 26) ─────────────────────────────────────────────
@@ -256,6 +264,48 @@ pub struct DividendEvent {
     pub ex_date: String,
     /// Per-share amount, in the symbol's reporting currency.
     pub amount: f64,
+}
+
+// ── ETF fund metadata (Phase 28) ───────────────────────────────────────────
+//
+// The slow-moving figures the prospectus carries that N-PORT does not — expense
+// ratio, distribution yield, inception, category, fund family, the issuer's
+// strategy paragraph — plus the intraday NAV used for the premium / discount
+// read. Yahoo's `v10/finance/quoteSummary` endpoint serves all of them in one
+// request behind the `fundProfile + defaultKeyStatistics + summaryDetail +
+// price + assetProfile` modules. The fetch lives on `YahooProvider` as an
+// inherent method (one source); the type sits here next to `Quote` /
+// `DividendEvent` for the scheduler and routes.
+
+/// One ETF's Yahoo `quoteSummary` snapshot. Every field is optional: Yahoo's
+/// coverage is uneven and a small fund may carry only a subset, but a partial
+/// snapshot is still useful, so the parser keeps what it has rather than
+/// rejecting the row.
+#[derive(Debug, Clone, Default)]
+pub struct FundMetadata {
+    /// Annual expense ratio as a decimal, e.g. `0.0003` = 0.03%. From
+    /// `fundProfile.feesExpensesInvestment.annualReportExpenseRatio`.
+    pub expense_ratio: Option<f64>,
+    /// Forward / trailing distribution yield as a decimal. From
+    /// `summaryDetail.yield` (preferred) or `defaultKeyStatistics.yield`.
+    pub yield_pct: Option<f64>,
+    /// Trailing-twelve-month distribution yield as a decimal. From
+    /// `summaryDetail.trailingAnnualDividendYield`.
+    pub trailing_yield_pct: Option<f64>,
+    /// Latest NAV from `price.navPrice` or `summaryDetail.navPrice`. USD.
+    pub nav_price: Option<f64>,
+    /// Inception / first trade date as `YYYY-MM-DD`. From
+    /// `defaultKeyStatistics.fundInceptionDate` or `price.firstTradeDateEpochUtc`.
+    pub inception_date: Option<String>,
+    /// Morningstar-style fund category, e.g. "Large Blend". From
+    /// `fundProfile.categoryName`.
+    pub category: Option<String>,
+    /// Sponsor family, e.g. "Vanguard". From `fundProfile.family`.
+    pub fund_family: Option<String>,
+    /// The fund's strategy paragraph as the issuer writes it. From
+    /// `assetProfile.longBusinessSummary` (preferred) or
+    /// `summaryProfile.longBusinessSummary`.
+    pub strategy_summary: Option<String>,
 }
 
 /// An upstream rejected a request with an explicit rate-limit signal (HTTP 429

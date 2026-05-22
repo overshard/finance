@@ -77,14 +77,16 @@
        it and paints each swatch from its own ink palette. #}
     <div class="ind-bar" role="group" aria-label="Chart indicators">
       {% for ind in [
-        {"key": "sma50",  "label": "SMA 50",  "on": true,  "dot": true},
-        {"key": "sma200", "label": "SMA 200", "on": true,  "dot": true},
-        {"key": "ema21",  "label": "EMA 21",  "on": false, "dot": true},
-        {"key": "volume", "label": "Volume",  "on": true,  "dot": false},
-        {"key": "rsi",    "label": "RSI",     "on": false, "dot": true}
+        {"key": "sma50",  "label": "SMA 50",  "on": true,  "dot": true,  "hide": false},
+        {"key": "sma200", "label": "SMA 200", "on": true,  "dot": true,  "hide": false},
+        {"key": "ema21",  "label": "EMA 21",  "on": false, "dot": true,  "hide": false},
+        {"key": "volume", "label": "Volume",  "on": true,  "dot": false, "hide": false},
+        {"key": "rsi",    "label": "RSI",     "on": false, "dot": true,  "hide": false},
+        {"key": "benchmark", "label": (symbol.benchmark or "Benchmark"), "on": true, "dot": true, "hide": (not symbol.benchmark)}
       ] %}
       <button type="button" class="ind-btn{% if ind.on %} is-active{% endif %}"
-              data-ind="{{ ind.key }}" aria-pressed="{{ 'true' if ind.on else 'false' }}">
+              data-ind="{{ ind.key }}" aria-pressed="{{ 'true' if ind.on else 'false' }}"
+              {% if ind.hide %}hidden{% endif %}>
         {% if ind.dot %}<span class="ind-btn__dot" aria-hidden="true"></span>{% endif %}{{ ind.label }}
       </button>
       {% endfor %}
@@ -247,59 +249,6 @@
   </section>
   {% endif %}
 
-  {# --- dividends: payout history + on-track pace (Phase 26) --- #}
-  {% if dividends %}
-  <h2 class="section-title">Dividends{% if symbol.dividends_synced_at %}<span class="section-title__asof">synced from Yahoo {{ symbol.dividends_synced_at|ago }}</span>{% endif %}</h2>
-  {% if dividends.synced and dividends.history %}
-  <section class="panel div-panel">
-    {# headline: inferred cadence + the on-track verdict pill #}
-    <div class="div-head">
-      <span class="div-cadence">{{ dividends.pace.cadence_caption }}</span>
-      {% if dividends.projection_display %}
-      <span class="vbadge vbadge--{{ dividends.pace.grade }}">{{ dividends.pace.verdict }}</span>
-      {% endif %}
-    </div>
-
-    {# pace: prior calendar year vs YTD-projected current year #}
-    <dl class="div-pace">
-      <div class="div-pace__item">
-        <dt class="div-pace__cap">{{ dividends.current_year - 1 }} total</dt>
-        <dd class="div-pace__val num">{% if dividends.pace.prior_year_total > 0 %}{{ dividends.prior_year_display }}{% else %}—{% endif %}</dd>
-      </div>
-      <div class="div-pace__item">
-        <dt class="div-pace__cap">{{ dividends.current_year }} so far</dt>
-        <dd class="div-pace__val num">{{ dividends.ytd_display }}<span class="div-pace__sub">{{ dividends.pace.ytd_count }} payment{% if dividends.pace.ytd_count != 1 %}s{% endif %}</span></dd>
-      </div>
-      {% if dividends.projection_display %}
-      <div class="div-pace__item">
-        <dt class="div-pace__cap">{{ dividends.current_year }} projected</dt>
-        <dd class="div-pace__val num">{{ dividends.projection_display }}<span class="div-pace__sub div-pace__sub--{{ dividends.pace.grade }}">{{ dividends.pct_change_display }} vs {{ dividends.current_year - 1 }}</span></dd>
-      </div>
-      {% endif %}
-    </dl>
-    <p class="div-pace__src">Projection scales {{ symbol.ticker }}&rsquo;s declared payments so far this year up to the inferred cadence, then compares to last year&rsquo;s total. Between payouts it is an estimate, not a guarantee.</p>
-
-    {# per-event history, newest first #}
-    <h3 class="div-hist__title">Payment history</h3>
-    <ul class="div-hist">
-      {% for d in dividends.history %}
-      <li class="div-row">
-        <span class="div-row__date">{{ d.ex_date|shortdate }}</span>
-        <span class="div-row__amt num">{{ d.amount }}</span>
-      </li>
-      {% endfor %}
-    </ul>
-  </section>
-  {% elif dividends.synced %}
-  <div class="fund-pending">{{ symbol.ticker }} has not paid a dividend in the past five years.</div>
-  {% else %}
-  <div class="fund-pending">
-    Dividend history for {{ symbol.ticker }} has not synced yet. It lands on the
-    next data refresh; see <a href="/health">data health</a>.
-  </div>
-  {% endif %}
-  {% endif %}
-
   {# --- leadership: officers, board & recent changes (Phase 14) --- #}
   <h2 class="section-title">Leadership{% if symbol.leadership_synced_at %}<span class="section-title__asof">synced from SEC {{ symbol.leadership_synced_at|ago }}</span>{% endif %}</h2>
   {% if leadership and leadership.roster %}
@@ -345,8 +294,90 @@
 
   {% endif %}
 
-  {# --- fund profile: ETFs only (Phase 18) --- #}
+  {# --- ETFs only: Phase 18 (fund profile) + Phase 28 (about / sector / --- #}
+  {# --- geography / trailing returns / growth of $10k / benchmark) --- #}
   {% if symbol.kind == 'etf' %}
+
+  {# About this fund: expense ratio, yield, NAV + premium/discount, family, #}
+  {# category, inception, and the issuer's strategy paragraph (Phase 28). #}
+  <h2 class="section-title">About this fund{% if symbol.fund_metadata_synced_at %}<span class="section-title__asof">synced from Yahoo {{ symbol.fund_metadata_synced_at|ago }}</span>{% endif %}</h2>
+  {% if fund_meta %}
+  <section class="panel fund-about">
+    <dl class="fund-about__stats">
+      <div class="fund-about__stat">
+        <dt class="fund-about__cap">Expense ratio</dt>
+        <dd class="fund-about__val num">{{ fund_meta.expense_ratio }}</dd>
+      </div>
+      <div class="fund-about__stat">
+        <dt class="fund-about__cap">Distribution yield</dt>
+        <dd class="fund-about__val num">{{ fund_meta.yield_pct }}</dd>
+      </div>
+      {% if fund_meta.nav_price is not none %}
+      <div class="fund-about__stat">
+        <dt class="fund-about__cap">NAV</dt>
+        <dd class="fund-about__val num">{{ fund_meta.nav_price|money }}{% if fund_meta.premium %}<span class="fund-about__sub fund-about__sub--{{ fund_meta.premium.grade }}">{{ fund_meta.premium.text }} to price</span>{% endif %}</dd>
+      </div>
+      {% endif %}
+      {% if fund_meta.inception_date %}
+      <div class="fund-about__stat">
+        <dt class="fund-about__cap">Inception</dt>
+        <dd class="fund-about__val num">{{ fund_meta.inception_date|shortdate }}</dd>
+      </div>
+      {% endif %}
+      {% if fund_meta.category %}
+      <div class="fund-about__stat">
+        <dt class="fund-about__cap">Category</dt>
+        <dd class="fund-about__val">{{ fund_meta.category }}</dd>
+      </div>
+      {% endif %}
+      {% if fund_meta.fund_family %}
+      <div class="fund-about__stat">
+        <dt class="fund-about__cap">Family</dt>
+        <dd class="fund-about__val">{{ fund_meta.fund_family }}</dd>
+      </div>
+      {% endif %}
+    </dl>
+    {% if fund_meta.strategy_summary %}
+    <p class="fund-about__summary">{{ fund_meta.strategy_summary }}</p>
+    {% endif %}
+  </section>
+  {% else %}
+  <div class="fund-pending">
+    Fund metadata for {{ symbol.ticker }} has not synced yet. It lands on the
+    next refresh; see <a href="/health">data health</a>.
+  </div>
+  {% endif %}
+
+  {# Trailing returns (Phase 28). Eight periods, annualised past 1 year. #}
+  {% if returns %}
+  <h2 class="section-title">Trailing returns{% if symbol.history_synced_at %}<span class="section-title__asof">from price history</span>{% endif %}</h2>
+  <section class="panel ret-panel">
+    <table class="ret-table">
+      <thead>
+        <tr><th scope="col">Window</th><th scope="col" class="num">Return</th><th scope="col" class="num">Annualised</th></tr>
+      </thead>
+      <tbody>
+        {% for r in returns %}
+        <tr>
+          <th scope="row">{{ r.label }}</th>
+          <td class="num{% if r.dir > 0 %} ret-cell--up{% elif r.dir < 0 %} ret-cell--down{% endif %}">{{ r.pct }}</td>
+          <td class="num ret-cell--ann">{{ r.annualised }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="ret-panel__src">Cumulative price returns from {{ symbol.ticker }}&rsquo;s stored daily closes. Distributions are not folded in; see Distributions below.</p>
+  </section>
+
+  {# Growth of $10,000 (Phase 28). Drawn client-side from the longest #}
+  {# available range, alongside the curated benchmark when one is set. #}
+  <h2 class="section-title">Growth of $10,000{% if symbol.benchmark %}<span class="section-title__asof">vs {{ symbol.benchmark }}</span>{% endif %}</h2>
+  <section class="panel growth-panel">
+    <div id="growth-chart" data-ticker="{{ symbol.ticker }}"{% if symbol.benchmark %} data-benchmark="{{ symbol.benchmark }}"{% endif %}></div>
+    <p class="growth-panel__src">A $10,000 investment scaled by the fund&rsquo;s daily closes since inception.{% if symbol.benchmark %} The dashed line tracks the same amount in {{ symbol.benchmark }} from the fund&rsquo;s first trading day forward.{% endif %}</p>
+  </section>
+  {% endif %}
+
   <h2 class="section-title">Fund profile{% if symbol.fund_synced_at %}<span class="section-title__asof">synced from SEC {{ symbol.fund_synced_at|ago }}</span>{% endif %}</h2>
   {% if fund %}
   <section class="panel fund">
@@ -372,6 +403,7 @@
     <p class="fund__note">{{ symbol.ticker }} is a grantor trust: it holds the physical commodity directly rather than a portfolio of securities, so it reports no holdings.</p>
     {% elif fund.asset_mix %}
     <div class="fund__mix">
+      <h3 class="fund__mix-label">Asset mix</h3>
       <div class="mixbar">
         {% for s in fund.asset_mix %}
         <span class="mixbar__seg" style="width:{{ s.width }}%" title="{{ s.label }} {{ s.pct }}"></span>
@@ -379,6 +411,45 @@
       </div>
       <dl class="mixlegend">
         {% for s in fund.asset_mix %}
+        <div class="mixlegend__item">
+          <dt><i class="mixlegend__dot"></i>{{ s.label }}</dt>
+          <dd class="num">{{ s.pct }}</dd>
+        </div>
+        {% endfor %}
+      </dl>
+    </div>
+    {% endif %}
+    {# Phase 28 mixes hide when degenerate: an equity ETF whose issuer #}
+    {# category rolls up entirely to "Corporate" gets a single-bucket #}
+    {# sector_mix, which carries no information — skip it then. #}
+    {% if fund.sector_mix and fund.sector_mix|length > 1 %}
+    <div class="fund__mix">
+      <h3 class="fund__mix-label">Issuer sectors</h3>
+      <div class="mixbar">
+        {% for s in fund.sector_mix %}
+        <span class="mixbar__seg" style="width:{{ s.width }}%" title="{{ s.label }} {{ s.pct }}"></span>
+        {% endfor %}
+      </div>
+      <dl class="mixlegend">
+        {% for s in fund.sector_mix %}
+        <div class="mixlegend__item">
+          <dt><i class="mixlegend__dot"></i>{{ s.label }}</dt>
+          <dd class="num">{{ s.pct }}</dd>
+        </div>
+        {% endfor %}
+      </dl>
+    </div>
+    {% endif %}
+    {% if fund.geography_mix and fund.geography_mix|length > 1 %}
+    <div class="fund__mix">
+      <h3 class="fund__mix-label">Geography</h3>
+      <div class="mixbar">
+        {% for s in fund.geography_mix %}
+        <span class="mixbar__seg" style="width:{{ s.width }}%" title="{{ s.label }} {{ s.pct }}"></span>
+        {% endfor %}
+      </div>
+      <dl class="mixlegend">
+        {% for s in fund.geography_mix %}
         <div class="mixlegend__item">
           <dt><i class="mixlegend__dot"></i>{{ s.label }}</dt>
           <dd class="num">{{ s.pct }}</dd>
@@ -409,6 +480,60 @@
   <div class="fund-pending">
     The fund profile for {{ symbol.ticker }} has not synced yet. It lands on the
     next SEC data refresh; see <a href="/health">data health</a>.
+  </div>
+  {% endif %}
+  {% endif %}
+
+  {# --- dividends / distributions: stocks AND ETFs (Phase 26 + 28) --- #}
+  {% if dividends %}
+  {% set div_label = 'Distributions' if symbol.kind == 'etf' else 'Dividends' %}
+  <h2 class="section-title">{{ div_label }}{% if symbol.dividends_synced_at %}<span class="section-title__asof">synced from Yahoo {{ symbol.dividends_synced_at|ago }}</span>{% endif %}</h2>
+  {% if dividends.synced and dividends.history %}
+  <section class="panel div-panel">
+    {# headline: inferred cadence + the on-track verdict pill #}
+    <div class="div-head">
+      <span class="div-cadence">{{ dividends.pace.cadence_caption }}</span>
+      {% if dividends.projection_display %}
+      <span class="vbadge vbadge--{{ dividends.pace.grade }}">{{ dividends.pace.verdict }}</span>
+      {% endif %}
+    </div>
+
+    {# pace: prior calendar year vs YTD-projected current year #}
+    <dl class="div-pace">
+      <div class="div-pace__item">
+        <dt class="div-pace__cap">{{ dividends.current_year - 1 }} total</dt>
+        <dd class="div-pace__val num">{% if dividends.pace.prior_year_total > 0 %}{{ dividends.prior_year_display }}{% else %}—{% endif %}</dd>
+      </div>
+      <div class="div-pace__item">
+        <dt class="div-pace__cap">{{ dividends.current_year }} so far</dt>
+        <dd class="div-pace__val num">{{ dividends.ytd_display }}<span class="div-pace__sub">{{ dividends.pace.ytd_count }} payment{% if dividends.pace.ytd_count != 1 %}s{% endif %}</span></dd>
+      </div>
+      {% if dividends.projection_display %}
+      <div class="div-pace__item">
+        <dt class="div-pace__cap">{{ dividends.current_year }} projected</dt>
+        <dd class="div-pace__val num">{{ dividends.projection_display }}<span class="div-pace__sub div-pace__sub--{{ dividends.pace.grade }}">{{ dividends.pct_change_display }} vs {{ dividends.current_year - 1 }}</span></dd>
+      </div>
+      {% endif %}
+    </dl>
+    <p class="div-pace__src">Projection scales {{ symbol.ticker }}&rsquo;s declared payments so far this year up to the inferred cadence, then compares to last year&rsquo;s total. Between payouts it is an estimate, not a guarantee.</p>
+
+    {# per-event history, newest first #}
+    <h3 class="div-hist__title">Payment history</h3>
+    <ul class="div-hist">
+      {% for d in dividends.history %}
+      <li class="div-row">
+        <span class="div-row__date">{{ d.ex_date|shortdate }}</span>
+        <span class="div-row__amt num">{{ d.amount }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% elif dividends.synced %}
+  <div class="fund-pending">{{ symbol.ticker }} has not {% if symbol.kind == 'etf' %}made a distribution{% else %}paid a dividend{% endif %} in the past five years.</div>
+  {% else %}
+  <div class="fund-pending">
+    {{ div_label }} history for {{ symbol.ticker }} has not synced yet. It lands
+    on the next data refresh; see <a href="/health">data health</a>.
   </div>
   {% endif %}
   {% endif %}
