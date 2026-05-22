@@ -387,6 +387,27 @@
   font-size: 0.82rem;
 }
 
+/* the rolled-up strong / fair / weak standing badge with a one-line reading,
+   sitting above the per-ratio grid (Phase 20) */
+.fund-standing {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 2px 0 16px;
+}
+
+/* the badge reads larger here than the inline app-wide pill */
+.fund-standing .vbadge {
+  font-size: 0.72rem;
+  padding: 6px 13px;
+}
+
+.fund-standing__text {
+  max-width: 70ch;
+  color: var(--ink-dim);
+  font-size: 0.86rem;
+}
+
 .ratios {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(258px, 1fr));

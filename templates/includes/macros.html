@@ -1,10 +1,19 @@
 {# Reusable fragments. `ticker_card` renders one symbol tile; its data-ticker
    and data-field hooks let the live stream client patch it in place. #}
+
+{# `verdict_badge` renders the rolled-up strong / fair / weak standing badge
+   (Phase 20). `s` is a compute::Standing: `s.grade` is the colour hook
+   (good/ok/bad), `s.verdict` the word (Strong/Fair/Weak). #}
+{% macro verdict_badge(s) %}<span class="vbadge vbadge--{{ s.grade }}">{{ s.verdict }}</span>{% endmacro %}
+
 {% macro ticker_card(c) %}
 <a class="ticker-card" href="/s/{{ c.ticker|urlencode }}" data-ticker="{{ c.ticker }}">
   <div class="ticker-card__head">
     <span class="ticker-card__sym">{{ c.ticker }}</span>
-    <span class="ticker-card__kind">{{ c.kind }}</span>
+    <span class="ticker-card__tags">
+      {% if c.strength %}{{ verdict_badge(c.strength) }}{% endif %}
+      <span class="ticker-card__kind">{{ c.kind }}</span>
+    </span>
   </div>
   <div class="ticker-card__name">{{ c.name }}</div>
   <div class="ticker-card__foot">
@@ -44,13 +53,30 @@
 {% endmacro %}
 
 {# `mover_row` renders one gainer/loser row. The `--bar` custom property sizes
-   a soft magnitude tint behind the row, scaled by the route. #}
+   a soft magnitude tint behind the row, scaled by the route. The badge cell
+   is always present (empty for a stock without a synced standing) so the
+   row's grid keeps a fixed column count. #}
 {% macro mover_row(m) %}
 <a class="mover {{ 'mover--up' if m.change_pct >= 0 else 'mover--down' }}"
    href="/s/{{ m.ticker|urlencode }}" style="--bar: {{ m.bar }}%">
   <span class="mover__sym num">{{ m.ticker }}</span>
   <span class="mover__name">{{ m.name }}</span>
+  <span class="mover__badge">{% if m.strength %}{{ verdict_badge(m.strength) }}{% endif %}</span>
   <span class="mover__price num">{{ m.price|money }}</span>
   <span class="mover__chg num {{ 'is-up' if m.change_pct >= 0 else 'is-down' }}">{{ m.change_pct|pct }}</span>
+</a>
+{% endmacro %}
+
+{# `standing_row` renders one strongest/weakest row (Phase 20): the rolled-up
+   verdict badge over a combined fundamentals-and-trajectory score, with the
+   trailing 12-month return alongside for context. `--bar` sizes the magnitude
+   tint, scaled by the route to the largest score shown. #}
+{% macro standing_row(r) %}
+<a class="standing {{ 'standing--up' if r.up else 'standing--down' }}"
+   href="/s/{{ r.ticker|urlencode }}" style="--bar: {{ r.bar }}%">
+  <span class="standing__sym num">{{ r.ticker }}</span>
+  <span class="standing__name">{{ r.name }}</span>
+  <span class="standing__ret num">{% if r.ret_12m is not none %}{{ r.ret_12m|pct }}{% endif %}</span>
+  {{ verdict_badge(r.standing) }}
 </a>
 {% endmacro %}

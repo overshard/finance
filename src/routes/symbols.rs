@@ -14,7 +14,7 @@ use crate::compute;
 use crate::db::now_ms;
 use crate::guard::{EndpointGuard, Permit};
 use crate::market;
-use crate::models::SymbolRow;
+use crate::models::{self, SymbolRow};
 use crate::providers::http;
 use crate::providers::yahoo::{SymbolLookup, YahooProvider};
 use crate::render::{not_found, render};
@@ -94,16 +94,6 @@ fn quote_state_label() -> &'static str {
 
 /// Placeholder for a fundamentals cell the company did not report.
 const DASH: &str = "\u{00b7}";
-
-/// One fundamentals fact, as stored.
-#[derive(sqlx::FromRow)]
-struct FundFact {
-    metric: String,
-    period: String,
-    fiscal_year: i64,
-    fiscal_qtr: Option<i64>,
-    value: f64,
-}
 
 /// One row of a financials table: a metric label and its formatted value in
 /// each displayed period (`·` where the company reported nothing).
@@ -271,20 +261,15 @@ fn fund_table(
 
 /// Assemble the fundamentals view from a company's stored facts plus the
 /// latest price. `None` when the company has no fundamentals stored yet.
-fn build_fundamentals(facts: &[FundFact], price: Option<f64>) -> Option<FundamentalsView> {
+fn build_fundamentals(facts: &[models::FundFact], price: Option<f64>) -> Option<FundamentalsView> {
     if facts.is_empty() {
         return None;
     }
 
     // (metric, period) -> value, for table-cell lookup.
     let mut lookup: HashMap<(String, String), f64> = HashMap::new();
-    // (metric, fiscal_year) -> value, for the annual ratio inputs.
-    let mut annual_vals: HashMap<(&str, i64), f64> = HashMap::new();
     for f in facts {
         lookup.insert((f.metric.clone(), f.period.clone()), f.value);
-        if f.fiscal_qtr.is_none() {
-            annual_vals.insert((f.metric.as_str(), f.fiscal_year), f.value);
-        }
     }
 
     // Distinct annual periods, oldest first, most recent 5 kept.
@@ -312,29 +297,13 @@ fn build_fundamentals(facts: &[FundFact], price: Option<f64>) -> Option<Fundamen
         .map(|(y, _, p)| (y, p))
         .collect();
 
-    // Ratios run off the most recent full fiscal year.
+    // Ratios run off the most recent full fiscal year; the shared helper in
+    // `models` assembles the inputs so the home ranking grades stocks the
+    // same way this page does.
     let latest_fy = annual.last().map(|(y, _)| *y);
-    let ratios = match latest_fy {
-        Some(fy) => {
-            let av = |m: &str, y: i64| annual_vals.get(&(m, y)).copied();
-            let inputs = compute::RatioInputs {
-                price,
-                eps_diluted: av("eps_diluted", fy),
-                dividends_per_share: av("dividends_per_share", fy),
-                revenue: av("revenue", fy),
-                net_income: av("net_income", fy),
-                assets: av("assets", fy),
-                liabilities: av("liabilities", fy),
-                equity: av("equity", fy),
-                assets_current: av("assets_current", fy),
-                liabilities_current: av("liabilities_current", fy),
-                prev_revenue: av("revenue", fy - 1),
-                prev_net_income: av("net_income", fy - 1),
-            };
-            compute::compute_ratios(&inputs)
-        }
-        None => Vec::new(),
-    };
+    let ratios = models::latest_annual_inputs(facts, price)
+        .map(|inputs| compute::compute_ratios(&inputs))
+        .unwrap_or_default();
 
     Some(FundamentalsView {
         basis: latest_fy.map(|y| format!("FY{y}")),
@@ -540,7 +509,7 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         .or_else(|| stats.as_ref().map(|s| s.close));
 
     let fundamentals = if is_stock {
-        let facts: Vec<FundFact> = sqlx::query_as(
+        let facts: Vec<models::FundFact> = sqlx::query_as(
             "SELECT metric, period, fiscal_year, fiscal_qtr, value \
              FROM fundamentals WHERE ticker = ?",
         )
@@ -552,6 +521,15 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
     } else {
         None
     };
+
+    // The overall strong / fair / weak standing (Phase 20): the ratios above
+    // rolled up, with the daily-close trajectory folded into its score. Shown
+    // as a single badge over the ratio cards. `bars` is newest-first, so it is
+    // reversed into an oldest-first close series.
+    let standing = fundamentals.as_ref().and_then(|f| {
+        let closes: Vec<f64> = bars.iter().rev().map(|b| b.4).collect();
+        compute::standing(&f.ratios, &closes)
+    });
 
     let filings: Vec<FilingView> = if is_stock || is_etf {
         sqlx::query_as::<_, FilingRow>(
@@ -610,6 +588,7 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         stats => stats,
         quote => quote,
         fundamentals => fundamentals,
+        standing => standing,
         fund => fund,
         filings => filings,
     };

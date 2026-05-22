@@ -6,6 +6,8 @@
 //! hold yet, the page offers to add it; the Search page's script does that
 //! through `POST /api/symbols` (see `routes::symbols`).
 
+use std::collections::HashMap;
+
 use axum::{
     extract::{Query, State},
     response::Response,
@@ -14,7 +16,8 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::models::{to_card, Card, SymbolCardRow};
+use crate::compute;
+use crate::models::{self, to_card, Card, SymbolCardRow};
 use crate::render::render;
 use crate::routes::symbols::valid_ticker;
 use crate::AppState;
@@ -87,8 +90,13 @@ async fn search_page(Query(sq): Query<SearchQuery>, State(state): State<AppState
     .await
     .unwrap_or_default();
 
-    let results: Vec<Card> = rows.into_iter().map(to_card).collect();
+    let mut results: Vec<Card> = rows.into_iter().map(to_card).collect();
     let result_count = results.len() as i64;
+
+    // Attach each stock card's strong / fair / weak verdict badge (Phase 20).
+    // ETFs, indexes and futures carry no badge — only stocks have the SEC
+    // fundamentals a standing is rolled from.
+    attach_standings(&state, &mut results).await;
 
     // Offer "Add" only on a genuine miss: nothing matched, the query is a
     // plausible ticker (one `POST /api/symbols` would accept), and it is not
@@ -112,4 +120,50 @@ async fn search_page(Query(sq): Query<SearchQuery>, State(state): State<AppState
         add_ticker => query,
     };
     render(&state, "pages/search.html", "/search", extra)
+}
+
+/// Fill in the `strength` badge for the stock cards in `cards`, in one batch
+/// query over their stored SEC fundamentals. Non-stock cards are left
+/// untouched. The badge reflects fundamental strength only — the home page is
+/// where the trajectory half is read — so no daily-close series is needed.
+async fn attach_standings(state: &AppState, cards: &mut [Card]) {
+    let stock_tickers: Vec<&str> = cards
+        .iter()
+        .filter(|c| c.kind == "stock")
+        .map(|c| c.ticker.as_str())
+        .collect();
+    if stock_tickers.is_empty() {
+        return;
+    }
+
+    // The `IN` list is built from tickers already in `symbols`, not raw user
+    // input, so the placeholder count is bounded and safe.
+    let placeholders = vec!["?"; stock_tickers.len()].join(",");
+    let sql = format!(
+        "SELECT ticker, metric, period, fiscal_year, fiscal_qtr, value \
+         FROM fundamentals WHERE ticker IN ({placeholders})"
+    );
+    let mut q = sqlx::query_as::<_, (String, String, String, i64, Option<i64>, f64)>(&sql);
+    for t in &stock_tickers {
+        q = q.bind(*t);
+    }
+    let fact_rows = q.fetch_all(&state.pool).await.unwrap_or_default();
+
+    let mut facts: HashMap<String, Vec<models::FundFact>> = HashMap::new();
+    for (ticker, metric, period, fiscal_year, fiscal_qtr, value) in fact_rows {
+        facts.entry(ticker).or_default().push(models::FundFact {
+            metric,
+            period,
+            fiscal_year,
+            fiscal_qtr,
+            value,
+        });
+    }
+
+    for card in cards.iter_mut().filter(|c| c.kind == "stock") {
+        card.strength = facts.get(&card.ticker).and_then(|f| {
+            let inputs = models::latest_annual_inputs(f, card.price)?;
+            compute::standing(&compute::compute_ratios(&inputs), &[])
+        });
+    }
 }

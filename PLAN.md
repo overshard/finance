@@ -33,15 +33,18 @@ and resume cleanly from this file alone, keeping token use low.
 _Last updated: 2026-05-22_
 
 **Current phase:** Phases 0 through 12 (the MVP) plus Phase 18 (ETF profiles)
-are complete, verified, and **live in production at
-https://finance.bythewood.me** (Phase 18 deployed 2026-05-22). Remaining
-post-MVP backlog: phases 13 through 17 and 19.
+and Phase 20 (strongest & weakest home panels) are complete, verified, and
+**live in production at https://finance.bythewood.me** (Phase 20 deployed
+2026-05-22). No phase is in progress. Remaining post-MVP work: the
+loose-ordered Phase 13-17 and 19 backlog.
 
 **Roadmap (restructured 2026-05-22, see decisions log):** the home-page
 redesign and commodities are pre-ship MVP phases. Order: 9 Search +
 add-symbol, 10 Commodities & futures, 11 Home dashboard redesign, 12 Polish +
 ship. Post-MVP backlog is phases 13 through 19; the user picked Phase 18 (ETF
-profiles) as the first post-MVP phase, done 2026-05-22.
+profiles) as the first post-MVP phase, done 2026-05-22. Phase 20 (strongest &
+weakest home panels) was then inserted 2026-05-22 as a detour, to be built
+next, ahead of the loose-ordered 13-17 backlog.
 
 **Watchlists dropped from the MVP (2026-05-22, see decisions log):** the user
 no longer wants watchlists for now and wants the app to stay an opinionated,
@@ -520,15 +523,54 @@ schema, unused for now.
     the Paper Ledger look at 1280px and 390px with no overflow and zero
     console errors; `/s/AAPL` (stock) and `/s/^VIX` (index) are unchanged.
 
+- **Phase 20 strongest & weakest home panels.** Complete, verified, deployed
+  to production.
+  - `compute.rs` gained a Phase 20 section: a `Standing` (a strong / fair /
+    weak `Grade` plus a combined score) and the pure functions behind it.
+    `grade_value` / `graded_mean` roll the nine Phase 7 ratio grades into a
+    fundamental-strength score; `price_trend_score` reads a trailing-year
+    return blended with how steady the climb was (the share of ~monthly
+    sub-blocks that did not fall); `trajectory_score` blends that price trend
+    equally with the revenue- and earnings-growth ratio grades; `standing`
+    combines strength and trajectory ~2:1 in favour of fundamentals (a user
+    steer); `trailing_return` exposes the 12-month return for display.
+  - The badge's verdict reflects fundamental strength alone (it sits over the
+    ratio cards); the combined score, which also folds in trajectory, is what
+    the home panels rank by.
+  - `models.rs` now owns `FundFact` (moved out of `routes/symbols.rs`) and a
+    shared `latest_annual_inputs` that assembles `RatioInputs` for the latest
+    fiscal year, so the symbol page and the home ranking grade a stock
+    identically. `Card` gained an optional `strength`.
+  - `routes/home.rs`: one `load_stocks` scan of the curated `is_seeded`
+    stocks (price + all fundamentals + the trailing-year daily closes, three
+    queries) feeds both the movers and the new strongest / weakest panels.
+    `movers` was refactored to reuse that scan and now carries each row's
+    badge; `strength_panels` ranks the graded stocks by combined score and
+    takes the top 8 and bottom 8, with a magnitude tint scaled like the
+    movers tint.
+  - `routes/search.rs`: `attach_standings` batch-loads fundamentals for the
+    stock rows among the results and attaches each card's badge.
+  - A shared `verdict_badge` macro and a `.vbadge` style (a semantic
+    green/amber/red pill, in `base.scss`); the badge rides on ticker cards,
+    mover rows, the new standing rows, and above the symbol page's ratio
+    cards. A new `standing_row` macro and a "Strongest & weakest" home
+    section mirror the movers layout.
+  - Verified: cargo + bun build clean; `/` renders the two new panels with
+    badges on the movers; `/s/NVDA` shows a "Strong" overall badge above the
+    ratios and `/s/AAPL` a "Fair" one; `/search` badges the stock cards and
+    leaves ETFs / indexes / futures unbadged; desktop (1280px) and phone
+    (390px) render with no overflow and zero console errors. `/` renders in
+    ~225ms warm — the per-render standings scan, a fixed page-load snapshot
+    as planned.
+
 **Resuming, next action**
-**The MVP plus Phase 18 (ETF profiles) are live at
-https://finance.bythewood.me.** No phase is in progress. Phase 18 was deployed
-on 2026-05-22 via `git push server master`; migration `0005` applies on the
-box and the `sec` job backfills the 28 ETF profiles on its first due cycle.
-Remaining future work is the post-MVP backlog, phases 13 through 17 and 19
-below; ordering among them is loose. There is still no GitHub repo for
-finance: the user deferred that; if one is created later, add it as `origin`
-and the `overshard/finance` slug already in taproot's `projects.conf` lines up.
+**The MVP plus Phase 18 (ETF profiles) and Phase 20 (strongest & weakest home
+panels) are live at https://finance.bythewood.me.** No phase is in progress.
+Phase 20 was deployed on 2026-05-22 via `git push server master`. The
+remaining work is the loose-ordered Phase 13-17 and 19 backlog; the user picks
+which to take next. There is still no GitHub repo for finance: the user
+deferred that; if one is created later, add it as `origin` and the
+`overshard/finance` slug already in taproot's `projects.conf` lines up.
 
 Note: Phase 18 added the `quick-xml` crate (N-PORT XML streaming parser) and
 migration `0005`. A fresh `make run` applies `0005`; the ETF fund profiles
@@ -784,7 +826,9 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   "health" read: is this a healthy company (capable leadership familiar with
   the industry, solid fundamentals, consistent gains with the occasional
   acceptable setback)? Explicitly NOT buy or sell advice, and labelled as such
-  in the UI. Builds on Phases 7, 14 and 15.
+  in the UI. Builds on Phase 20 (its composite fundamental-strength grade and
+  trajectory measure are the core of the read), layering Phase 14 leadership
+  and Phase 15 industry context on top. Builds on Phases 7, 14, 15 and 20.
 - [x] **Phase 18: ETF profiles.** Complete and verified (2026-05-22) — the
   first post-MVP phase, see the Phase 18 entry in Status and the decisions
   log. ETFs are first-class: a fund profile (AUM, holdings count, top 25
@@ -800,6 +844,32 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   from the MVP on 2026-05-22 (see decisions log) because the app is meant to
   be an opinionated, no-customization market view; parked here and can be
   re-promoted later if that changes (as commodities once were).
+
+- [x] **Phase 20: Strongest & weakest (home page).** Complete, verified, and
+  deployed to production (2026-05-22) — see the Phase 20 entry in Status and
+  the decisions log. (Captured 2026-05-22 as a detour ahead of the 13-17
+  backlog.) A second pair of home panels alongside the day's movers, but
+  a fundamentals-and-trajectory lens rather than a one-day price move: the
+  strongest stocks and the weakest, a broader read on what is built well and
+  what is struggling ("very similar to top movers, just a broader view").
+  Planned pieces: (1) a composite fundamental-strength grade in `compute.rs`
+  that rolls the nine Phase 7 graded ratios into a single strong / fair / weak
+  verdict per stock; (2) a trajectory measure blending recent price trend
+  (trailing return and how consistent the climb has been, from `daily_prices`)
+  with fundamental growth (the Phase 7 revenue-growth and earnings-growth
+  grades); (3) a combined per-stock score over strength plus trajectory, the
+  home page showing the top N strongest and bottom N weakest by it, mirroring
+  the movers panels (curated `is_seeded` stocks only, soft magnitude tint, a
+  fixed page-load snapshot). Fundamentals exist only for stocks, so the ranking
+  is necessarily stocks-only. (4) The composite strong / fair / weak verdict is
+  surfaced consistently across the app: an overall badge on the symbol page
+  above the per-ratio cards, plus a badge on search result rows and mover rows.
+  All of it is derived from data already stored (Phase 7 fundamentals plus
+  `daily_prices`): no new data source, no new network calls, no new endpoint
+  guard. This phase is the foundation for Phase 17: it ships the
+  fundamentals-plus-trajectory half of the eventual "health read", and Phase 17
+  later layers leadership (Phase 14) and industry context (Phase 15) on top.
+  Built in the Paper Ledger system.
 
 ---
 
@@ -1189,6 +1259,49 @@ finance/
   SEC-backed data backfills within a tick instead of waiting out the ~24h
   interval. That is what populates the Phase 18 ETF profiles on the production
   box right after a deploy; the job is cheap when nothing is stale.
+- **2026-05-22: Phase 20 inserted — strongest & weakest home panels.** The
+  user wants the home page to carry, alongside the day's movers, a broader
+  fundamentals-and-trajectory read: the strongest stocks (best combination of
+  fundamental strength and price / business trajectory) and the weakest, "very
+  similar to top movers, just a broader view". They also want the strong /
+  fair / weak verdict shown consistently across the app, not just per-ratio on
+  the symbol page. Budgeted as a new Phase 20, inserted as the next phase to
+  build, ahead of the loose-ordered 13-17 backlog. Q&A settled four points:
+  (1) it ships next, before 13-17; (2) it is the foundation for Phase 17, not
+  a replacement: Phase 20 builds the composite fundamental-strength grade, the
+  trajectory measure and the home panels, and Phase 17 later layers leadership
+  (Phase 14) and industry context (Phase 15) on top into the fuller "health
+  read"; (3) "trajectory" blends both recent price trend (from `daily_prices`)
+  and fundamental growth (the Phase 7 revenue / earnings growth grades); (4)
+  the rolled-up strong / fair / weak badge appears everywhere: symbol pages,
+  search result rows, mover rows, and the new panels. It is numbered after the
+  existing backlog rather than renumbering 13-19 (backlog ordering is already
+  loose, as Phase 18 going first showed); its Phases-list entry is flagged as
+  the next to build. No new data source: it is derived wholly from Phase 7
+  fundamentals and `daily_prices`.
+- **2026-05-22: Phase 20 strongest & weakest shipped.** The home page gained a
+  "Strongest & weakest" pair of panels beside the movers, and a rolled-up
+  strong / fair / weak badge now rides across the app. Design calls made
+  during the build: (1) the badge's verdict reflects fundamental strength
+  alone — the mean of the nine Phase 7 ratio grades — because it sits directly
+  above the ratio cards on the symbol page and must be explainable by what is
+  on screen; the home panels instead rank by a *combined* score that also
+  folds in trajectory. (2) Per the user's steer the combined score weights
+  fundamentals ~2:1 over trajectory (`STRENGTH_WEIGHT = 2/3`). (3) Trajectory
+  blends a price-trend score with the revenue/earnings-growth grades; the
+  price trend is a trailing-year (12 months, the user's pick) return blended
+  with a steadiness measure — the share of ~monthly sub-blocks that closed up.
+  The two growth grades thus feed both halves (strength and trajectory); the
+  overlap is deliberate, the plan specified it. (4) Verdict cutoffs are a
+  narrow ±0.2 band on the [-1, 1] score, since curated large-caps cluster near
+  zero; they are tunable consts in `compute.rs`. (5) `FundFact` and the
+  latest-fiscal-year `RatioInputs` assembly moved into `models.rs` so the
+  symbol page and the home ranking grade a stock identically. (6) The home
+  route computes the standings per render — one scan of the curated stocks
+  (price + all fundamentals + a trailing year of daily closes) feeding both
+  the movers and the new panels, a fixed page-load snapshot as planned; `/`
+  renders in ~225ms warm. No new data source and no new network calls.
+  Deployed to production on 2026-05-22 via `git push server master`.
 
 ---
 
@@ -1210,4 +1323,7 @@ finance/
   (`/s/GLD`) shows AUM and filings only, with no holdings.
 - Phone (~360 px) and desktop are both fully usable: no unintended horizontal
   scroll, chart resizes, every feature reachable.
+- `/` carries a "Strongest & weakest" pair of panels below the movers, and a
+  strong / fair / weak standing badge rides on the movers, the search result
+  cards, and above the symbol page's ratio cards (Phase 20).
 - No automated test suite or linter, matching the sibling projects.

@@ -509,7 +509,7 @@ main {
 
 .ticker-card__head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
@@ -518,6 +518,13 @@ main {
   @include mono;
   font-weight: 700;
   font-size: 1rem;
+}
+
+/* the standing badge and the kind eyebrow, grouped at the head's right edge */
+.ticker-card__tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .ticker-card__kind {
@@ -578,6 +585,35 @@ main {
   100% {
     background: var(--surface);
   }
+}
+
+/* ---------- verdict badge (Phase 20) ---------- */
+/* The rolled-up strong / fair / weak company standing, shown as one pill
+   across the app: on a ticker card, a mover row, a strongest / weakest row,
+   and above the symbol page's ratio cards. Carries the semantic colour, like
+   the per-ratio .ratio__badge it sits alongside. */
+.vbadge {
+  @include eyebrow;
+  flex: none;
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 0.52rem;
+  white-space: nowrap;
+}
+
+.vbadge--good {
+  color: var(--up);
+  background: var(--up-soft);
+}
+
+.vbadge--ok {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.vbadge--bad {
+  color: var(--down);
+  background: var(--down-soft);
 }
 
 /* ---------- desktop layering ---------- */

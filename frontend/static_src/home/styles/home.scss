@@ -26,6 +26,14 @@
   text-underline-offset: 2px;
 }
 
+/* ---------- intro note under a section title ---------- */
+.section-note {
+  margin: -2px 0 14px;
+  max-width: 64ch;
+  color: var(--ink-faint);
+  font-size: 0.82rem;
+}
+
 /* ---------- sparkline cards ---------- */
 .spark-grid {
   display: grid;
@@ -185,7 +193,8 @@
 .mover {
   position: relative;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  /* sym, name, standing badge, price, day change */
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 12px;
   padding: 10px 6px;
@@ -251,9 +260,97 @@
   min-width: 4.4ch;
 }
 
+/* the badge cell: always present (empty for a not-yet-graded stock) so the
+   row's grid keeps a fixed column count */
+.mover__badge {
+  display: flex;
+}
+
+/* ---------- strongest / weakest panels (Phase 20) ---------- */
+/* Rows reuse the .movers panel chrome but rank on the rolled-up standing
+   rather than the day's price move. Each carries a soft magnitude tint sized
+   by --bar, mirroring .mover. */
+.standing {
+  position: relative;
+  display: grid;
+  /* sym, name, trailing-year return, verdict badge */
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 6px;
+  color: var(--ink);
+  border-bottom: 1px solid var(--rule);
+}
+
+.standing:last-child {
+  border-bottom: 0;
+}
+
+/* the magnitude tint behind the row; a pseudo-element keeps it independent of
+   the hover background */
+.standing::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--bar, 0%);
+  border-radius: var(--radius-sm);
+}
+
+.standing--up::before {
+  background: var(--up-soft);
+}
+
+.standing--down::before {
+  background: var(--down-soft);
+}
+
+.standing > * {
+  position: relative; /* sit above the magnitude tint */
+}
+
+.standing:hover {
+  color: var(--ink);
+  background: var(--well);
+}
+
+.standing__sym {
+  font-weight: 700;
+  font-size: 0.86rem;
+}
+
+.standing__name {
+  font-size: 0.78rem;
+  color: var(--ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* the trailing-year return, a quiet context figure beside the verdict */
+.standing__ret {
+  font-size: 0.8rem;
+  color: var(--ink-dim);
+  text-align: right;
+  min-width: 5ch;
+}
+
 /* ---------- desktop layering ---------- */
 @media (min-width: $bp-md) {
   .movers {
     grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* on a narrow phone the mover price yields to the badge and day change, the
+   row's key figures (mirrors the .hold row's phone treatment) */
+@media (max-width: $bp-sm) {
+  .mover {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+  }
+
+  .mover__price {
+    display: none;
   }
 }

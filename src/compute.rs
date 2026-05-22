@@ -546,3 +546,170 @@ fn earnings_growth(net_income: Option<f64>, prev_net_income: Option<f64>) -> Rat
     };
     mk(KEY, LABEL, EXPLAIN, format!("{v:+.1}%"), grade, reading)
 }
+
+// ─────────────────────── company standing (Phase 20) ───────────────────────
+//
+// A stock's overall standing rolls its nine graded ratios into a single
+// strong / fair / weak verdict — the badge shown across the app — and combines
+// that fundamental strength with a price-and-growth trajectory into one score
+// the home page ranks the strongest and weakest stocks by. Everything here is
+// pure: it derives only from the Phase 7 ratios and a daily-close series, with
+// no new data source.
+
+/// Of the nine ratios, how many must carry a real grade (not `Unknown`) before
+/// a strength verdict is meaningful. A company reporting almost nothing gets no
+/// badge rather than one resting on one or two figures.
+const MIN_GRADED: usize = 5;
+
+/// Strength-score cutoffs for the strong / fair / weak verdict. The score is a
+/// mean of per-ratio values in [-1, 1]; a curated large-cap typically lands
+/// near zero, so the band is deliberately narrow. Tunable.
+const STRONG_CUTOFF: f64 = 0.2;
+const WEAK_CUTOFF: f64 = -0.2;
+
+/// Weight of fundamental strength in the combined score; trajectory takes the
+/// rest. ~2:1 in favour of fundamentals (a user steer — the ranking should
+/// lean on how well a company is built over how its price has lately moved).
+const STRENGTH_WEIGHT: f64 = 2.0 / 3.0;
+
+/// Trading days in the trailing-year price-trend window (~12 months).
+const TREND_WINDOW: usize = 252;
+/// Trading days per sub-block when measuring how steady the climb was (~1mo).
+const TREND_BLOCK: usize = 21;
+/// Minimum history (~3 months) before a price trend is read at all.
+const TREND_MIN: usize = TREND_BLOCK * 3;
+/// A trailing return of this magnitude (a fraction, so 0.25 = ±25%) saturates
+/// the return component of the price-trend score.
+const TREND_SATURATION: f64 = 0.25;
+
+/// A stock's rolled-up standing: the strong / fair / weak verdict shown as a
+/// badge across the app, plus a combined strength-and-trajectory score the
+/// home "Strongest & weakest" panels rank by.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Standing {
+    /// CSS hook for the badge: `good` | `ok` | `bad`. Mirrors `Grade`, so it
+    /// reuses the per-ratio badge colours.
+    pub grade: Grade,
+    /// Badge text derived from `grade`: `Strong` | `Fair` | `Weak`.
+    pub verdict: &'static str,
+    /// Combined score in [-1, 1]; the home panels sort by it. The verdict
+    /// above reflects fundamental strength alone (it sits over the ratio
+    /// cards); this score additionally folds in trajectory.
+    pub score: f64,
+}
+
+/// A grade's numeric value for averaging: `Good` +1, `Ok` 0, `Bad` −1.
+/// `Unknown` carries no value and is skipped by the mean.
+fn grade_value(g: Grade) -> Option<f64> {
+    match g {
+        Grade::Good => Some(1.0),
+        Grade::Ok => Some(0.0),
+        Grade::Bad => Some(-1.0),
+        Grade::Unknown => None,
+    }
+}
+
+/// Mean of the graded values in `grades`, ignoring `Unknown`. `None` when
+/// fewer than `min` of them carried a grade.
+fn graded_mean(grades: impl Iterator<Item = Grade>, min: usize) -> Option<f64> {
+    let vals: Vec<f64> = grades.filter_map(grade_value).collect();
+    (vals.len() >= min).then(|| vals.iter().sum::<f64>() / vals.len() as f64)
+}
+
+/// Map a score in [-1, 1] to a strong / fair / weak `Grade`.
+fn score_grade(score: f64) -> Grade {
+    if score >= STRONG_CUTOFF {
+        Grade::Good
+    } else if score <= WEAK_CUTOFF {
+        Grade::Bad
+    } else {
+        Grade::Ok
+    }
+}
+
+/// Trailing return (percent) over the price-trend window, for display beside a
+/// stock's standing. `None` with less than a few months of history.
+pub fn trailing_return(closes: &[f64]) -> Option<f64> {
+    if closes.len() < TREND_MIN {
+        return None;
+    }
+    let window = &closes[closes.len().saturating_sub(TREND_WINDOW)..];
+    let (&first, &last) = (window.first()?, window.last()?);
+    (first > 0.0).then(|| (last - first) / first * 100.0)
+}
+
+/// Score the trailing-year price trend in [-1, 1]: a trailing return blended
+/// with how steady the climb was — the share of ~monthly sub-blocks that did
+/// not fall. `None` with too little history to judge.
+fn price_trend_score(closes: &[f64]) -> Option<f64> {
+    if closes.len() < TREND_MIN {
+        return None;
+    }
+    let window = &closes[closes.len().saturating_sub(TREND_WINDOW)..];
+    let (&first, &last) = (window.first()?, window.last()?);
+    if first <= 0.0 {
+        return None;
+    }
+    // Return component: a move of ±TREND_SATURATION over the window saturates.
+    let ret = (last - first) / first;
+    let ret_comp = (ret / TREND_SATURATION).clamp(-1.0, 1.0);
+    // Steadiness: the fraction of ~monthly blocks that closed up, recentred to
+    // [-1, 1] so an all-up year reads +1 and an all-down year −1.
+    let (mut blocks, mut up) = (0u32, 0u32);
+    let mut i = 0;
+    while i + TREND_BLOCK < window.len() {
+        blocks += 1;
+        if window[i + TREND_BLOCK] >= window[i] {
+            up += 1;
+        }
+        i += TREND_BLOCK;
+    }
+    let steady_comp = if blocks > 0 {
+        (f64::from(up) / f64::from(blocks) - 0.5) * 2.0
+    } else {
+        ret_comp
+    };
+    // The return carries most of the weight; steadiness only refines it.
+    Some(0.7 * ret_comp + 0.3 * steady_comp)
+}
+
+/// Trajectory score in [-1, 1]: the recent price trend blended equally with
+/// fundamental growth (the revenue- and earnings-growth ratio grades). `None`
+/// when neither half can be computed.
+fn trajectory_score(ratios: &[Ratio], closes: &[f64]) -> Option<f64> {
+    let price = price_trend_score(closes);
+    let growth = graded_mean(
+        ratios
+            .iter()
+            .filter(|r| matches!(r.key, "revenue_growth" | "earnings_growth"))
+            .map(|r| r.grade),
+        1,
+    );
+    match (price, growth) {
+        (Some(p), Some(g)) => Some((p + g) / 2.0),
+        (Some(v), None) | (None, Some(v)) => Some(v),
+        (None, None) => None,
+    }
+}
+
+/// Roll a stock's nine graded ratios and its price trajectory into a single
+/// [`Standing`]. `ratios` is the output of [`compute_ratios`]; `closes` is a
+/// daily-close series (oldest first) over roughly the trailing year, which may
+/// be empty. `None` when too few ratios graded to judge.
+pub fn standing(ratios: &[Ratio], closes: &[f64]) -> Option<Standing> {
+    // Fundamental strength: the mean grade across all nine ratios. The badge's
+    // verdict reflects this alone, since it sits over the ratio cards.
+    let strength = graded_mean(ratios.iter().map(|r| r.grade), MIN_GRADED)?;
+    let grade = score_grade(strength);
+    // Combined score: fundamentals weighted ~2:1 over trajectory. With no
+    // trajectory to read, strength stands alone.
+    let score = match trajectory_score(ratios, closes) {
+        Some(t) => STRENGTH_WEIGHT * strength + (1.0 - STRENGTH_WEIGHT) * t,
+        None => strength,
+    };
+    Some(Standing {
+        grade,
+        verdict: grade.verdict(),
+        score,
+    })
+}

@@ -3,6 +3,8 @@
 {% block description %}{{ symbol.name }} ({{ symbol.ticker }}): price chart, key stats, and history.{% endblock %}
 {% block extra_css %}<link rel="stylesheet" href="{{ vite_asset('static_src/symbol/index.js', 'css') }}">{% endblock %}
 
+{% from "includes/macros.html" import verdict_badge %}
+
 {# One financials table (annual or quarterly). Both are rendered; the toggle
    script shows one. `active` decides which is visible on load. #}
 {% macro fin_panel(table, period, active) %}
@@ -202,7 +204,15 @@
 
   <h2 class="section-title">Fundamentals</h2>
   {% if fundamentals and fundamentals.ratios %}
-  {% if fundamentals.basis %}
+  {# The rolled-up standing badge sits above the per-ratio cards (Phase 20). #}
+  {% if standing %}
+  <div class="fund-standing">
+    {{ verdict_badge(standing) }}
+    <p class="fund-standing__text">Across the nine graded ratios{% if fundamentals.basis %}
+      ({{ fundamentals.basis }} figures against the latest price){% endif %},
+      {{ symbol.ticker }}&rsquo;s fundamentals read as <strong>{{ standing.verdict|lower }}</strong> overall.</p>
+  </div>
+  {% elif fundamentals.basis %}
   <p class="fund-basis">Each ratio reads {{ fundamentals.basis }} figures against the latest price, graded so the quality shows at a glance.</p>
   {% endif %}
   <section class="ratios">

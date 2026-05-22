@@ -15,7 +15,7 @@
        starter list and its deep price history. This dashboard fills in once data lands.</p>
   </section>
   {% else %}
-  {% from "includes/macros.html" import spark_card, mover_row %}
+  {% from "includes/macros.html" import spark_card, mover_row, standing_row %}
 
   <div class="page-head">
     <h1>Markets</h1>
@@ -43,6 +43,29 @@
       <div class="movers__list">{% for m in losers %}{{ mover_row(m) }}{% endfor %}</div>
       {% else %}
       <p class="movers__empty">No price data yet.</p>
+      {% endif %}
+    </section>
+  </div>
+
+  <h2 class="section-title">Strongest &amp; weakest</h2>
+  <p class="section-note">A broader read than the day&rsquo;s move: each curated
+     stock&rsquo;s fundamentals graded and rolled up, weighted with its price and
+     growth trajectory.</p>
+  <div class="movers">
+    <section class="movers__panel">
+      <h3 class="movers__title">Strongest</h3>
+      {% if strongest %}
+      <div class="movers__list">{% for r in strongest %}{{ standing_row(r) }}{% endfor %}</div>
+      {% else %}
+      <p class="movers__empty">No graded fundamentals yet.</p>
+      {% endif %}
+    </section>
+    <section class="movers__panel">
+      <h3 class="movers__title">Weakest</h3>
+      {% if weakest %}
+      <div class="movers__list">{% for r in weakest %}{{ standing_row(r) }}{% endfor %}</div>
+      {% else %}
+      <p class="movers__empty">No graded fundamentals yet.</p>
       {% endif %}
     </section>
   </div>
