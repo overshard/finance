@@ -32,9 +32,9 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-22_
 
-**Current phase:** Phases 0 through 11 complete and verified. Phase 12
-(Polish + ship) is underway: the ship infrastructure is done; the final UI
-polish pass is the one remaining item.
+**Current phase:** Phases 0 through 12 complete and verified. The MVP is
+shipped and **live in production at https://finance.bythewood.me** (deployed
+2026-05-22). Next work is the post-MVP backlog, phases 13 through 19.
 
 **Roadmap (restructured 2026-05-22, see decisions log):** the home-page
 redesign and commodities are pre-ship MVP phases. Order: 9 Search +
@@ -416,8 +416,7 @@ schema, unused for now.
     (1280px) and phone (390px) both render with no horizontal overflow and
     zero console errors.
 
-- **Phase 12 ship infrastructure.** Done — the final UI polish pass below is
-  the remainder of the phase.
+- **Phase 12 polish + ship.** Complete, verified, and live in production.
   - `Dockerfile`: multi-stage `rust:alpine` builder + `alpine:3.23` runtime,
     modelled on `analytics` but with no chromium and no Typst (finance renders
     no PDFs). The runtime stage copies the binary, `dist/`, `templates/`,
@@ -432,28 +431,50 @@ schema, unused for now.
   - Sitemap bug fixed: `routes/seo.rs` still listed the dropped `watchlists`
     page; it now emits `/` and `/search` only. The favicon was already done
     in Phase 4 (an inline SVG served at `/favicon.ico`).
-  - `git init -b master` plus an initial commit (71 files; `.env`, `data/`,
-    `dist/`, `target/`, `node_modules/` all correctly gitignored). No remote
-    configured and nothing pushed — creating the GitHub repo and the `server`
-    remote is left to the user.
+  - `git init -b master` plus an initial commit (`.env`, `data/`, `dist/`,
+    `target/`, `node_modules/` all correctly gitignored). A `server` remote
+    (`root@bythewood.me:/srv/git/finance.git`) was added for the deploy. No
+    GitHub repo yet — the user deferred GitHub.
   - Verified: `docker build` produces a 49.9MB image; the container boots
     (migrations apply, scheduler starts, listens on 8000), serves `/` and
     `/health` with 200 and resolved `/static/` assets, and degrades
     gracefully when `STOOQ_APIKEY` / `SEC_CONTACT_EMAIL` are unset (seed and
     SEC jobs disabled, prune still runs).
+  - Final Paper Ledger polish pass: `base.scss` makes `<body>` a flex column
+    with `main` flex-growing, so the footer pins to the bottom of the
+    viewport on short pages (404, empty states) instead of floating mid-page
+    over bare paper; `home.scss` lays the nine home sparkline cards 2-up on
+    phones (they were one long column) while wider screens keep the existing
+    auto-fill flow. Verified at 360 / 390 / 1280 px — desktop unchanged, no
+    overflow, no new console errors.
+  - taproot registration (done at the user's request — the plan had left
+    this as a manual step): `finance|overshard/finance|master|yes|no` added
+    to `projects.conf`, a `finance.bythewood.me` block added to the Caddyfile,
+    `finance.bythewood.me` added to the caddy network aliases, and the taproot
+    `CLAUDE.md` project table updated. A latent `quickstart.sh` bug was fixed
+    in the same pass: it created `/srv/data/<name>` root-owned, so a uid-1000
+    container could not write its db — it now `chown`s the dir to 1000 (this
+    bit the finance deploy; see the decisions log).
+  - Deployed to production at **https://finance.bythewood.me** on 2026-05-22.
+    The server (alpine, `root@bythewood.me`) was provisioned the GitHub-free
+    way: a bare repo `/srv/git/finance.git`, a working clone `/srv/docker/finance`
+    whose `origin` is that bare repo, `/srv/data/finance` (chowned 1000), a
+    hand-written `.env` (real `STOOQ_APIKEY`, `SEC_CONTACT_EMAIL`,
+    `BASE_URL=https://finance.bythewood.me`), and the standard post-receive
+    hook. `git push server master` deploys: the hook rebuilds the image,
+    recreates the container, and reattaches it to `bythewood-edge`. Caddy was
+    updated (Caddyfile + alias) and recreated. Verified: `/` and `/health`
+    return 200 over HTTPS with a valid cert and the page renders the Paper
+    Ledger UI; the first-run seed backfills on the live box.
 
 **Resuming, next action**
-**Phase 12 (Polish + ship) — final UI polish pass.** The ship infrastructure
-shipped (see the Phase 12 entry in the Done list and the decisions log): the
-sitemap fix, Dockerfile + docker-compose + .dockerignore, the Caddyfile and
-post-receive sample files, README.md, the project CLAUDE.md, and `git init`
-plus the initial commit. The favicon was already done in Phase 4. The one
-item left in Phase 12 is the final Paper Ledger polish pass deferred from
-Phase 4 — a dedicated pass over the running app (home, symbol, search,
-health, 404; phone + desktop) to tighten spacing, hierarchy, and rough edges
-before ship. It is deliberately a look-at-it-together pass: run the app and
-review it with the user. Registering the project in `taproot` is a manual
-step left to the user.
+**The MVP is shipped and live at https://finance.bythewood.me.** Phases 0
+through 12 are complete, verified, and deployed. No phase is in progress.
+Future work is the post-MVP backlog, phases 13 through 19 below. Redeploys
+are `git push server master` from this repo (the `server` remote is set).
+There is still no GitHub repo for finance — the user deferred that; if one is
+created later, add it as `origin` and the `overshard/finance` slug already in
+taproot's `projects.conf` lines up.
 
 Note: because `^RUT`/`^VIX` stay historyless, `meta.seed_completed` is never
 set, so the boot seed re-runs on every restart (cheap: ~2 Stooq calls that
@@ -669,11 +690,11 @@ Timestamps are UTC epoch-ms; trading dates are `TEXT` `YYYY-MM-DD`.
   shrunk, or moved off the landing view; decide when building). It is also
   where user-added symbols (Phase 9) find their place on the home view.
   Built in the Paper Ledger system.
-- [ ] **Phase 12 — Polish + ship.** Ship infrastructure done (sitemap fix,
-  Dockerfile, docker-compose, sample files, README, CLAUDE.md, `git init`);
-  the favicon was already done in Phase 4. Remaining: the final Paper Ledger
-  polish pass (deferred from Phase 4 — see decisions log). Registering the
-  project in `taproot` is left as a manual step for the user.
+- [x] **Phase 12 — Polish + ship.** Sitemap fix, Dockerfile, docker-compose,
+  sample files, README, CLAUDE.md, `git init`, the final Paper Ledger polish
+  pass, taproot registration, and a live production deploy to
+  https://finance.bythewood.me. Complete and verified — see the Phase 12
+  entry in the Status section and the decisions log.
 
 Phases 13 through 19 are the post-MVP backlog: ideas captured during planning,
 to be built after the Phase 12 ship. Order among them is loose, and several
@@ -1020,11 +1041,28 @@ finance/
   `env.sample` in `samplefiles/`. A `README.md` and a project `CLAUDE.md`
   were written. The sitemap in `routes/seo.rs` still listed the dropped
   `watchlists` page — fixed to emit `/` and `/search` only. `git init` plus
-  an initial commit (71 files). Per the workspace convention the project is
-  NOT registered in `taproot` (`projects.conf` / Caddyfile) and no GitHub
-  remote was created — both are manual steps for the user. The favicon was
-  already done in Phase 4. The one Phase 12 item left is the final Paper
-  Ledger UI polish pass.
+  an initial commit (71 files). The favicon was already done in Phase 4.
+- **2026-05-22: Phase 12 polish pass + production deploy — MVP shipped.**
+  Final Paper Ledger polish pass: a flex-column `<body>` so the footer pins
+  to the viewport bottom on short pages instead of floating over bare paper
+  (the 404 had a visible dead band), and a 2-up phone grid for the home
+  sparkline cards (they were one long column — the candidate noted in the
+  Phase 11 entry above). Desktop layout unchanged. Then, at the user's
+  request (overriding the plan's "taproot is a manual step"), finance was
+  registered in `taproot` and deployed live to **https://finance.bythewood.me**.
+  taproot: a `projects.conf` line, a Caddyfile block, a caddy network alias,
+  the CLAUDE.md table. Server provisioning was done GitHub-free — the working
+  clone's `origin` is the local bare repo `/srv/git/finance.git`, not GitHub,
+  so `git push server master` is the whole deploy loop (the user deferred
+  GitHub). One real bug surfaced and was fixed: `quickstart.sh` created
+  `/srv/data/<name>` root-owned, but project containers run as a uid-1000
+  user and a bind mount keeps the host dir's ownership, so finance
+  crash-looped on "Permission denied" until the data dir was `chown`ed to
+  1000; `quickstart.sh` now does that `chown` itself. The deploy is verified:
+  HTTPS 200 on `/` and `/health` with a valid cert, the Paper Ledger UI
+  renders, and the first-run seed backfills on the live box. This closes
+  Phase 12; the MVP is shipped. Remaining work is the post-MVP backlog
+  (phases 13-19).
 
 ---
 
