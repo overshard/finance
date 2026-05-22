@@ -32,8 +32,9 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-22_
 
-**Current phase:** Phases 0 through 11 complete and verified. Next: Phase 12
-(Polish + ship).
+**Current phase:** Phases 0 through 11 complete and verified. Phase 12
+(Polish + ship) is underway: the ship infrastructure is done; the final UI
+polish pass is the one remaining item.
 
 **Roadmap (restructured 2026-05-22, see decisions log):** the home-page
 redesign and commodities are pre-ship MVP phases. Order: 9 Search +
@@ -415,10 +416,39 @@ schema, unused for now.
     (1280px) and phone (390px) both render with no horizontal overflow and
     zero console errors.
 
+- **Phase 12 ship infrastructure.** Done — the final UI polish pass below is
+  the remainder of the phase.
+  - `Dockerfile`: multi-stage `rust:alpine` builder + `alpine:3.23` runtime,
+    modelled on `analytics` but with no chromium and no Typst (finance renders
+    no PDFs). The runtime stage copies the binary, `dist/`, `templates/`,
+    `migrations/`, and `universe/` (the seed reads `universe/starter.csv`),
+    runs as a non-root uid-1000 user, and sets `FINANCE_DATA_DIR=/data`.
+    `docker-compose.yml` (container name `finance`, `/srv/data/finance:/data`
+    volume) and `.dockerignore` alongside it.
+  - `samplefiles/` gained `Caddyfile.sample` and `post-receive.sample` next to
+    the existing `env.sample`, matching the sibling apps' standard
+    `git push server master` deploy.
+  - `README.md` and the project `CLAUDE.md` written.
+  - Sitemap bug fixed: `routes/seo.rs` still listed the dropped `watchlists`
+    page; it now emits `/` and `/search` only. The favicon was already done
+    in Phase 4 (an inline SVG served at `/favicon.ico`).
+  - `git init -b master` plus an initial commit (71 files; `.env`, `data/`,
+    `dist/`, `target/`, `node_modules/` all correctly gitignored). No remote
+    configured and nothing pushed — creating the GitHub repo and the `server`
+    remote is left to the user.
+
 **Resuming, next action**
-Start **Phase 12 (Polish + ship)**: sitemap, favicon, the final Paper Ledger
-polish pass (deferred from Phase 4), Dockerfile, docker-compose, sample files,
-README, CLAUDE.md, `git init`. See the Phase 12 entry below.
+**Phase 12 (Polish + ship) — final UI polish pass.** The ship infrastructure
+shipped (see the Phase 12 entry in the Done list and the decisions log): the
+sitemap fix, Dockerfile + docker-compose + .dockerignore, the Caddyfile and
+post-receive sample files, README.md, the project CLAUDE.md, and `git init`
+plus the initial commit. The favicon was already done in Phase 4. The one
+item left in Phase 12 is the final Paper Ledger polish pass deferred from
+Phase 4 — a dedicated pass over the running app (home, symbol, search,
+health, 404; phone + desktop) to tighten spacing, hierarchy, and rough edges
+before ship. It is deliberately a look-at-it-together pass: run the app and
+review it with the user. Registering the project in `taproot` is a manual
+step left to the user.
 
 Note: because `^RUT`/`^VIX` stay historyless, `meta.seed_completed` is never
 set, so the boot seed re-runs on every restart (cheap: ~2 Stooq calls that
@@ -634,10 +664,11 @@ Timestamps are UTC epoch-ms; trading dates are `TEXT` `YYYY-MM-DD`.
   shrunk, or moved off the landing view; decide when building). It is also
   where user-added symbols (Phase 9) find their place on the home view.
   Built in the Paper Ledger system.
-- [ ] **Phase 12 — Polish + ship.** Sitemap, favicon, the final Paper Ledger
-  polish pass (deferred from Phase 4 — see decisions log),
-  Dockerfile, docker-compose, sample files, README, CLAUDE.md, `git init`.
-  Registering the project in `taproot` is left as a manual step for the user.
+- [ ] **Phase 12 — Polish + ship.** Ship infrastructure done (sitemap fix,
+  Dockerfile, docker-compose, sample files, README, CLAUDE.md, `git init`);
+  the favicon was already done in Phase 4. Remaining: the final Paper Ledger
+  polish pass (deferred from Phase 4 — see decisions log). Registering the
+  project in `taproot` is left as a manual step for the user.
 
 Phases 13 through 19 are the post-MVP backlog: ideas captured during planning,
 to be built after the Phase 12 ship. Order among them is loose, and several
@@ -974,6 +1005,21 @@ finance/
   client live-nudges the trailing point onto each new quote. The phone
   sparkline grid stays one column; a 2-up phone layout is left as a Phase 12
   polish candidate.
+- **2026-05-22: Phase 12 ship infrastructure shipped.** The deploy and docs
+  scaffolding for the standard `git push server master` flow: a multi-stage
+  `Dockerfile` (`rust:alpine` builder + `alpine:3.23` runtime) plus
+  `docker-compose.yml` and `.dockerignore`, modelled on the `analytics`
+  sibling but with no chromium and no Typst (finance renders no PDFs); the
+  runtime image also copies `universe/` since the seed reads
+  `universe/starter.csv`. `Caddyfile.sample` and `post-receive.sample` joined
+  `env.sample` in `samplefiles/`. A `README.md` and a project `CLAUDE.md`
+  were written. The sitemap in `routes/seo.rs` still listed the dropped
+  `watchlists` page — fixed to emit `/` and `/search` only. `git init` plus
+  an initial commit (71 files). Per the workspace convention the project is
+  NOT registered in `taproot` (`projects.conf` / Caddyfile) and no GitHub
+  remote was created — both are manual steps for the user. The favicon was
+  already done in Phase 4. The one Phase 12 item left is the final Paper
+  Ledger UI polish pass.
 
 ---
 
