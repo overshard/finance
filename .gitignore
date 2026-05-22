@@ -1,0 +1,11 @@
+/target/
+/dist/
+/data/
+/node_modules/
+/frontend/dist/
+/frontend/node_modules/
+.env
+db.sqlite3
+db.sqlite3-shm
+db.sqlite3-wal
+db.sqlite3-journal

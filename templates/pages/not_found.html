@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Not found{% endblock %}
+
+{% block main %}
+<div class="wrap">
+  <section class="empty">
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+      <polyline points="4,20 18,34 28,26 44,50 52,40 60,52" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="60" cy="52" r="3.6" fill="currentColor"/>
+    </svg>
+    <h1>Page not found</h1>
+    <p>That route does not exist. Head back to <a href="/">the markets dashboard</a>.</p>
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,35 @@
+# Caddyfile for finance
+#
+# I like to use Caddy Server for simple reverse proxies since it has built in
+# automatic HTTPS support.
+
+{
+  servers {
+    protocol {
+      experimental_http3
+    }
+  }
+}
+
+(common) {
+  header /static/* {
+    Cache-Control "public, max-age=315360000"
+  }
+
+  header /* {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-XSS-Protection "1; mode=block"
+    X-Frame-Options DENY
+    X-Content-Type-Options nosniff
+    -Server
+    -X-Powered-By
+  }
+
+  encode zstd gzip
+}
+
+finance.example.com {
+  reverse_proxy localhost:8000
+
+  import common
+}

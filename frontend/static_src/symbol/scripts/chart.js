@@ -1,0 +1,384 @@
+import {
+  createChart,
+  CandlestickSeries,
+  LineSeries,
+  HistogramSeries,
+  ColorType,
+} from "lightweight-charts";
+
+// Paper Ledger theme: ink figures and hairline rules on the warm paper
+// surface. autoSize wires an internal ResizeObserver so the chart tracks
+// its container on every viewport.
+//
+// handleScroll / handleScale are OFF: the range buttons are the only way to
+// change what's shown, so the viewport can never pan or zoom into empty space
+// beyond the loaded data. Drag is freed up for the measure tool below.
+// Pane resizing is off for the same reason — the RSI pane keeps a fixed size.
+const chartOptions = {
+  autoSize: true,
+  handleScroll: false,
+  handleScale: false,
+  layout: {
+    background: { type: ColorType.Solid, color: "transparent" },
+    textColor: "#6b6456",
+    fontFamily: "'JetBrains Mono', monospace",
+    attributionLogo: false,
+    panes: { enableResize: false, separatorColor: "rgba(33,31,26,0.16)" },
+  },
+  grid: {
+    vertLines: { color: "rgba(33,31,26,0.07)" },
+    horzLines: { color: "rgba(33,31,26,0.07)" },
+  },
+  rightPriceScale: { borderColor: "rgba(33,31,26,0.16)" },
+  timeScale: { borderColor: "rgba(33,31,26,0.16)", rightOffset: 0 },
+  crosshair: { mode: 1 },
+};
+
+// Overlay indicator inks. The candlesticks own semantic green/red, and the
+// rest of the app reserves green/amber/red for good/ok/bad, so the moving
+// averages get their own muted, non-semantic palette — wayfinding lines, not
+// value judgments — desaturated to sit inside the warm Paper Ledger world.
+const OVERLAY_INK = {
+  sma50: "#3f6f9c",
+  sma200: "#9c6b3f",
+  ema21: "#6f5b86",
+};
+const RSI_INK = "#3f6f9c";
+const VOLUME_UP = "rgba(47,125,79,0.38)";
+const VOLUME_DOWN = "rgba(178,59,50,0.38)";
+
+/** `12.4` -> `+$12.40`, `-3` -> `-$3.00`. */
+function fmtMoney(n) {
+  const sign = n > 0 ? "+" : n < 0 ? "-" : "";
+  return `${sign}$${Math.abs(n).toFixed(2)}`;
+}
+
+/**
+ * A human caption for a visible span, e.g. "over 6 months", "over 8 years".
+ * Derived from the actual dates shown rather than the range button, so a
+ * deep MAX history clamped to what fits is described honestly.
+ */
+function spanLabel(fromISO, toISO) {
+  const months = (Date.parse(toISO) - Date.parse(fromISO)) / 2.6298e9; // 30.44d
+  if (months < 1.6) return "over 1 month";
+  if (months < 11.5) return `over ${Math.round(months)} months`;
+  const years = months / 12;
+  return years < 1.5 ? "over 1 year" : `over ${Math.round(years)} years`;
+}
+
+export function initChart() {
+  const el = document.getElementById("chart");
+  if (!el) return;
+  const ticker = el.dataset.ticker;
+
+  const chart = createChart(el, chartOptions);
+
+  // Volume first so the candlesticks draw over it in the shared bottom strip;
+  // its own price scale, pinned low and unlabelled, keeps it off the axis.
+  const volumeSeries = chart.addSeries(HistogramSeries, {
+    priceScaleId: "volume",
+    priceFormat: { type: "volume" },
+    lastValueVisible: false,
+    priceLineVisible: false,
+  });
+  chart.priceScale("volume").applyOptions({
+    scaleMargins: { top: 0.82, bottom: 0 },
+  });
+
+  const series = chart.addSeries(CandlestickSeries, {
+    upColor: "#2f7d4f",
+    downColor: "#b23b32",
+    wickUpColor: "#2f7d4f",
+    wickDownColor: "#b23b32",
+    borderVisible: false,
+  });
+
+  // Moving-average overlays on the price pane. Created up front and shown or
+  // hidden by the toggle row; sma200 first so the faster lines sit on top.
+  const overlay = (key, dashed) =>
+    chart.addSeries(LineSeries, {
+      color: OVERLAY_INK[key],
+      lineWidth: 2,
+      lineStyle: dashed ? 2 : 0,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+  const overlays = {
+    sma200: overlay("sma200", false),
+    sma50: overlay("sma50", false),
+    ema21: overlay("ema21", true),
+  };
+
+  let bars = []; // loaded candles, ascending by time
+  let latest = null; // last loaded payload, kept so RSI can attach on demand
+
+  // RSI lives in its own pane below the price pane and is created only while
+  // toggled on, so an empty second pane never lingers when it is off.
+  let rsiSeries = null;
+  function buildRsi() {
+    if (rsiSeries) return;
+    rsiSeries = chart.addSeries(
+      LineSeries,
+      {
+        color: RSI_INK,
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+        // Pin the pane to 0..100 so the 30/70 guides are always in view.
+        autoscaleInfoProvider: () => ({
+          priceRange: { minValue: 0, maxValue: 100 },
+        }),
+      },
+      1,
+    );
+    for (const level of [70, 30]) {
+      rsiSeries.createPriceLine({
+        price: level,
+        color: "rgba(33,31,26,0.30)",
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: String(level),
+      });
+    }
+    // Tight margins so the pinned 0..100 range fills the pane without the
+    // axis padding out to stray values like 120.
+    rsiSeries.priceScale().applyOptions({
+      scaleMargins: { top: 0.12, bottom: 0.12 },
+    });
+    const panes = chart.panes();
+    if (panes.length > 1) panes[1].setHeight(116);
+    if (latest) rsiSeries.setData(latest.rsi14);
+  }
+  function destroyRsi() {
+    if (!rsiSeries) return;
+    chart.removeSeries(rsiSeries);
+    rsiSeries = null;
+    // removeSeries leaves the now-empty pane behind; drop it explicitly.
+    if (chart.panes().length > 1) chart.removePane(1);
+  }
+
+  // Measure-tool overlay: a shaded band plus a readout chip, drawn by
+  // click-dragging across the chart to compare two points (the Google
+  // Finance gesture). Both are pointer-transparent so the drag stays on #chart.
+  const band = document.createElement("div");
+  band.className = "chart-band";
+  band.hidden = true;
+  const readout = document.createElement("div");
+  readout.className = "chart-readout";
+  readout.hidden = true;
+  el.append(band, readout);
+
+  const ts = chart.timeScale();
+  let anchorIdx = null; // bar index where the drag began
+  let curIdx = null; // bar index under the pointer now
+  let dragging = false;
+
+  // Map a viewport x to the nearest loaded bar index.
+  function barIndexAt(clientX) {
+    const x = clientX - el.getBoundingClientRect().left;
+    const logical = ts.coordinateToLogical(x);
+    if (logical === null) return null;
+    return Math.min(bars.length - 1, Math.max(0, Math.round(logical)));
+  }
+
+  function clearSelection() {
+    anchorIdx = null;
+    curIdx = null;
+    band.hidden = true;
+    readout.hidden = true;
+  }
+
+  // Position the band between the two selected bars and fill the readout
+  // with the % / absolute change over the interval. Called on drag and on
+  // every chart relayout so the band stays glued to the data.
+  function renderSelection() {
+    if (anchorIdx === null || curIdx === null || anchorIdx === curIdx) {
+      band.hidden = true;
+      readout.hidden = true;
+      return;
+    }
+    const a = Math.min(anchorIdx, curIdx);
+    const b = Math.max(anchorIdx, curIdx);
+    const xa = ts.logicalToCoordinate(a);
+    const xb = ts.logicalToCoordinate(b);
+    if (xa === null || xb === null) return;
+
+    const left = Math.min(xa, xb);
+    const width = Math.abs(xb - xa);
+    band.style.left = `${left}px`;
+    band.style.width = `${width}px`;
+    band.hidden = false;
+
+    const startClose = bars[a].close;
+    const endClose = bars[b].close;
+    const absChange = endClose - startClose;
+    const pct = startClose !== 0 ? (absChange / startClose) * 100 : 0;
+    const up = absChange >= 0;
+    readout.dataset.dir = up ? "up" : "down";
+    readout.innerHTML =
+      `<span class="chart-readout__pct">${up ? "▲" : "▼"} ` +
+      `${up ? "+" : ""}${pct.toFixed(2)}%</span>` +
+      `<span class="chart-readout__sub">${fmtMoney(absChange)} · ` +
+      `${bars[a].time} → ${bars[b].time}</span>`;
+    readout.hidden = false;
+
+    // Center the readout over the band, clamped to the chart's width.
+    const mid = left + width / 2;
+    const rw = readout.offsetWidth;
+    const max = el.clientWidth - rw - 4;
+    readout.style.left = `${Math.min(max, Math.max(4, mid - rw / 2))}px`;
+  }
+
+  el.addEventListener("pointerdown", (e) => {
+    if (bars.length < 2) return;
+    const idx = barIndexAt(e.clientX);
+    if (idx === null) return;
+    dragging = true;
+    anchorIdx = idx;
+    curIdx = idx;
+    el.setPointerCapture(e.pointerId);
+    renderSelection();
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const idx = barIndexAt(e.clientX);
+    if (idx === null) return;
+    curIdx = idx;
+    renderSelection();
+  });
+  function endDrag(e) {
+    if (!dragging) return;
+    dragging = false;
+    try {
+      el.releasePointerCapture(e.pointerId);
+    } catch {
+      /* pointer already released */
+    }
+    // A click with no drag clears any existing selection.
+    if (anchorIdx === curIdx) clearSelection();
+  }
+  el.addEventListener("pointerup", endDrag);
+  el.addEventListener("pointercancel", endDrag);
+
+  // The change chip beside the range buttons: % and absolute move across the
+  // bars actually visible on the chart, so the headline figure always agrees
+  // with what is drawn — a deep MAX history is clamped to what legibly fits,
+  // and the chip then reports only that visible span, not the full dataset.
+  function renderRangeSummary() {
+    const summary = document.getElementById("range-summary");
+    if (!summary) return;
+    let lo = 0;
+    let hi = bars.length - 1;
+    const lr = ts.getVisibleLogicalRange();
+    if (lr) {
+      lo = Math.max(lo, Math.ceil(lr.from));
+      hi = Math.min(hi, Math.floor(lr.to));
+    }
+    if (hi <= lo) {
+      summary.hidden = true;
+      return;
+    }
+    const start = bars[lo].close;
+    const end = bars[hi].close;
+    const abs = end - start;
+    const pct = start !== 0 ? (abs / start) * 100 : 0;
+    const up = abs >= 0;
+    summary.dataset.dir = up ? "up" : "down";
+    summary.innerHTML =
+      `<span class="range-summary__chg num">${up ? "▲" : "▼"} ` +
+      `${up ? "+" : ""}${pct.toFixed(2)}%` +
+      `<span class="range-summary__abs">${fmtMoney(abs)}</span></span>` +
+      `<span class="range-summary__cap">${spanLabel(bars[lo].time, bars[hi].time)}</span>`;
+    summary.hidden = false;
+  }
+
+  // Keep the band and the range chip glued to the data when the chart relays
+  // out — a range change (fitContent), a resize, anything that moves the view.
+  ts.subscribeVisibleLogicalRangeChange(() => {
+    if (anchorIdx !== null && curIdx !== null) renderSelection();
+    renderRangeSummary();
+  });
+
+  // Apply a freshly fetched payload to every series at once.
+  function applyData(d) {
+    latest = d;
+    bars = d.candles;
+    series.setData(d.candles);
+    volumeSeries.setData(
+      d.candles.map((c) => ({
+        time: c.time,
+        value: c.volume,
+        color: c.close >= c.open ? VOLUME_UP : VOLUME_DOWN,
+      })),
+    );
+    overlays.sma50.setData(d.sma50);
+    overlays.sma200.setData(d.sma200);
+    overlays.ema21.setData(d.ema21);
+    if (rsiSeries) rsiSeries.setData(d.rsi14);
+  }
+
+  // ── indicator toggles ──────────────────────────────────────────────────
+  function applyIndicator(key, on) {
+    if (key === "rsi") {
+      if (on) buildRsi();
+      else destroyRsi();
+    } else if (key === "volume") {
+      volumeSeries.applyOptions({ visible: on });
+    } else if (overlays[key]) {
+      overlays[key].applyOptions({ visible: on });
+    }
+  }
+
+  document.querySelectorAll(".ind-btn").forEach((btn) => {
+    const key = btn.dataset.ind;
+    // Paint the swatch from the JS palette so the inks live in one place.
+    const dot = btn.querySelector(".ind-btn__dot");
+    if (dot) dot.style.background = key === "rsi" ? RSI_INK : OVERLAY_INK[key];
+    // The template's is-active class is the initial visibility.
+    applyIndicator(key, btn.classList.contains("is-active"));
+    btn.addEventListener("click", () => {
+      const on = !btn.classList.contains("is-active");
+      btn.classList.toggle("is-active", on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      applyIndicator(key, on);
+    });
+  });
+
+  // ── range buttons ──────────────────────────────────────────────────────
+  let loaded = null;
+  async function load(range) {
+    if (loaded === range) return;
+    loaded = range;
+    clearSelection();
+    el.classList.add("is-loading");
+    try {
+      const res = await fetch(
+        `/api/symbols/${encodeURIComponent(ticker)}/history?range=${range}`,
+      );
+      if (!res.ok) throw new Error(`history ${res.status}`);
+      applyData(await res.json());
+      chart.timeScale().fitContent();
+      renderRangeSummary();
+    } catch (err) {
+      loaded = null;
+      console.error("chart load failed", err);
+    } finally {
+      el.classList.remove("is-loading");
+    }
+  }
+
+  const buttons = Array.from(document.querySelectorAll("[data-range]"));
+  buttons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      buttons.forEach((b) => b.classList.remove("is-active"));
+      btn.classList.add("is-active");
+      load(btn.dataset.range);
+    });
+  });
+
+  const active = buttons.find((b) => b.classList.contains("is-active"));
+  load(active ? active.dataset.range : "1Y");
+}

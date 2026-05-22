@@ -1,0 +1,132 @@
+@use "../../base/styles/variables" as *;
+@use "../../base/styles/mixins" as *;
+
+/* ---------- count beside the page heading ---------- */
+.search-count {
+  @include eyebrow;
+  font-size: 0.6rem;
+}
+
+/* ---------- the on-page search field ---------- */
+.searchbar {
+  display: flex;
+  gap: 10px;
+  margin: 14px 0 2px;
+}
+
+.searchbar input {
+  flex: 1 1 auto;
+  min-width: 0;
+  @include tap;
+  padding: 0 14px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.searchbar input::placeholder {
+  color: var(--ink-faint);
+}
+
+.searchbar input:focus {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px var(--well);
+}
+
+.searchbar .btn {
+  flex: none;
+}
+
+/* ---------- kind filter ---------- */
+.kind-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0 4px;
+}
+
+.kind-pill {
+  @include tap;
+  display: inline-flex;
+  align-items: center;
+  min-height: 0;
+  min-width: 0;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--rule-strong);
+  background: var(--surface);
+  color: var(--ink-dim);
+  font-size: 0.82rem;
+  font-weight: 500;
+  transition: border-color 0.14s, color 0.14s, background 0.14s;
+}
+
+.kind-pill:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.kind-pill.is-active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+  font-weight: 600;
+}
+
+.kind-pill.is-active:hover {
+  color: var(--paper);
+}
+
+/* ---------- add-symbol panel ---------- */
+.add-panel {
+  @include card;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  margin: 18px 0 2px;
+  padding: 16px 18px;
+}
+
+.add-panel__text {
+  flex: 1 1 16ch;
+}
+
+.add-panel__title {
+  font-weight: 600;
+}
+
+.add-panel__title .num {
+  @include mono;
+  font-weight: 700;
+}
+
+.add-panel__sub {
+  margin-top: 3px;
+  color: var(--ink-dim);
+  font-size: 0.84rem;
+}
+
+.add-panel .btn {
+  flex: none;
+}
+
+.add-panel__error {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--down);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+/* ---------- results ---------- */
+.search-grid {
+  margin-top: 18px;
+}
+
+.empty--search h1 {
+  font-size: 1.4rem;
+}

@@ -1,0 +1,683 @@
+@use "../../base/styles/variables" as *;
+@use "../../base/styles/mixins" as *;
+
+/* ---------- header ---------- */
+.sym-head {
+  margin: 6px 0 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+.sym-head__id {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sym-head__ticker {
+  font-size: 1.85rem;
+}
+
+.sym-head__tag {
+  @include eyebrow;
+  font-size: 0.58rem;
+  padding: 3px 8px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+}
+
+.sym-head__name {
+  color: var(--ink-dim);
+  margin-top: 4px;
+}
+
+.sym-head__quote {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 14px;
+}
+
+.sym-head__price {
+  font-size: 1.9rem;
+  font-weight: 700;
+}
+
+.sym-head__chg {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.sym-head__asof {
+  @include eyebrow;
+  font-size: 0.62rem;
+}
+
+/* ---------- chart panel ---------- */
+.chart-panel {
+  padding: 14px;
+}
+
+/* range buttons on the left, the range-change chip pushed to the right */
+.chart-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin-bottom: 10px;
+}
+
+.range-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* the range-change chip: % and absolute move over the whole visible range */
+.range-summary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  margin-left: auto;
+  line-height: 1.25;
+  text-align: right;
+}
+
+/* `display: flex` would override the [hidden] attribute, as on .chart-readout */
+.range-summary[hidden] {
+  display: none;
+}
+
+.range-summary__chg {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.range-summary[data-dir="up"] .range-summary__chg {
+  color: var(--up);
+}
+
+.range-summary[data-dir="down"] .range-summary__chg {
+  color: var(--down);
+}
+
+.range-summary__abs {
+  margin-left: 8px;
+  color: var(--ink-dim);
+  font-weight: 600;
+}
+
+.range-summary__cap {
+  @include eyebrow;
+  font-size: 0.56rem;
+  color: var(--ink-faint);
+}
+
+/* ---------- indicator toggle row ---------- */
+.ind-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--rule);
+}
+
+.ind-btn {
+  @include mono;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  color: var(--ink-faint);
+  font-size: 0.76rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.13s, border-color 0.13s;
+}
+
+.ind-btn:hover {
+  color: var(--ink-dim);
+  border-color: var(--rule-strong);
+}
+
+.ind-btn.is-active {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+/* the swatch echoes the indicator's line color on the chart (chart.js paints
+   it); dimmed while the indicator is toggled off */
+.ind-btn__dot {
+  width: 18px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--ink-faint);
+  flex: none;
+  opacity: 0.4;
+  transition: opacity 0.13s;
+}
+
+.ind-btn.is-active .ind-btn__dot {
+  opacity: 1;
+}
+
+.range-btn {
+  @include mono;
+  min-height: 44px;
+  min-width: 52px;
+  padding: 0 13px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--rule-strong);
+  background: var(--surface);
+  color: var(--ink-dim);
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.13s, background 0.13s, border-color 0.13s;
+}
+
+.range-btn:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.range-btn.is-active {
+  color: var(--paper);
+  background: var(--ink);
+  border-color: var(--ink);
+  font-weight: 700;
+}
+
+#chart {
+  position: relative;
+  width: 100%;
+  height: 360px;
+  transition: opacity 0.15s;
+  /* horizontal drags drive the measure tool; vertical still scrolls the page */
+  touch-action: pan-y;
+}
+
+#chart.is-loading {
+  opacity: 0.45;
+}
+
+/* ---------- chart measure tool ---------- */
+/* Shaded band spanning a click-dragged interval; bottom inset clears the
+   time axis. Pointer-transparent so the drag stays bound to #chart. */
+.chart-band {
+  position: absolute;
+  top: 0;
+  bottom: 26px;
+  z-index: 3;
+  background: rgba(33, 31, 26, 0.07);
+  border-left: 1px solid var(--rule-strong);
+  border-right: 1px solid var(--rule-strong);
+  pointer-events: none;
+}
+
+.chart-readout {
+  position: absolute;
+  top: 8px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 9px;
+  background: var(--surface);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--lift-hover);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* `display: flex` above would override the [hidden] attribute's display:none,
+   leaving the readout chip stuck on screen after a selection is cleared, so
+   re-assert it (same fix as `.health-banner[hidden]`). */
+.chart-readout[hidden] {
+  display: none;
+}
+
+.chart-readout__pct {
+  @include mono;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.chart-readout[data-dir="up"] .chart-readout__pct {
+  color: var(--up);
+}
+
+.chart-readout[data-dir="down"] .chart-readout__pct {
+  color: var(--down);
+}
+
+.chart-readout__sub {
+  @include mono;
+  font-size: 0.66rem;
+  color: var(--ink-faint);
+}
+
+/* ---------- key stats: gauges ---------- */
+.keystats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 12px;
+}
+
+.gauge {
+  @include card;
+  padding: 16px 16px 8px;
+}
+
+.gauge__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.gauge__label {
+  @include eyebrow;
+  color: var(--ink);
+}
+
+.gauge__meta {
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+  text-align: right;
+}
+
+/* the rail: pips need vertical room above the track for their dot heads */
+.gauge__track {
+  height: 8px;
+  margin: 24px 0 10px;
+}
+
+.gauge__ends {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: var(--ink-dim);
+}
+
+.gauge__ends-r {
+  text-align: right;
+}
+
+.gauge__ends-c {
+  text-align: center;
+}
+
+.gauge__cap {
+  @include eyebrow;
+  font-size: 0.56rem;
+  margin-right: 3px;
+}
+
+/* ---------- gauge legend ---------- */
+.legend {
+  margin-top: 12px;
+}
+
+.legend__item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--rule);
+}
+
+.legend__item dt {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+}
+
+.legend__item dd {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.legend__delta {
+  font-size: 0.78rem;
+  font-weight: 600;
+  min-width: 4.5ch;
+  text-align: right;
+}
+
+/* legend dots echo the markers on the rail */
+.legend__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--ink-dim);
+  flex: none;
+}
+
+.legend__dot--ghost {
+  background: transparent;
+  border: 2px solid var(--ink-faint);
+}
+
+.legend__dot--up {
+  background: var(--up);
+}
+
+.legend__dot--down {
+  background: var(--down);
+}
+
+/* ---------- fundamentals: graded ratio cards ---------- */
+.fund-basis {
+  margin: 2px 0 14px;
+  color: var(--ink-faint);
+  font-size: 0.82rem;
+}
+
+.ratios {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(258px, 1fr));
+  gap: 12px;
+}
+
+.ratio {
+  @include card;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px;
+}
+
+.ratio__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ratio__label {
+  @include eyebrow;
+  color: var(--ink);
+}
+
+/* the verdict badge: a quiet pill that carries the semantic color */
+.ratio__badge {
+  @include eyebrow;
+  flex: none;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.54rem;
+}
+
+.ratio__badge--good {
+  color: var(--up);
+  background: var(--up-soft);
+}
+
+.ratio__badge--ok {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.ratio__badge--bad {
+  color: var(--down);
+  background: var(--down-soft);
+}
+
+.ratio__badge--unknown {
+  color: var(--ink-faint);
+  background: var(--well);
+}
+
+/* the figure itself, colored to match the grade */
+.ratio__value {
+  font-size: 1.7rem;
+  font-weight: 700;
+  margin: 9px 0 3px;
+}
+
+.ratio--good .ratio__value {
+  color: var(--up);
+}
+
+.ratio--ok .ratio__value {
+  color: var(--warn);
+}
+
+.ratio--bad .ratio__value {
+  color: var(--down);
+}
+
+.ratio--unknown .ratio__value {
+  color: var(--ink-faint);
+}
+
+.ratio__reading {
+  font-size: 0.83rem;
+  color: var(--ink-dim);
+}
+
+/* the static "how to read it" note, set off below a hairline */
+.ratio__explain {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--rule);
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+}
+
+/* shown while the SEC sweep has not yet reached this symbol */
+.fund-pending {
+  @include card;
+  padding: 18px 20px;
+  color: var(--ink-dim);
+  font-size: 0.88rem;
+}
+
+.fund-pending a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ---------- financials table + period toggle ---------- */
+.fin {
+  padding: 14px 16px;
+}
+
+.fin__toggle {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.fin__tab {
+  @include mono;
+  min-height: 40px;
+  padding: 0 15px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--rule-strong);
+  background: var(--surface);
+  color: var(--ink-dim);
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.13s, background 0.13s, border-color 0.13s;
+}
+
+.fin__tab:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.fin__tab.is-active {
+  color: var(--paper);
+  background: var(--ink);
+  border-color: var(--ink);
+  font-weight: 700;
+}
+
+/* wide tables scroll within the card rather than the page on a phone */
+.fin__scroll {
+  overflow-x: auto;
+}
+
+.fin__table {
+  width: 100%;
+  border-collapse: collapse;
+  white-space: nowrap;
+}
+
+.fin__table th,
+.fin__table td {
+  padding: 9px 10px;
+  text-align: right;
+  font-size: 0.85rem;
+}
+
+.fin__table th:first-child,
+.fin__table td:first-child {
+  padding-left: 0;
+}
+
+.fin__table th:last-child,
+.fin__table td:last-child {
+  padding-right: 0;
+}
+
+.fin__table thead th {
+  @include eyebrow;
+  font-size: 0.58rem;
+  color: var(--ink-faint);
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+.fin__table tbody tr {
+  border-top: 1px solid var(--rule);
+}
+
+.fin__table tbody tr:first-child {
+  border-top: none;
+}
+
+.fin__table tbody th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--ink-dim);
+}
+
+.fin__table tbody td {
+  font-weight: 600;
+}
+
+.fin__empty {
+  padding: 8px 0;
+  color: var(--ink-dim);
+  font-size: 0.86rem;
+}
+
+/* ---------- recent SEC filings ---------- */
+.filings {
+  padding: 2px 16px;
+}
+
+.filing-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.filing {
+  border-top: 1px solid var(--rule);
+}
+
+.filing:first-child {
+  border-top: none;
+}
+
+.filing__link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 0;
+  color: var(--ink);
+}
+
+.filing__link:hover {
+  color: var(--ink);
+}
+
+.filing__form {
+  flex: none;
+  min-width: 7ch;
+  text-align: center;
+  padding: 5px 7px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  font-size: 0.71rem;
+  font-weight: 700;
+}
+
+.filing__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.filing__desc {
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+.filing__link:hover .filing__desc {
+  color: var(--ink-dim);
+}
+
+.filing__meta {
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+}
+
+.filing__ext {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  color: var(--ink-faint);
+}
+
+/* ---------- desktop layering ---------- */
+@media (min-width: $bp-md) {
+  #chart {
+    height: 460px;
+  }
+
+  .sym-head__ticker {
+    font-size: 2.2rem;
+  }
+
+  .sym-head__price {
+    font-size: 2.2rem;
+  }
+
+  .range-btn,
+  .ind-btn {
+    min-height: 34px;
+  }
+
+  .fin__tab {
+    min-height: 34px;
+  }
+}

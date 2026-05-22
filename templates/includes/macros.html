@@ -1,0 +1,56 @@
+{# Reusable fragments. `ticker_card` renders one symbol tile; its data-ticker
+   and data-field hooks let the live stream client patch it in place. #}
+{% macro ticker_card(c) %}
+<a class="ticker-card" href="/s/{{ c.ticker|urlencode }}" data-ticker="{{ c.ticker }}">
+  <div class="ticker-card__head">
+    <span class="ticker-card__sym">{{ c.ticker }}</span>
+    <span class="ticker-card__kind">{{ c.kind }}</span>
+  </div>
+  <div class="ticker-card__name">{{ c.name }}</div>
+  <div class="ticker-card__foot">
+    <span class="ticker-card__price num" data-field="price">{{ c.price|money }}</span>
+    <span class="ticker-card__chg num{% if c.change_pct is none %} is-flat{% elif c.change_pct >= 0 %} is-up{% else %} is-down{% endif %}" data-field="change_pct">{{ c.change_pct|pct }}</span>
+  </div>
+</a>
+{% endmacro %}
+
+{# `spark_card` renders one dashboard tile: an intraday sparkline with a live
+   price and day change. data-lo/data-hi let the stream client place a live
+   quote on the same y-scale and nudge the trailing point. #}
+{% macro spark_card(c) %}
+<a class="spark-card{% if c.up %} is-up-card{% else %} is-down-card{% endif %}"
+   href="/s/{{ c.ticker|urlencode }}" data-ticker="{{ c.ticker }}">
+  <div class="spark-card__head">
+    <span class="spark-card__sym">{{ c.ticker }}</span>
+    <span class="spark-card__name">{{ c.name }}</span>
+  </div>
+  {% if c.spark %}
+  <svg class="spark" viewBox="0 0 100 36" preserveAspectRatio="none"
+       data-lo="{{ c.spark.lo }}" data-hi="{{ c.spark.hi }}" aria-hidden="true">
+    <polygon class="spark__area" points="{{ c.spark.area }}"/>
+    {% if c.spark.baseline is not none %}
+    <line class="spark__base" x1="0" x2="100" y1="{{ c.spark.baseline }}" y2="{{ c.spark.baseline }}"/>
+    {% endif %}
+    <polyline class="spark__line" points="{{ c.spark.line }}"/>
+  </svg>
+  {% else %}
+  <div class="spark spark--empty">no intraday data</div>
+  {% endif %}
+  <div class="spark-card__foot">
+    <span class="spark-card__price num" data-field="price">{{ c.price|money }}</span>
+    <span class="spark-card__chg num{% if c.change_pct is none %} is-flat{% elif c.change_pct >= 0 %} is-up{% else %} is-down{% endif %}" data-field="change_pct">{{ c.change_pct|pct }}</span>
+  </div>
+</a>
+{% endmacro %}
+
+{# `mover_row` renders one gainer/loser row. The `--bar` custom property sizes
+   a soft magnitude tint behind the row, scaled by the route. #}
+{% macro mover_row(m) %}
+<a class="mover {{ 'mover--up' if m.change_pct >= 0 else 'mover--down' }}"
+   href="/s/{{ m.ticker|urlencode }}" style="--bar: {{ m.bar }}%">
+  <span class="mover__sym num">{{ m.ticker }}</span>
+  <span class="mover__name">{{ m.name }}</span>
+  <span class="mover__price num">{{ m.price|money }}</span>
+  <span class="mover__chg num {{ 'is-up' if m.change_pct >= 0 else 'is-down' }}">{{ m.change_pct|pct }}</span>
+</a>
+{% endmacro %}

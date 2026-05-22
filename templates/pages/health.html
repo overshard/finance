@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Data health{% endblock %}
+{% block description %}Live status of the background data jobs, the endpoint guards, and the fetch log.{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ vite_asset('static_src/health/index.js', 'css') }}">{% endblock %}
+
+{% block main %}
+<div class="wrap">
+  <div class="page-head">
+    <h1>Data health</h1>
+    <span class="health-asof" data-role="asof"></span>
+  </div>
+  <p class="health-lede">
+    Every background fetch this app makes, laid open: each upstream's request
+    guard and hourly budget, what each scheduler job is doing, and a live tail
+    of the fetch log.
+  </p>
+
+  {# Shown only while a job is fetching; the page script toggles `hidden`. #}
+  <div class="health-banner" data-role="banner" hidden></div>
+
+  <h2 class="section-title">Endpoints</h2>
+  <div data-role="endpoints"></div>
+
+  <h2 class="section-title">Background jobs</h2>
+  <div data-role="jobs"></div>
+
+  <h2 class="section-title">Activity log</h2>
+  <div data-role="log"></div>
+
+  {# Initial snapshot, rendered by the page script on load so there is no
+     flash; `<`/`>`/`&` are pre-escaped to \uXXXX (see routes::health). #}
+  <script type="application/json" id="health-data">{{ health_json|safe }}</script>
+</div>
+{% endblock %}
+
+{% block extra_js %}<script type="module" src="{{ vite_asset('static_src/health/index.js') }}"></script>{% endblock %}

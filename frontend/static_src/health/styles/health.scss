@@ -1,0 +1,267 @@
+@use "../../base/styles/variables" as *;
+@use "../../base/styles/mixins" as *;
+
+/* ---------- page intro ---------- */
+.health-lede {
+  max-width: 64ch;
+  margin: 10px 0 2px;
+  color: var(--ink-dim);
+  font-size: 0.9rem;
+}
+
+.health-asof {
+  @include eyebrow;
+  font-size: 0.6rem;
+}
+
+/* ---------- "fetching now" banner ---------- */
+.health-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0 2px;
+  padding: 11px 14px;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--warn-soft);
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+
+/* `.health-banner` sets display:flex, which would override the [hidden]
+   attribute's display:none — so re-assert it explicitly. */
+.health-banner[hidden] {
+  display: none;
+}
+
+.health-banner__dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--warn);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+/* ---------- status badge ---------- */
+.badge {
+  @include eyebrow;
+  flex: none;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.56rem;
+}
+
+.badge--ok {
+  color: var(--up);
+  background: var(--up-soft);
+}
+
+.badge--bad {
+  color: var(--down);
+  background: var(--down-soft);
+}
+
+.badge--warn {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.badge--idle {
+  color: var(--ink-faint);
+  background: var(--well);
+}
+
+/* ---------- endpoints ---------- */
+.endpoint-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.endpoint {
+  @include card;
+  padding: 16px;
+}
+
+.endpoint__head,
+.job__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.endpoint__head h3,
+.job__id h3 {
+  font-size: 1rem;
+}
+
+/* request-budget meter */
+.meter {
+  margin: 16px 0 2px;
+}
+
+.meter__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 7px;
+}
+
+.meter__count {
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.meter__track {
+  height: 8px;
+}
+
+/* budget fill warms then reddens as the hourly ceiling nears */
+.track__fill--warn {
+  background: var(--warn);
+}
+
+.track__fill--bad {
+  background: var(--down);
+}
+
+.meter__note {
+  margin-top: 7px;
+  color: var(--ink-faint);
+  font-size: 0.74rem;
+}
+
+/* ---------- key-value rows (shared by endpoints and jobs) ---------- */
+.kvs {
+  margin-top: 12px;
+}
+
+.kv {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-top: 1px solid var(--rule);
+  font-size: 0.85rem;
+}
+
+.kv dt {
+  color: var(--ink-dim);
+}
+
+.kv dd {
+  font-weight: 600;
+  text-align: right;
+}
+
+.kv--err {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.kv--err dd {
+  font-weight: 400;
+  text-align: left;
+  color: var(--down);
+  word-break: break-word;
+}
+
+.kv--err .muted {
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+/* ---------- background jobs ---------- */
+.job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.job {
+  @include card;
+  padding: 14px 16px;
+}
+
+/* a job mid-fetch is rimmed in the working amber, echoing the banner */
+.job--active {
+  border-color: var(--warn);
+}
+
+.job__id p {
+  margin-top: 3px;
+  color: var(--ink-dim);
+  font-size: 0.8rem;
+}
+
+/* ---------- activity log ---------- */
+.log {
+  @include card;
+  padding: 2px 14px;
+}
+
+.logrows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.logrow {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 9px 0;
+  border-top: 1px solid var(--rule);
+  font-size: 0.84rem;
+}
+
+.logrow:first-child {
+  border-top: none;
+}
+
+.logrow__time {
+  color: var(--ink-faint);
+  font-size: 0.78rem;
+}
+
+.logrow__job {
+  min-width: 6ch;
+  font-weight: 600;
+}
+
+.logrow__detail {
+  flex: 1 1 14ch;
+  min-width: 0;
+  color: var(--ink-dim);
+}
+
+/* a failed fetch should catch the eye down the tail */
+.logrow--bad .logrow__detail {
+  color: var(--down);
+}
+
+.logrow__meta {
+  color: var(--ink-faint);
+  font-size: 0.76rem;
+}
+
+/* ---------- empty states ---------- */
+.health-empty {
+  @include card;
+  padding: 22px;
+  color: var(--ink-dim);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+/* ---------- desktop ---------- */
+@media (min-width: $bp-md) {
+  .logrow__job {
+    min-width: 9ch;
+  }
+}

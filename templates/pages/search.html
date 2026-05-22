@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Search{% endblock %}
+{% block description %}Search and browse every stock, ETF, index, and future this app tracks.{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ vite_asset('static_src/search/index.js', 'css') }}">{% endblock %}
+
+{% block main %}
+<div class="wrap">
+  <div class="page-head">
+    <h1>Search</h1>
+    {% if q %}
+    <span class="search-count">{{ result_count }} match{{ '' if result_count == 1 else 'es' }}</span>
+    {% else %}
+    <span class="search-count">{{ result_count }} symbol{{ '' if result_count == 1 else 's' }}</span>
+    {% endif %}
+  </div>
+
+  <form class="searchbar" action="/search" method="get" role="search">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search by ticker or company name"
+           autocomplete="off" autofocus aria-label="Search symbols">
+    {# Keep the active kind filter when the text query is resubmitted. #}
+    <input type="hidden" name="kind" value="{{ kind }}">
+    <button type="submit" class="btn btn--accent">Search</button>
+  </form>
+
+  <div class="kind-filter" role="group" aria-label="Filter by kind">
+    {% for opt in [
+      {"value": "",       "label": "All"},
+      {"value": "index",  "label": "Indexes"},
+      {"value": "future", "label": "Futures"},
+      {"value": "etf",    "label": "ETFs"},
+      {"value": "stock",  "label": "Stocks"}
+    ] %}
+    <a class="kind-pill{% if opt.value == kind %} is-active{% endif %}"
+       href="/search?q={{ q|urlencode }}{% if opt.value %}&kind={{ opt.value }}{% endif %}">{{ opt.label }}</a>
+    {% endfor %}
+  </div>
+
+  {% if show_add %}
+  <div class="add-panel">
+    <div class="add-panel__text">
+      <p class="add-panel__title">Not tracking <span class="num">{{ add_ticker }}</span> yet</p>
+      <p class="add-panel__sub">Add it, and its quote, deep price history, and (for stocks)
+         SEC fundamentals all sync automatically.</p>
+    </div>
+    <button type="button" class="btn btn--accent" data-add-ticker="{{ add_ticker }}">Add {{ add_ticker }}</button>
+    <p class="add-panel__error" data-role="add-error" hidden></p>
+  </div>
+  {% endif %}
+
+  {% if results %}
+  {% from "includes/macros.html" import ticker_card %}
+  <div class="ticker-grid search-grid">
+    {% for c in results %}{{ ticker_card(c) }}{% endfor %}
+  </div>
+  {% elif q %}
+  <section class="empty empty--search">
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+      <circle cx="27" cy="27" r="18" stroke="currentColor" stroke-width="3.5"/>
+      <line x1="40" y1="40" x2="56" y2="56" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/>
+    </svg>
+    <h1>No matches for &ldquo;{{ q }}&rdquo;</h1>
+    <p>{% if show_add %}Use the button above to start tracking it.{% else %}Try a different ticker or company name.{% endif %}</p>
+  </section>
+  {% else %}
+  <section class="empty">
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+      <polyline points="4,44 18,30 28,38 44,14 52,24 60,12" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="60" cy="12" r="3.6" fill="currentColor"/>
+    </svg>
+    <h1>The market universe is empty</h1>
+    <p>No symbols are seeded yet. Run <code>make seed</code> to import the curated
+       starter list, or add a symbol by searching for its ticker above.</p>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}<script type="module" src="{{ vite_asset('static_src/search/index.js') }}"></script>{% endblock %}

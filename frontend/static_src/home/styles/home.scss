@@ -1,0 +1,250 @@
+@use "../../base/styles/variables" as *;
+@use "../../base/styles/mixins" as *;
+
+/* ============================================================================
+   Markets dashboard (Phase 11)
+
+   An opinionated, no-customization read of the market: a row of intraday
+   sparkline cards for the indexes and headline commodities, then the day's
+   biggest movers among the curated large-cap stocks.
+   ========================================================================== */
+
+/* ---------- "browse all" link beside the page heading ---------- */
+.page-head__link {
+  font-size: 0.82rem;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+
+.page-head__link::after {
+  content: " \2192"; /* → */
+}
+
+.page-head__link:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ---------- sparkline cards ---------- */
+.spark-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
+  gap: 11px;
+}
+
+.spark-card {
+  @include card;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 13px 14px;
+  color: var(--ink);
+  transition: border-color 0.14s, transform 0.14s, box-shadow 0.14s;
+}
+
+.spark-card:hover {
+  color: var(--ink);
+  border-color: var(--rule-strong);
+  transform: translateY(-2px);
+  box-shadow: var(--lift-hover);
+}
+
+.spark-card__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.spark-card__sym {
+  @include mono;
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.spark-card__name {
+  font-size: 0.73rem;
+  color: var(--ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* the sparkline svg is stretched to the card width (preserveAspectRatio
+   none); strokes keep a constant screen weight via non-scaling-stroke. */
+.spark {
+  display: block;
+  width: 100%;
+  height: 46px;
+}
+
+.spark__line {
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.spark__area {
+  stroke: none;
+}
+
+/* faint dashed rule at the previous close, so above/below reads at a glance */
+.spark__base {
+  stroke: var(--ink-faint);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+  opacity: 0.7;
+  vector-effect: non-scaling-stroke;
+}
+
+.is-up-card .spark__line {
+  stroke: var(--up);
+}
+.is-up-card .spark__area {
+  fill: var(--up-soft);
+}
+.is-down-card .spark__line {
+  stroke: var(--down);
+}
+.is-down-card .spark__area {
+  fill: var(--down-soft);
+}
+
+.spark--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 46px;
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+}
+
+.spark-card__foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--rule);
+}
+
+.spark-card__price {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.spark-card__chg {
+  font-size: 0.81rem;
+  font-weight: 600;
+}
+
+/* update flash, toggled by the live stream client (mirrors .ticker-card) */
+.spark-card.flash-up {
+  animation: flash-up 0.7s ease-out;
+}
+.spark-card.flash-down {
+  animation: flash-down 0.7s ease-out;
+}
+
+/* ---------- movers panels ---------- */
+.movers {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.movers__panel {
+  @include card;
+  padding: 6px 14px 8px;
+}
+
+.movers__title {
+  @include eyebrow;
+  display: block;
+  padding: 12px 4px 8px;
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+.movers__empty {
+  color: var(--ink-faint);
+  font-size: 0.82rem;
+  padding: 16px 4px;
+}
+
+.mover {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 6px;
+  color: var(--ink);
+  border-bottom: 1px solid var(--rule);
+}
+
+.mover:last-child {
+  border-bottom: 0;
+}
+
+/* a soft magnitude tint behind the row: width set by the route via --bar.
+   A pseudo-element keeps it independent of the hover background. */
+.mover::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--bar, 0%);
+  border-radius: var(--radius-sm);
+}
+
+.mover--up::before {
+  background: var(--up-soft);
+}
+
+.mover--down::before {
+  background: var(--down-soft);
+}
+
+.mover > * {
+  position: relative; /* sit above the magnitude tint */
+}
+
+.mover:hover {
+  color: var(--ink);
+  background: var(--well);
+}
+
+.mover__sym {
+  font-weight: 700;
+  font-size: 0.86rem;
+}
+
+.mover__name {
+  font-size: 0.78rem;
+  color: var(--ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mover__price {
+  font-size: 0.82rem;
+  color: var(--ink-dim);
+}
+
+.mover__chg {
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-align: right;
+  min-width: 4.4ch;
+}
+
+/* ---------- desktop layering ---------- */
+@media (min-width: $bp-md) {
+  .movers {
+    grid-template-columns: 1fr 1fr;
+  }
+}

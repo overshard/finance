@@ -1,0 +1,608 @@
+@use "variables" as *;
+@use "mixins" as *;
+
+/* ---------- runtime theme tokens ---------- */
+/* "Paper Ledger": an accounting ledger reimagined modern. Warm paper, ink
+   text, hairline rules, monospace figures. Color is semantic only —
+   green/amber/red mean good/ok/bad, never decoration. */
+:root {
+  --paper:      #f0ece1; /* page background — warm light */
+  --paper-edge: #e7e1d2; /* topbar/footer wash, slightly deeper */
+  --surface:    #faf8f1; /* raised cards — a lighter sheet */
+  --well:       #e6e0d0; /* sunken wells: meter tracks, inputs */
+
+  --ink:       #211f1a; /* primary text — warm near-black */
+  --ink-dim:   #6b6456; /* secondary text */
+  --ink-faint: #978f7c; /* tertiary text, eyebrows, placeholders */
+
+  --rule:        rgba(33, 31, 26, 0.14); /* hairline */
+  --rule-strong: rgba(33, 31, 26, 0.32); /* emphasised divider */
+
+  /* semantic — good / ok / bad */
+  --up:        #2f7d4f;
+  --down:      #b23b32;
+  --warn:      #b3801f;
+  --up-soft:   rgba(47, 125, 79, 0.14);
+  --down-soft: rgba(178, 59, 50, 0.14);
+  --warn-soft: rgba(179, 128, 31, 0.14);
+
+  --lift:       0 1px 2px rgba(33, 31, 26, 0.05);
+  --lift-hover: 0 5px 16px rgba(33, 31, 26, 0.11);
+
+  --radius:    8px;
+  --radius-sm: 6px;
+
+  --font-serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --font-ui:    "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono:  "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+}
+
+/* ---------- reset ---------- */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+* {
+  margin: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  font-family: var(--font-ui);
+  color: var(--ink);
+  background: var(--paper);
+  min-height: 100dvh;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3 {
+  @include serif;
+  line-height: 1.2;
+}
+
+a {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--ink-dim);
+}
+
+input,
+button {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--well);
+  padding: 0.12em 0.4em;
+  border-radius: 4px;
+}
+
+/* ---------- shared bits ---------- */
+.wrap {
+  max-width: $bp-lg;
+  margin: 0 auto;
+  padding: 20px 16px 0;
+}
+
+.num {
+  @include mono;
+}
+
+/* semantic price-move colors */
+.is-up {
+  color: var(--up);
+}
+
+.is-down {
+  color: var(--down);
+}
+
+.is-flat {
+  color: var(--ink-dim);
+}
+
+.eyebrow {
+  @include eyebrow;
+}
+
+.panel {
+  @include card;
+  padding: 18px;
+}
+
+/* ---------- meter primitives (shared) ---------- */
+/* A sunken rail used for range bars and proportion bars across the app:
+   .track holds an optional left-anchored .track__fill and absolutely
+   positioned .track__pip markers. Reused by later phases. */
+.track {
+  position: relative;
+  background: var(--well);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+}
+
+.track__fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: var(--ink-dim);
+  border-radius: 999px;
+}
+
+.track__pip {
+  position: absolute;
+  top: 50%;
+  width: 2px;
+  height: 168%;
+  transform: translate(-50%, -50%);
+  background: var(--ink);
+  border-radius: 1px;
+}
+
+/* a labelled tick: small dot head so a marker reads even on a thin rail */
+.track__pip::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -5px;
+  width: 9px;
+  height: 9px;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: inherit;
+  border: 2px solid var(--surface);
+}
+
+.track__pip--ghost {
+  background: var(--ink-faint);
+}
+
+.track__pip--up {
+  background: var(--up);
+}
+
+.track__pip--down {
+  background: var(--down);
+}
+
+/* ---------- buttons ---------- */
+.btn {
+  @include tap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--rule-strong);
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.btn:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.btn--accent {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  font-weight: 600;
+}
+
+.btn--accent:hover {
+  background: var(--ink-dim);
+  border-color: var(--ink-dim);
+  color: var(--paper);
+}
+
+/* ---------- topbar ---------- */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: rgba(240, 236, 225, 0.92);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+.topbar__inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  max-width: $bp-lg;
+  margin: 0 auto;
+  padding: 11px 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ink);
+}
+
+.brand:hover {
+  color: var(--ink);
+}
+
+.brand svg {
+  width: 27px;
+  height: 27px;
+  color: var(--ink);
+}
+
+.brand__name {
+  @include serif;
+  font-size: 1.14rem;
+  letter-spacing: -0.01em;
+}
+
+.search {
+  order: 3;
+  flex: 1 1 100%;
+}
+
+.search input {
+  width: 100%;
+  @include tap;
+  padding: 0 14px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.search input::placeholder {
+  color: var(--ink-faint);
+}
+
+.search input:focus {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px var(--well);
+}
+
+.topnav {
+  display: none;
+  gap: 2px;
+}
+
+.topnav a {
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-dim);
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+}
+
+.topnav a:hover {
+  color: var(--ink);
+  background: var(--paper-edge);
+}
+
+.topnav a.is-active {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+  border-radius: 0;
+}
+
+/* ---------- status pill ---------- */
+.statuspill {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--rule-strong);
+  background: var(--surface);
+  font-size: 0.78rem;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+
+.statuspill__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+
+.statuspill[data-state="ok"] .statuspill__dot,
+.statuspill[data-state="connected"] .statuspill__dot {
+  background: var(--up);
+}
+
+.statuspill[data-state="fetching"] .statuspill__dot {
+  background: var(--warn);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.statuspill[data-state="stale"] .statuspill__dot {
+  background: var(--warn);
+}
+
+.statuspill[data-state="error"] .statuspill__dot {
+  background: var(--down);
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+/* ---------- bottom nav (phones) ---------- */
+.bottomnav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  display: flex;
+  background: rgba(231, 225, 210, 0.97);
+  backdrop-filter: blur(10px);
+  border-top: 1px solid var(--rule-strong);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.bottomnav a {
+  flex: 1;
+  @include tap;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px 0;
+  color: var(--ink-faint);
+  font-size: 0.68rem;
+  font-weight: 500;
+}
+
+.bottomnav a svg {
+  width: 21px;
+  height: 21px;
+}
+
+.bottomnav a.is-active {
+  color: var(--ink);
+}
+
+/* ---------- main + footer ---------- */
+main {
+  padding-bottom: 84px;
+  min-height: 62dvh;
+}
+
+.footer {
+  border-top: 1px solid var(--rule);
+  background: var(--paper-edge);
+  margin-top: 52px;
+  padding: 22px 16px;
+  color: var(--ink-faint);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.footer a {
+  color: var(--ink-dim);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ---------- empty state ---------- */
+.empty {
+  @include card;
+  text-align: center;
+  padding: 56px 24px;
+  margin-top: 28px;
+}
+
+.empty svg {
+  width: 52px;
+  height: 52px;
+  color: var(--ink-faint);
+}
+
+.empty h1 {
+  font-size: 1.5rem;
+  margin-top: 16px;
+}
+
+.empty p {
+  color: var(--ink-dim);
+  max-width: 48ch;
+  margin: 10px auto 0;
+}
+
+.empty p a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ---------- page heading ---------- */
+.page-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 4px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+.page-head h1 {
+  font-size: 1.6rem;
+}
+
+/* ---------- section title ---------- */
+/* A ledger column-header: eyebrow text with a hairline rule trailing off. */
+.section-title {
+  @include eyebrow;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 30px 0 13px;
+}
+
+.section-title::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--rule);
+}
+
+/* ---------- ticker grid + card ---------- */
+.ticker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+  gap: 11px;
+}
+
+.ticker-card {
+  @include card;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 13px 14px;
+  color: var(--ink);
+  transition: border-color 0.14s, transform 0.14s, box-shadow 0.14s;
+}
+
+.ticker-card:hover {
+  color: var(--ink);
+  border-color: var(--rule-strong);
+  transform: translateY(-2px);
+  box-shadow: var(--lift-hover);
+}
+
+.ticker-card__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ticker-card__sym {
+  @include mono;
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.ticker-card__kind {
+  @include eyebrow;
+  font-size: 0.55rem;
+}
+
+.ticker-card__name {
+  font-size: 0.79rem;
+  color: var(--ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ticker-card__foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--rule);
+}
+
+.ticker-card__price {
+  font-size: 0.96rem;
+  font-weight: 600;
+}
+
+.ticker-card__chg {
+  font-size: 0.81rem;
+  font-weight: 600;
+}
+
+/* update flash, toggled by the live stream client (Phase 5) */
+.ticker-card.flash-up {
+  animation: flash-up 0.7s ease-out;
+}
+
+.ticker-card.flash-down {
+  animation: flash-down 0.7s ease-out;
+}
+
+@keyframes flash-up {
+  0% {
+    background: var(--up-soft);
+  }
+  100% {
+    background: var(--surface);
+  }
+}
+
+@keyframes flash-down {
+  0% {
+    background: var(--down-soft);
+  }
+  100% {
+    background: var(--surface);
+  }
+}
+
+/* ---------- desktop layering ---------- */
+@media (min-width: $bp-md) {
+  .search {
+    order: 0;
+    flex: 1 1 auto;
+    max-width: 420px;
+    margin: 0 6px;
+  }
+
+  .topnav {
+    display: flex;
+  }
+
+  .bottomnav {
+    display: none;
+  }
+
+  main {
+    padding-bottom: 32px;
+  }
+
+  .wrap {
+    padding-top: 26px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

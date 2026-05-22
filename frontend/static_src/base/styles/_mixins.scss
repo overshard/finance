@@ -1,0 +1,40 @@
+// Paper Ledger build-time mixins. Runtime theme tokens (CSS custom
+// properties) live in base.scss :root so they emit exactly once per page.
+
+// A raised paper card: a lighter sheet over the page, hemmed by a hairline
+// rule. Flat by design; the faint shadow only lifts it off the paper.
+@mixin card {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  box-shadow: var(--lift);
+}
+
+// Tabular monospace figures so columns of ledger numbers line up.
+@mixin mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+// Serif, for headings only.
+@mixin serif {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+// Minimum comfortable touch target on phones.
+@mixin tap {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+// Letter-spaced uppercase label, the ledger column-header voice.
+@mixin eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  font-size: 0.66rem;
+  font-weight: 600;
+  color: var(--ink-faint);
+}

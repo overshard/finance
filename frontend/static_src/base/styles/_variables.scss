@@ -1,0 +1,7 @@
+// SCSS build-time tokens. The runtime theme tokens (CSS custom properties)
+// live in base.scss :root so they are emitted exactly once across entries.
+
+// breakpoints: phone-first, larger sizes layer on
+$bp-sm: 560px;
+$bp-md: 820px;
+$bp-lg: 1120px;

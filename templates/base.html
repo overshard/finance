@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{% block title %}{{ title }}{% endblock %} · {{ site.title }}</title>
+  <meta name="description" content="{% block description %}Track stocks, ETFs, and indexes with live charts, fundamentals, and SEC filings.{% endblock %}">
+  {% if base_url %}<base href="{{ base_url }}">{% endif %}
+  <meta name="theme-color" content="#f0ece1">
+  <link rel="icon" type="image/svg+xml" href="/favicon.ico">
+  {% block extra_head %}{% endblock %}
+  <link rel="stylesheet" href="{{ vite_asset('static_src/base/index.js', 'css') }}">
+  {% block extra_css %}{% endblock %}
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar__inner">
+      <a class="brand" href="/">
+        {# Paper Ledger mark: a rising figures line over the accountant's
+           double underline (the ledger sign for a finalized total). #}
+        <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <polyline points="4,20 12,14 19,17 28,7" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="28" cy="7" r="2" fill="currentColor"/>
+          <line x1="4" y1="26" x2="28" y2="26" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="4" y1="30" x2="28" y2="30" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <span class="brand__name">{{ site.title }}</span>
+      </a>
+      <form class="search" action="/search" method="get" role="search">
+        <input type="search" name="q" placeholder="Search ticker or company" autocomplete="off" aria-label="Search">
+      </form>
+      <nav class="topnav">
+        <a href="/"{% if request.path == '/' %} class="is-active"{% endif %}>Markets</a>
+        <a href="/search"{% if request.path == '/search' %} class="is-active"{% endif %}>Search</a>
+      </nav>
+      {% include "includes/status_indicator.html" %}
+    </div>
+  </header>
+
+  <main>
+    {% block main %}{% endblock %}
+  </main>
+
+  <nav class="bottomnav">
+    <a href="/"{% if request.path == '/' %} class="is-active"{% endif %}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19V11M10 19V5M16 19v-6M21 19H3"/></svg>
+      <span>Markets</span>
+    </a>
+    <a href="/search"{% if request.path == '/search' %} class="is-active"{% endif %}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <span>Search</span>
+    </a>
+  </nav>
+
+  <footer class="footer">
+    <p>{{ site.title }} · data from Stooq, Yahoo Finance, and SEC EDGAR · prices are delayed · <a href="/health">data health</a> · &copy; {{ now.year }}</p>
+  </footer>
+
+  <script type="module" src="{{ vite_asset('static_src/base/index.js') }}"></script>
+  {% block extra_js %}{% endblock %}
+</body>
+</html>

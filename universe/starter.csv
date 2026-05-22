@@ -1,0 +1,154 @@
+ticker,name,kind,exchange
+^SPX,S&P 500,index,
+^DJI,Dow Jones Industrial Average,index,
+^NDX,Nasdaq 100,index,
+^NDQ,Nasdaq Composite,index,
+^RUT,Russell 2000,index,
+^VIX,CBOE Volatility Index,index,
+SPY,SPDR S&P 500 ETF Trust,etf,NYSEARCA
+VOO,Vanguard S&P 500 ETF,etf,NYSEARCA
+IVV,iShares Core S&P 500 ETF,etf,NYSEARCA
+VTI,Vanguard Total Stock Market ETF,etf,NYSEARCA
+QQQ,Invesco QQQ Trust,etf,NASDAQ
+DIA,SPDR Dow Jones Industrial Average ETF,etf,NYSEARCA
+IWM,iShares Russell 2000 ETF,etf,NYSEARCA
+VEA,Vanguard FTSE Developed Markets ETF,etf,NYSEARCA
+VWO,Vanguard FTSE Emerging Markets ETF,etf,NYSEARCA
+VUG,Vanguard Growth ETF,etf,NYSEARCA
+VTV,Vanguard Value ETF,etf,NYSEARCA
+SCHD,Schwab US Dividend Equity ETF,etf,NYSEARCA
+VIG,Vanguard Dividend Appreciation ETF,etf,NYSEARCA
+VYM,Vanguard High Dividend Yield ETF,etf,NYSEARCA
+VXUS,Vanguard Total International Stock ETF,etf,NASDAQ
+BND,Vanguard Total Bond Market ETF,etf,NASDAQ
+AGG,iShares Core US Aggregate Bond ETF,etf,NYSEARCA
+TLT,iShares 20+ Year Treasury Bond ETF,etf,NASDAQ
+GLD,SPDR Gold Shares,etf,NYSEARCA
+SLV,iShares Silver Trust,etf,NYSEARCA
+XLK,Technology Select Sector SPDR Fund,etf,NYSEARCA
+XLF,Financial Select Sector SPDR Fund,etf,NYSEARCA
+XLE,Energy Select Sector SPDR Fund,etf,NYSEARCA
+XLV,Health Care Select Sector SPDR Fund,etf,NYSEARCA
+SMH,VanEck Semiconductor ETF,etf,NASDAQ
+ARKK,ARK Innovation ETF,etf,NYSEARCA
+EFA,iShares MSCI EAFE ETF,etf,NYSEARCA
+EEM,iShares MSCI Emerging Markets ETF,etf,NYSEARCA
+AAPL,Apple Inc.,stock,NASDAQ
+MSFT,Microsoft Corporation,stock,NASDAQ
+NVDA,NVIDIA Corporation,stock,NASDAQ
+AMZN,Amazon.com Inc.,stock,NASDAQ
+GOOGL,Alphabet Inc. Class A,stock,NASDAQ
+GOOG,Alphabet Inc. Class C,stock,NASDAQ
+META,Meta Platforms Inc.,stock,NASDAQ
+TSLA,Tesla Inc.,stock,NASDAQ
+BRK.B,Berkshire Hathaway Inc. Class B,stock,NYSE
+AVGO,Broadcom Inc.,stock,NASDAQ
+ORCL,Oracle Corporation,stock,NYSE
+JPM,JPMorgan Chase & Co.,stock,NYSE
+V,Visa Inc.,stock,NYSE
+MA,Mastercard Incorporated,stock,NYSE
+LLY,Eli Lilly and Company,stock,NYSE
+UNH,UnitedHealth Group Incorporated,stock,NYSE
+JNJ,Johnson & Johnson,stock,NYSE
+XOM,Exxon Mobil Corporation,stock,NYSE
+CVX,Chevron Corporation,stock,NYSE
+WMT,Walmart Inc.,stock,NYSE
+PG,Procter & Gamble Company,stock,NYSE
+HD,Home Depot Inc.,stock,NYSE
+COST,Costco Wholesale Corporation,stock,NASDAQ
+ABBV,AbbVie Inc.,stock,NYSE
+MRK,Merck & Co. Inc.,stock,NYSE
+PEP,PepsiCo Inc.,stock,NASDAQ
+KO,Coca-Cola Company,stock,NYSE
+BAC,Bank of America Corporation,stock,NYSE
+CRM,Salesforce Inc.,stock,NYSE
+ADBE,Adobe Inc.,stock,NASDAQ
+AMD,Advanced Micro Devices Inc.,stock,NASDAQ
+NFLX,Netflix Inc.,stock,NASDAQ
+DIS,Walt Disney Company,stock,NYSE
+TMO,Thermo Fisher Scientific Inc.,stock,NYSE
+ABT,Abbott Laboratories,stock,NYSE
+ACN,Accenture plc,stock,NYSE
+LIN,Linde plc,stock,NASDAQ
+MCD,McDonald's Corporation,stock,NYSE
+CSCO,Cisco Systems Inc.,stock,NASDAQ
+INTC,Intel Corporation,stock,NASDAQ
+QCOM,QUALCOMM Incorporated,stock,NASDAQ
+TXN,Texas Instruments Incorporated,stock,NASDAQ
+IBM,International Business Machines Corporation,stock,NYSE
+NOW,ServiceNow Inc.,stock,NYSE
+INTU,Intuit Inc.,stock,NASDAQ
+AMAT,Applied Materials Inc.,stock,NASDAQ
+MU,Micron Technology Inc.,stock,NASDAQ
+LRCX,Lam Research Corporation,stock,NASDAQ
+ADI,Analog Devices Inc.,stock,NASDAQ
+PANW,Palo Alto Networks Inc.,stock,NASDAQ
+CRWD,CrowdStrike Holdings Inc.,stock,NASDAQ
+SNOW,Snowflake Inc.,stock,NYSE
+PLTR,Palantir Technologies Inc.,stock,NASDAQ
+NET,Cloudflare Inc.,stock,NYSE
+DDOG,Datadog Inc.,stock,NASDAQ
+UBER,Uber Technologies Inc.,stock,NYSE
+ABNB,Airbnb Inc.,stock,NASDAQ
+SHOP,Shopify Inc.,stock,NYSE
+WFC,Wells Fargo & Company,stock,NYSE
+GS,Goldman Sachs Group Inc.,stock,NYSE
+MS,Morgan Stanley,stock,NYSE
+C,Citigroup Inc.,stock,NYSE
+BLK,BlackRock Inc.,stock,NYSE
+SCHW,Charles Schwab Corporation,stock,NYSE
+AXP,American Express Company,stock,NYSE
+BX,Blackstone Inc.,stock,NYSE
+SPGI,S&P Global Inc.,stock,NYSE
+PFE,Pfizer Inc.,stock,NYSE
+DHR,Danaher Corporation,stock,NYSE
+BMY,Bristol-Myers Squibb Company,stock,NYSE
+AMGN,Amgen Inc.,stock,NASDAQ
+GILD,Gilead Sciences Inc.,stock,NASDAQ
+CVS,CVS Health Corporation,stock,NYSE
+MDT,Medtronic plc,stock,NYSE
+ISRG,Intuitive Surgical Inc.,stock,NASDAQ
+LOW,Lowe's Companies Inc.,stock,NYSE
+NKE,NIKE Inc.,stock,NYSE
+SBUX,Starbucks Corporation,stock,NASDAQ
+TGT,Target Corporation,stock,NYSE
+PM,Philip Morris International Inc.,stock,NYSE
+MO,Altria Group Inc.,stock,NYSE
+MDLZ,Mondelez International Inc.,stock,NASDAQ
+CL,Colgate-Palmolive Company,stock,NYSE
+COP,ConocoPhillips,stock,NYSE
+SLB,Schlumberger Limited,stock,NYSE
+BA,Boeing Company,stock,NYSE
+CAT,Caterpillar Inc.,stock,NYSE
+DE,Deere & Company,stock,NYSE
+GE,GE Aerospace,stock,NYSE
+HON,Honeywell International Inc.,stock,NASDAQ
+UPS,United Parcel Service Inc.,stock,NYSE
+FDX,FedEx Corporation,stock,NYSE
+LMT,Lockheed Martin Corporation,stock,NYSE
+RTX,RTX Corporation,stock,NYSE
+MMM,3M Company,stock,NYSE
+UNP,Union Pacific Corporation,stock,NYSE
+T,AT&T Inc.,stock,NYSE
+VZ,Verizon Communications Inc.,stock,NYSE
+TMUS,T-Mobile US Inc.,stock,NASDAQ
+CMCSA,Comcast Corporation,stock,NASDAQ
+F,Ford Motor Company,stock,NYSE
+GM,General Motors Company,stock,NYSE
+RIVN,Rivian Automotive Inc.,stock,NASDAQ
+COIN,Coinbase Global Inc.,stock,NASDAQ
+HOOD,Robinhood Markets Inc.,stock,NASDAQ
+SOFI,SoFi Technologies Inc.,stock,NASDAQ
+MSTR,Strategy Incorporated,stock,NASDAQ
+DELL,Dell Technologies Inc.,stock,NYSE
+MRVL,Marvell Technology Inc.,stock,NASDAQ
+SMCI,Super Micro Computer Inc.,stock,NASDAQ
+ES=F,S&P 500 E-Mini Futures,future,CME
+NQ=F,Nasdaq 100 E-Mini Futures,future,CME
+YM=F,Dow E-Mini Futures,future,CME
+CL=F,Crude Oil Futures (WTI),future,NYMEX
+BZ=F,Brent Crude Oil Futures,future,NYMEX
+GC=F,Gold Futures,future,COMEX
+SI=F,Silver Futures,future,COMEX
+HG=F,Copper Futures,future,COMEX
+NG=F,Natural Gas Futures,future,NYMEX
