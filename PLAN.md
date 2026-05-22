@@ -42,7 +42,7 @@ https://finance.bythewood.me**. Phase 22 adds a consistent, quiet data-age
 caption across the whole app — the home dashboard, search, and every
 symbol-page data section, not just `/health` — see the Done list and the
 decisions log. Remaining post-MVP work: the loose-ordered Phase 13, 15, 16,
-17, 19 backlog.
+17, 19, 25, 26 backlog.
 
 **Roadmap (restructured 2026-05-22, see decisions log):** the home-page
 redesign and commodities are pre-ship MVP phases. Order: 9 Search +
@@ -760,10 +760,13 @@ schema, unused for now.
 to production (2026-05-22, commit `39a863e`). The MVP plus Phase 14,
 Phase 18, Phase 20, Phase 21, Phase 23 + 24 and Phase 22 are all live at
 https://finance.bythewood.me. No phase is in progress. Remaining post-MVP
-work: the loose-ordered Phase 13, 15, 16, 17, 19 backlog; the user picks
-which to take next. There is still no GitHub repo for finance: the user
-deferred that; if one is created later, add it as `origin` and the
-`overshard/finance` slug already in taproot's `projects.conf` lines up.
+work: the loose-ordered Phase 13, 15, 16, 17, 19, 25, 26 backlog; the user
+picks which to take next. A small Phase 9 bug fix (the `/search` "Add"
+affordance for short tickers like `W`) shipped 2026-05-22 alongside the
+backlog capture of Phases 25 and 26; see the decisions log. There is still
+no GitHub repo for finance: the user deferred that; if one is created
+later, add it as `origin` and the `overshard/finance` slug already in
+taproot's `projects.conf` lines up.
 
 Note: Phase 18 added the `quick-xml` crate (N-PORT XML streaming parser) and
 migration `0005`. A fresh `make run` applies `0005`; the ETF fund profiles
@@ -1143,6 +1146,61 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   currently shows a middle dot (`·`, the `DASH` const in `routes/symbols.rs`),
   which reads as a stray decimal point — the user noticed it on DELL. Replace
   it with an em dash (`—`) or a similar unambiguous "no data" mark.
+
+- [ ] **Phase 25: Earnings dates.** (Captured 2026-05-22 as a vibe-coding
+  side note.) Surface a stock's earnings rhythm on the symbol page and the
+  chart. Pieces:
+  (1) A small section showing the most recent earnings date with "N days
+  ago", the next expected earnings date with "N days from now", and a short
+  list of recent past earnings dates. Past dates come from the `filings`
+  table for free: 8-K item 2.02 (Results of Operations and Financial
+  Condition) is the SEC earnings press release, and Phase 14 already stores
+  8-K item codes in `filings.items`.
+  (2) The next expected date needs a forward source. Two options to settle
+  when built: Yahoo's `quoteSummary` calendarEvents module (a new path on
+  the yahoo provider, gated by the existing `yahoo` `EndpointGuard`), or
+  estimate it from the prior year's 8-K 2.02 cadence (no new endpoint, less
+  reliable when a company moves its reporting date).
+  (3) Earnings markers on the candlestick chart: a small pip or vertical
+  guide drawn on the bar for each past earnings date, so a large move that
+  followed an earnings print is explained at a glance. Uses
+  lightweight-charts' series-markers API; the dates come from the same 8-K
+  2.02 filings. Pip styling stays in the Paper Ledger ink palette, outside
+  the semantic green / amber / red set.
+  Stocks only (ETFs, indexes and futures have no earnings). A stock without
+  an SEC sync yet shows nothing extra. No schema change for pieces (1) and
+  (3); piece (2) may want a small `next_earnings_at` column on `symbols`
+  if it takes the Yahoo calendar path.
+
+- [ ] **Phase 26: Dividend payout history and pace.** (Captured 2026-05-22
+  as a vibe-coding side note alongside Phase 25.) On the symbol page,
+  surface the dividend cadence and how the current year is tracking against
+  the last. Pieces:
+  (1) A dividend history list: the per-share amount of each payout and its
+  ex-dividend or payment date, newest first. Source: Yahoo's chart endpoint
+  carries an `events.dividends` series alongside the price bars, with an
+  ex-div timestamp and an `amount` per event. The existing yahoo provider
+  fetches the chart for quotes already; this adds the `events` query
+  parameter and a small parser. SEC XBRL's quarterly `DividendsPerShare`
+  facts (already stored in `fundamentals`) are per fiscal period, not per
+  payout date, so they do not stand in.
+  (2) Calendar-year totals: total paid per share in the previous calendar
+  year, and total YTD in the current year, both summed from the dividend
+  events.
+  (3) An "on track" pace read: project the current year's total by scaling
+  YTD by the elapsed fraction of the year, compare to last year's total,
+  and report the % change with a semantic green / amber / red badge (rise
+  is good for dividends, matching the Phase 24 trend reading). Caveat: a
+  company with quarterly or semi-annual cadence looks ahead or behind pace
+  between payouts; either temper the projection by counting declared
+  payments vs the prior year's count, or label it conservatively.
+  (4) Ex-div pips on the candlestick chart, reusing the Phase 25 marker
+  layer with a different glyph or color so an earnings event and a dividend
+  event are distinguishable.
+  Stocks only. Schema: a `dividends` table keyed by (ticker, ex_date) with
+  the per-share amount, populated by a new scheduler section that pulls
+  each stock's dividend history through the `yahoo` `EndpointGuard` on a
+  slow cadence (weekly is enough; the data rarely changes).
 
 ---
 
@@ -1750,6 +1808,22 @@ finance/
   offer still shows only when the query matched nothing, or matched at least
   one result as a ticker substring (a name-only search such as `Inc` does not
   trigger it). The add panel can now render above a populated results grid.
+- **2026-05-22: two side notes captured as Phases 25 and 26.** While waiting
+  on the search-Add fix to deploy, the user floated two ideas: (1) earnings
+  dates on the symbol page (last and next, with days-to / days-since), and
+  a pip on the chart at each earnings date so a large move that followed
+  an earnings print is explained at a glance; (2) dividend payouts on the
+  symbol page (per-event date and amount, previous calendar year total and
+  current YTD total, plus an "on track" pace read against last year), with
+  ex-div pips on the chart sharing the Phase 25 marker layer. Past
+  earnings dates come for free from 8-K item 2.02 filings already stored
+  by Phase 14; the next-expected date needs a forward source (Yahoo
+  `quoteSummary` calendarEvents, or estimation from prior-year cadence)
+  and is left to settle at build time. Dividend payouts come from Yahoo
+  chart `events.dividends`; SEC XBRL's quarterly `DividendsPerShare` is
+  per fiscal period not per payout, so it does not stand in. Both are
+  stocks-only and budgeted as Phase 25 and Phase 26 in the post-MVP
+  backlog; no order or schedule attached.
 
 ---
 
