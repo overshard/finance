@@ -92,15 +92,61 @@ fn quote_state_label() -> &'static str {
 
 // ── fundamentals + filings (Phase 7) ──────────────────────────────────────
 
-/// Placeholder for a fundamentals cell the company did not report.
-const DASH: &str = "\u{00b7}";
+/// Placeholder glyph for a value the company did not report — an em dash, an
+/// unambiguous "no data" mark (a middle dot read as a stray decimal point).
+const DASH: &str = "\u{2014}";
 
-/// One row of a financials table: a metric label and its formatted value in
-/// each displayed period (`·` where the company reported nothing).
+/// Whether a period-over-period rise in a metric is good news, for the
+/// financials-table growth cue (PLAN.md Phase 24).
+#[derive(Clone, Copy)]
+enum Trend {
+    /// A rise reads as good: revenue, earnings, dividends.
+    RiseGood,
+    /// A rise reads as bad: liabilities.
+    RiseBad,
+    /// No good/bad reading — total assets and equity, where a rise can be
+    /// debt-funded or a fall can be a shareholder-friendly buyback. The cue
+    /// still shows the direction, just without a colour.
+    Neutral,
+}
+
+impl Trend {
+    /// How a rise vs the prior period reads: `good`, `bad`, or `` (no colour).
+    fn rise(self) -> &'static str {
+        match self {
+            Trend::RiseGood => "good",
+            Trend::RiseBad => "bad",
+            Trend::Neutral => "",
+        }
+    }
+    /// How a fall vs the prior period reads.
+    fn fall(self) -> &'static str {
+        match self {
+            Trend::RiseGood => "bad",
+            Trend::RiseBad => "good",
+            Trend::Neutral => "",
+        }
+    }
+}
+
+/// One cell of a financials table: a formatted figure and its period-over-
+/// period growth cue (PLAN.md Phase 24).
+#[derive(Serialize)]
+struct FundCell {
+    /// The formatted figure, or [`DASH`] where nothing was reported.
+    display: String,
+    /// Direction vs the column to its left: `up`, `down`, or `` (the first
+    /// column, a flat figure, or a missing value on either side).
+    dir: &'static str,
+    /// How that move reads for this metric: `good`, `bad`, or `` (no colour).
+    sense: &'static str,
+}
+
+/// One row of a financials table: a metric label and one cell per period.
 #[derive(Serialize)]
 struct FundRow {
     label: String,
-    cells: Vec<String>,
+    cells: Vec<FundCell>,
 }
 
 /// A financials table (annual or quarterly) as period columns and metric rows.
@@ -148,22 +194,24 @@ struct FilingRow {
 /// `false` for a per-share figure (shown as plain dollars, e.g. `$6.08`).
 /// `in_quarterly` is `false` for the balance-sheet rows: only the fiscal
 /// year-end balance is collected, so those rows appear in the annual table
-/// only (see `providers::sec::classify`).
+/// only (see `providers::sec::classify`). `trend` sets the period-over-period
+/// growth cue's good/bad reading (PLAN.md Phase 24).
 struct TableMetric {
     metric: &'static str,
     label: &'static str,
     is_money: bool,
     in_quarterly: bool,
+    trend: Trend,
 }
 
 const FUND_TABLE_METRICS: &[TableMetric] = &[
-    TableMetric { metric: "revenue", label: "Revenue", is_money: true, in_quarterly: true },
-    TableMetric { metric: "net_income", label: "Net income", is_money: true, in_quarterly: true },
-    TableMetric { metric: "eps_diluted", label: "Diluted EPS", is_money: false, in_quarterly: true },
-    TableMetric { metric: "dividends_per_share", label: "Dividend / share", is_money: false, in_quarterly: true },
-    TableMetric { metric: "assets", label: "Total assets", is_money: true, in_quarterly: false },
-    TableMetric { metric: "liabilities", label: "Total liabilities", is_money: true, in_quarterly: false },
-    TableMetric { metric: "equity", label: "Shareholder equity", is_money: true, in_quarterly: false },
+    TableMetric { metric: "revenue", label: "Revenue", is_money: true, in_quarterly: true, trend: Trend::RiseGood },
+    TableMetric { metric: "net_income", label: "Net income", is_money: true, in_quarterly: true, trend: Trend::RiseGood },
+    TableMetric { metric: "eps_diluted", label: "Diluted EPS", is_money: false, in_quarterly: true, trend: Trend::RiseGood },
+    TableMetric { metric: "dividends_per_share", label: "Dividend / share", is_money: false, in_quarterly: true, trend: Trend::RiseGood },
+    TableMetric { metric: "assets", label: "Total assets", is_money: true, in_quarterly: false, trend: Trend::Neutral },
+    TableMetric { metric: "liabilities", label: "Total liabilities", is_money: true, in_quarterly: false, trend: Trend::RiseBad },
+    TableMetric { metric: "equity", label: "Shareholder equity", is_money: true, in_quarterly: false, trend: Trend::Neutral },
 ];
 
 /// Format a whole-dollar figure compactly: `391035000000.0` -> `$391.0B`.
@@ -226,8 +274,10 @@ fn filing_title(form: &str) -> String {
 }
 
 /// Build one financials table for the given periods (each `(fiscal_year,
-/// period_label)`), pulling formatted cells from `lookup`. The quarterly table
-/// omits the balance-sheet rows, which are only collected per fiscal year.
+/// period_label)`, oldest first), pulling formatted cells from `lookup`. The
+/// quarterly table omits the balance-sheet rows, which are only collected per
+/// fiscal year. Each cell also carries a period-over-period growth cue
+/// (PLAN.md Phase 24), computed against the column to its left.
 fn fund_table(
     periods: &[(i64, String)],
     lookup: &HashMap<(String, String), f64>,
@@ -237,15 +287,28 @@ fn fund_table(
         .iter()
         .filter(|m| !quarterly || m.in_quarterly)
         .map(|m| {
+            // Walk periods oldest-first, carrying the prior period's value so
+            // each cell can be marked up / down against the one before it.
+            let mut prev: Option<f64> = None;
             let cells = periods
                 .iter()
-                .map(
-                    |(_, period)| match lookup.get(&(m.metric.to_string(), period.clone())) {
-                        Some(v) if m.is_money => fmt_usd_compact(*v),
-                        Some(v) => fmt_per_share(*v),
+                .map(|(_, period)| {
+                    let value = lookup
+                        .get(&(m.metric.to_string(), period.clone()))
+                        .copied();
+                    let display = match value {
+                        Some(v) if m.is_money => fmt_usd_compact(v),
+                        Some(v) => fmt_per_share(v),
                         None => DASH.to_string(),
-                    },
-                )
+                    };
+                    let (dir, sense) = match (prev, value) {
+                        (Some(p), Some(v)) if v > p => ("up", m.trend.rise()),
+                        (Some(p), Some(v)) if v < p => ("down", m.trend.fall()),
+                        _ => ("", ""),
+                    };
+                    prev = value;
+                    FundCell { display, dir, sense }
+                })
                 .collect();
             FundRow {
                 label: m.label.to_string(),
@@ -259,12 +322,63 @@ fn fund_table(
     }
 }
 
+/// The flow / per-share metrics whose Q4 can be derived as the full fiscal
+/// year minus its first three quarters. The balance-sheet metrics are excluded
+/// — a year-end balance is a snapshot, not a sum of quarters.
+const Q4_DERIVABLE: &[&str] = &["revenue", "net_income", "eps_diluted", "dividends_per_share"];
+
+/// Derive the missing Q4 facts. SEC XBRL carries no discrete fourth quarter:
+/// there is no Q4 10-Q, so Q4 lives only inside the 10-K's full-year figure.
+/// For every fiscal year with the full year and all three prior quarters
+/// present, Q4 is `FY - (Q1 + Q2 + Q3)` (PLAN.md Phase 23). Diluted EPS does
+/// not decompose perfectly — the diluted share count drifts quarter to quarter
+/// — but the residual is small and the plan calls for showing it.
+fn derive_q4(facts: &[models::FundFact]) -> Vec<models::FundFact> {
+    // (metric, fiscal_year) -> fiscal_qtr (None = full year) -> value.
+    let mut by: HashMap<(&str, i64), HashMap<Option<i64>, f64>> = HashMap::new();
+    for f in facts {
+        by.entry((f.metric.as_str(), f.fiscal_year))
+            .or_default()
+            .insert(f.fiscal_qtr, f.value);
+    }
+    let mut derived = Vec::new();
+    for ((metric, year), vals) in by {
+        // A genuine Q4 row (rare, but XBRL does carry a few) always wins.
+        if !Q4_DERIVABLE.contains(&metric) || vals.contains_key(&Some(4)) {
+            continue;
+        }
+        let (Some(&fy), Some(&q1), Some(&q2), Some(&q3)) = (
+            vals.get(&None),
+            vals.get(&Some(1)),
+            vals.get(&Some(2)),
+            vals.get(&Some(3)),
+        ) else {
+            continue;
+        };
+        derived.push(models::FundFact {
+            metric: metric.to_string(),
+            period: format!("Q4-{year}"),
+            fiscal_year: year,
+            fiscal_qtr: Some(4),
+            value: fy - q1 - q2 - q3,
+        });
+    }
+    derived
+}
+
 /// Assemble the fundamentals view from a company's stored facts plus the
 /// latest price. `None` when the company has no fundamentals stored yet.
 fn build_fundamentals(facts: &[models::FundFact], price: Option<f64>) -> Option<FundamentalsView> {
     if facts.is_empty() {
         return None;
     }
+
+    // SEC XBRL has no discrete Q4 (PLAN.md Phase 23); derive it and fold the
+    // derived rows in, so the quarterly periods and the cell lookup below pick
+    // them up exactly like a stored fact.
+    let derived = derive_q4(facts);
+    let facts: Vec<models::FundFact> = facts.iter().cloned().chain(derived).collect();
+    let facts: &[models::FundFact] = &facts;
 
     // (metric, period) -> value, for table-cell lookup.
     let mut lookup: HashMap<(String, String), f64> = HashMap::new();

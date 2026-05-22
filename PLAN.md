@@ -32,19 +32,17 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-22_
 
-**Current phase: none in progress. Phase 21 (Home & search refinements) is
-complete and verified, not yet deployed.** Phases 0 through 12 (the MVP) plus
-Phase 14 (company leadership), Phase 18 (ETF profiles) and Phase 20 (strongest
-& weakest home panels) are complete, verified, and **live in production at
-https://finance.bythewood.me**. Phase 21, three refinements to shipped
-features (the home page split into Indexes and Commodities sections with an
-index-futures swap off-hours, a synchronous full backfill on add-symbol, and
-search auto-navigation on a single result), was built and verified on
-2026-05-22 (see the Done list and the decisions log) and ships on the next
-`git push server master`. Remaining post-MVP work: the loose-ordered Phase 13,
-15, 16, 17, 19 backlog plus Phase 22 (show data age everywhere), Phase 23 (Q4
-in the quarterly financials table) and Phase 24 (financials table
-readability).
+**Current phase: none in progress. Phase 23 + 24 (financials table — Q4
+column and readability) is complete, verified, and deployed.** Phases 0
+through 12 (the MVP) plus Phase 14 (company leadership), Phase 18 (ETF
+profiles), Phase 20 (strongest & weakest home panels), Phase 21 (home &
+search refinements) and Phase 23 + 24 are complete, verified, and **live in
+production at https://finance.bythewood.me**. Phase 23 + 24 were built
+together as one financials-table pass on 2026-05-22 (see the Done list and
+the decisions log): a derived Q4 column in the quarterly table, per-cell
+period-over-period growth cues, and an em-dash missing-value glyph in place
+of the middle dot. Remaining post-MVP work: the loose-ordered Phase 13, 15,
+16, 17, 19 backlog plus Phase 22 (show data age everywhere).
 
 **Roadmap (restructured 2026-05-22, see decisions log):** the home-page
 redesign and commodities are pre-ship MVP phases. Order: 9 Search +
@@ -615,7 +613,7 @@ schema, unused for now.
     overflow and zero console errors. The sweep is paced and guarded — it
     backfills the universe over several daily `sec` cycles.
 
-- **Phase 21 home & search refinements.** Complete, verified, not yet deployed.
+- **Phase 21 home & search refinements.** Complete, verified, deployed to production.
   - Three independent refinements to already-shipped features.
   - **Home page index/commodity split + index-futures swap.** `routes/home.rs`
     replaced the flat `DASHBOARD` const with `INDEXES` (each cash index paired
@@ -656,16 +654,59 @@ schema, unused for now.
     verification-only add and was removed afterwards; `RTY=F` stays as a
     curated symbol.)
 
+- **Phase 23 + 24 financials table — Q4 column & readability.** Complete,
+  verified, and deployed to production. Built together as one symbol-page
+  financials pass; no new data source, no schema change, no network.
+  - **Phase 23 — derived Q4 column.** SEC XBRL carries no discrete fourth
+    quarter (no Q4 10-Q; Q4 lives only inside the 10-K's full-year figure, so
+    `fundamentals` holds zero `fiscal_qtr = 4` rows). `routes/symbols.rs`
+    gained `derive_q4`: for every fiscal year with the full year and all three
+    prior quarters present, it derives `Q4 = FY - (Q1 + Q2 + Q3)` for the four
+    flow / per-share metrics (revenue, net income, diluted EPS, dividend per
+    share) and emits a synthetic `FundFact` with period label `Q4-<year>`.
+    `build_fundamentals` folds the derived rows in before building the
+    quarterly periods and the cell lookup, so a Q4 column slots into the
+    quarterly table exactly like a stored quarter. Diluted EPS does not
+    decompose perfectly (the diluted share count drifts quarter to quarter)
+    but the residual is small; the plan calls for showing it. A genuine Q4
+    row, should XBRL ever carry one, wins over the derived one.
+  - **Phase 24a — per-cell growth cues.** Each financials-table cell now
+    carries a period-over-period cue against the column to its left: a small
+    up / down triangle, plus a semantic green / red where a rise has a clear
+    good/bad reading. `FundRow.cells` changed from `Vec<String>` to
+    `Vec<FundCell>` (a formatted figure plus a `dir` and a `sense`); a new
+    `Trend` on each `TableMetric` sets the reading — `RiseGood` for revenue,
+    net income, EPS and dividend; `RiseBad` for total liabilities; `Neutral`
+    for total assets and shareholder equity (a rise there can be debt-funded
+    or a fall a buyback, so the arrow shows but stays uncoloured). The first
+    column, a flat figure, and a cell with a missing value on either side
+    carry no cue.
+  - **Phase 24b — missing-value glyph.** The middle dot (`·`), which read as
+    a stray decimal point, was replaced with an em dash (`—`), the universal
+    "no data" mark. There were three copies of the same placeholder constant
+    (`routes/symbols.rs`, `compute.rs`, `templates.rs`), all changed, so the
+    glyph is consistent across the financials table, the ratio cards, the ETF
+    fund stats and every empty-value template filter app-wide.
+  - Verified: cargo + bun build clean. `/s/AAPL` quarterly table shows the
+    derived Q4-2024 and Q4-2025 columns and the maths checks out (Q4-2025
+    revenue $102.5B = FY $416.2B − Q1 $124.3B − Q2 $95.4B − Q3 $94.0B). Growth
+    cues render green / red on the four flow metrics and inverted on
+    liabilities, with faint uncoloured arrows on the neutral rows; the first
+    column and a flat dividend carry none. `/s/DELL` (which has reporting
+    gaps) shows the em-dash glyph and correctly drops the cue across a missing
+    column; its two uncomputable ratio cards also show `—`. No `·` remains
+    except as a legitimate separator (page title, footer, the leadership role
+    line). Desktop (1280px) and phone (390px) render with no overflow and
+    zero console errors; the wide quarterly table scrolls within its card.
+
 **Resuming, next action**
-**Phase 21 (Home & search refinements) is complete and verified** (2026-05-22),
-not yet deployed. The MVP plus Phase 14, Phase 18 and Phase 20 are live at
-https://finance.bythewood.me; Phase 21 ships on the next
-`git push server master` (the boot seed picks up the new `RTY=F` symbol from
-`universe/starter.csv` automatically, as it would any starter-list change). No
-phase is in progress. Remaining post-MVP work: the loose-ordered Phase 13, 15,
-16, 17, 19 backlog plus Phase 22 (show data age everywhere), Phase 23 (Q4 in
-the quarterly financials table) and Phase 24 (financials table readability);
-the user picks which to take next. There is still no GitHub repo for finance:
+**Phase 23 + 24 (financials table — Q4 column and readability) is complete,
+verified and deployed** (2026-05-22). The MVP plus Phase 14, Phase 18,
+Phase 20, Phase 21 and Phase 23 + 24 are live at
+https://finance.bythewood.me. No phase is in progress. Remaining post-MVP
+work: the loose-ordered Phase 13, 15,
+16, 17, 19 backlog plus Phase 22 (show data age everywhere); the user picks
+which to take next. There is still no GitHub repo for finance:
 the user deferred that; if one is created later, add it as `origin` and the
 `overshard/finance` slug already in taproot's `projects.conf` lines up.
 
@@ -1015,7 +1056,9 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   small design pass on the wording and where it rides without cluttering the
   Paper Ledger look.
 
-- [ ] **Phase 23: Q4 in the quarterly financials table.** (Captured 2026-05-22
+- [x] **Phase 23: Q4 in the quarterly financials table.** Complete, verified
+  and deployed 2026-05-22, built together with Phase 24 — see their shared
+  Done entry in Status and the decisions log. (Captured 2026-05-22
   from a vibe-coding side note.) The symbol page's quarterly financials table
   shows only Q1-Q3. The cause is confirmed: SEC XBRL carries no discrete Q4 —
   there is no Q4 10-Q, the fourth quarter is reported only inside the 10-K's
@@ -1026,7 +1069,9 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   all three quarters are present. No schema change and no new data — a pure
   derivation from facts already stored.
 
-- [ ] **Phase 24: Financials table readability.** (Captured 2026-05-22 from
+- [x] **Phase 24: Financials table readability.** Complete, verified and
+  deployed 2026-05-22, built together with Phase 23 — see their shared Done
+  entry in Status and the decisions log. (Captured 2026-05-22 from
   two vibe-coding side notes raised while Phase 21 was in progress.) Two
   presentation refinements to the symbol page's fundamentals area, no new data
   source: (1) **Per-cell growth cues.** In the annual and quarterly financials
@@ -1576,6 +1621,33 @@ finance/
   non-empty-query match. Verified end to end (see the Phase 21 Done entry).
   Not yet deployed; ships on the next push, and the boot seed adds `RTY=F` on
   the box.
+- **2026-05-22 — Phase 21 confirmed deployed.** On resuming, server `master`
+  was checked (`git ls-remote server master`) and found at commit `5cb5dc2`,
+  the Phase 21 commit — so Phase 21 is in fact live in production, despite the
+  entry above recording it as "not yet deployed" (the same plan/reality drift
+  the Phase 14 entry hit). The Status section was corrected.
+- **2026-05-22 — Phase 23 + 24 picked and built together.** Asked which
+  backlog phase to take next, the user chose Phase 23 and Phase 24 as a single
+  pass: both are small, self-contained refinements to the symbol page's
+  financials area with no new data, and Phase 23's derived Q4 column and
+  Phase 24's growth cues touch the same table. Design calls made during the
+  build: (1) Q4 is derived per metric, not all-or-nothing — the `Q4-<year>`
+  column appears if any of the four flow metrics derives, and a metric missing
+  a quarter shows `—` in that column. (2) The growth cue's good/bad reading is
+  a per-metric `Trend`: revenue / net income / EPS / dividend are `RiseGood`,
+  total liabilities is `RiseBad`, and total assets and shareholder equity are
+  `Neutral` — a rise in either can be debt-funded or a buyback, so they get an
+  uncoloured directional arrow rather than a green/red verdict (the plan left
+  the metrics beyond revenue / net income / liabilities as an open design
+  question). (3) The cue compares each cell to the column immediately left of
+  it (year over year in the annual table, quarter over quarter in the
+  quarterly one); a gap on either side breaks the comparison. (4) The
+  missing-value glyph fix was applied to all three copies of the placeholder
+  constant (`routes/symbols.rs`, `compute.rs`, `templates.rs`), not only the
+  one the plan named, since they all mean "no value" and a mix of `—` and `·`
+  would be worse than the original; the em dash is now the single app-wide
+  empty-value mark. Deployed to production on 2026-05-22 via
+  `git push server master`.
 
 ---
 
@@ -1604,4 +1676,7 @@ finance/
   board roster from SEC Form 3/4/5 ownership filings, plus a recent-changes
   list from 8-K item 5.02. An unsynced stock shows a pending note; ETFs and
   indexes show no Leadership section (Phase 14).
+- A stock's Financials table (`/s/AAPL`, Quarterly) shows a derived Q4 column
+  and per-cell up/down growth cues; a figure the company did not report shows
+  an em dash (`—`), not a middle dot (Phase 23 + 24).
 - No automated test suite or linter, matching the sibling projects.

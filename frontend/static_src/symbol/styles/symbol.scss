@@ -608,6 +608,37 @@
   font-size: 0.86rem;
 }
 
+/* period-over-period growth cue (Phase 24): a small arrow on every changed
+   figure, plus a semantic colour where a rise has a clear good/bad reading */
+.fin__table td.fin-cell--good {
+  color: var(--up);
+}
+
+.fin__table td.fin-cell--bad {
+  color: var(--down);
+}
+
+.fin-cell__dir {
+  margin-left: 4px;
+  font-size: 0.62rem;
+  vertical-align: 0.06em;
+  /* faint by default; a graded cell re-colours it to match the figure */
+  color: var(--ink-faint);
+}
+
+.fin__table td.fin-cell--good .fin-cell__dir,
+.fin__table td.fin-cell--bad .fin-cell__dir {
+  color: inherit;
+}
+
+.fin-cell__dir--up::before {
+  content: "\25B4";
+}
+
+.fin-cell__dir--down::before {
+  content: "\25BE";
+}
+
 /* ---------- recent SEC filings ---------- */
 .filings {
   padding: 2px 16px;

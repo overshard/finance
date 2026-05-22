@@ -162,8 +162,9 @@ fn fmt_grouped(n: f64, dp: usize) -> String {
     out
 }
 
-/// Empty-value placeholder shown when a metric is missing.
-const DASH: &str = "\u{00b7}";
+/// Empty-value placeholder shown when a metric is missing — an em dash, an
+/// unambiguous "no data" mark (a middle dot read as a stray decimal point).
+const DASH: &str = "\u{2014}";
 
 /// `1234.5` -> `$1,234.50`
 fn money_filter(value: Value) -> Result<String, Error> {

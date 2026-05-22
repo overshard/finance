@@ -19,7 +19,7 @@
         {% for row in table.rows %}
         <tr>
           <th scope="row">{{ row.label }}</th>
-          {% for c in row.cells %}<td class="num">{{ c }}</td>{% endfor %}
+          {% for c in row.cells %}<td class="num{% if c.sense %} fin-cell--{{ c.sense }}{% endif %}">{{ c.display }}{% if c.dir %}<span class="fin-cell__dir fin-cell__dir--{{ c.dir }}" aria-hidden="true"></span>{% endif %}</td>{% endfor %}
         </tr>
         {% endfor %}
       </tbody>
@@ -300,12 +300,12 @@
     <dl class="fund__stats">
       <div class="fund__stat">
         <dt class="fund__stat-cap">Net assets</dt>
-        <dd class="fund__stat-val num">{{ fund.net_assets if fund.net_assets else '·' }}</dd>
+        <dd class="fund__stat-val num">{{ fund.net_assets if fund.net_assets else '—' }}</dd>
       </div>
       {% if not fund.is_commodity %}
       <div class="fund__stat">
         <dt class="fund__stat-cap">Holdings</dt>
-        <dd class="fund__stat-val num">{{ fund.holdings_count if fund.holdings_count is not none else '·' }}</dd>
+        <dd class="fund__stat-val num">{{ fund.holdings_count if fund.holdings_count is not none else '—' }}</dd>
       </div>
       {% endif %}
       {% if fund.report_date %}

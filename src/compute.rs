@@ -3,9 +3,9 @@
 
 use serde::Serialize;
 
-/// Placeholder shown for a figure that cannot be computed. Matches the
-/// `templates.rs` empty-value glyph (a middle dot).
-const DASH: &str = "\u{00b7}";
+/// Placeholder shown for a figure that cannot be computed — an em dash, the
+/// unambiguous "no data" mark used for every empty value across the app.
+const DASH: &str = "\u{2014}";
 
 /// An absolute and percentage change between two prices.
 #[derive(Debug, Clone, Copy)]
