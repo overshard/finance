@@ -32,9 +32,11 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-22_
 
-**Current phase: Phase 28 (ETFs as first-class citizens) is complete and
-verified locally; deploy pending.** Phase 26 (dividend payouts) is complete,
-verified, and deployed to production (commit `7608b06`). Phases 0
+**Current phase: none in progress. Phase 28 (ETFs as first-class
+citizens) is complete, verified, and deployed to production (commit
+`2ae81d5`).** The new fund_metadata + sector/geography + ETF-distributions
+data populates async via the scheduler's first sec / fund_metadata /
+dividends cycles after boot. Phases 0
 through 12 (the MVP) plus Phase 14 (company leadership), Phase 18 (ETF
 profiles), Phase 20 (strongest & weakest home panels), Phase 21 (home &
 search refinements), Phase 23 + 24 (financials table) and Phase 22 (data-age
@@ -768,8 +770,8 @@ schema, unused for now.
     (360px) render with no horizontal overflow and zero console errors; a
     too-long caption wraps cleanly to a second line at 360px.
 
-- **Phase 28 ETFs as first-class citizens.** Complete, verified locally;
-  deploy pending. ETFs now read as densely as a stock page: a new "About
+- **Phase 28 ETFs as first-class citizens.** Complete, verified, and
+  deployed to production (commit `2ae81d5`). ETFs now read as densely as a stock page: a new "About
   this fund" panel (expense ratio, distribution yield, NAV with live
   premium / discount, inception, category, fund family, strategy
   paragraph), a trailing-returns table (1m / 3m / YTD / 1y / 3y / 5y /
@@ -914,7 +916,14 @@ schema, unused for now.
     hid the section; ETFs / indexes / futures showed no section.
 
 **Resuming, next action**
-**Phase 28 (ETFs as first-class citizens) is in progress.** Scope settled
+**Phase 28 (ETFs as first-class citizens) is complete and deployed**
+(commit `2ae81d5`, 2026-05-22). The new data populates async via the
+scheduler's first sec / fund_metadata / dividends cycles after boot:
+SEC re-parses N-PORT to fill `fund_profiles.sector_mix` +
+`.geography_mix` for the 28 ETFs; the new `fund_metadata` Yahoo job
+populates the `fund_metadata` table for the same 28; the lifted
+`dividends` sweep now covers ETF distributions alongside stock
+dividends. Watch `/health` for any job that goes red. Scope settled
 2026-05-22 (see the decisions log): one big phase covering all seven
 pieces (distributions for ETFs, expense ratio + yield via Yahoo
 `quoteSummary`, NAV / premium-discount, sector + geography exposure from
@@ -1387,8 +1396,8 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   each stock's dividend history through the `yahoo` `EndpointGuard` on a
   slow cadence (weekly is enough; the data rarely changes).
 
-- [x] **Phase 28: ETFs as first-class citizens.** Complete and verified
-  locally (2026-05-22); deploy pending. See the Phase 28 Done entry in
+- [x] **Phase 28: ETFs as first-class citizens.** Complete, verified, and
+  deployed to production 2026-05-22 (commit `2ae81d5`). See the Phase 28 Done entry in
   Status and the decisions log. (Captured 2026-05-22 from a vibe-coding
   side note immediately after Phase 26 shipped. Picked as the next backlog
   phase and scoped 2026-05-22.) The user's
