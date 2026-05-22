@@ -1738,6 +1738,18 @@ finance/
   age) use `ago`. No schema change, no new data source, no new network calls.
   Deployed to production on 2026-05-22 via `git push server master`
   (commit `39a863e`).
+- **2026-05-22: search "Add" affordance fixed for short tickers.** Bug: the
+  Search page offered to add an untracked symbol only when the query returned
+  zero results, but search matches `ticker LIKE '%q%'` (a substring), so a one
+  or two letter ticker like `W` (Wayfair) partially matched a crowd of other
+  tickers and the offer never showed, leaving `W` unaddable. Fix
+  (`routes/search.rs`): the offer is now gated on an exact-ticker `EXISTS`
+  check against `symbols`, not on `results.is_empty()`, so a query that is a
+  valid, untracked ticker is offered even when the substring search found
+  other symbols. The "do not nag a company-name search" intent is kept: the
+  offer still shows only when the query matched nothing, or matched at least
+  one result as a ticker substring (a name-only search such as `Inc` does not
+  trigger it). The add panel can now render above a populated results grid.
 
 ---
 

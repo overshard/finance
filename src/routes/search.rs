@@ -115,12 +115,21 @@ async fn search_page(Query(sq): Query<SearchQuery>, State(state): State<AppState
     // fundamentals a standing is rolled from.
     attach_standings(&state, &mut results).await;
 
-    // Offer "Add" only on a genuine miss: nothing matched, the query is a
-    // plausible ticker (one `POST /api/symbols` would accept), and it is not
-    // already a symbol the kind filter happened to hide. Requiring zero
-    // results keeps the offer from nagging when a name search did find hits.
-    let show_add = results.is_empty()
-        && valid_ticker(&query).is_some()
+    // Does the query land on at least one tracked ticker (as a substring)? If
+    // so it reads as a ticker search: a bare ticker like "W" shares letters
+    // with the tickers it returns. A pure company-name search ("Apple",
+    // "bank") matches only names, with the query absent from every ticker.
+    let ticker_hit = results.iter().any(|c| c.ticker.contains(query.as_str()));
+
+    // Offer "Add" when the query names a ticker the universe does not hold.
+    // The gate is an exact-ticker check (EXISTS on `symbols`), not "zero
+    // results": searching "W" for Wayfair partially LIKE-matches a crowd of
+    // other tickers, yet "W" itself is still untracked and addable. The query
+    // must be a plausible ticker (one `POST /api/symbols` would accept). The
+    // offer is kept off a pure company-name search, where it would be noise:
+    // it shows only when the query matched nothing, or matched as a ticker.
+    let show_add = valid_ticker(&query).is_some()
+        && (results.is_empty() || ticker_hit)
         && !sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM symbols WHERE ticker = ?)")
             .bind(&query)
             .fetch_one(&state.pool)
