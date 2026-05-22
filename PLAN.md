@@ -33,16 +33,16 @@ and resume cleanly from this file alone, keeping token use low.
 _Last updated: 2026-05-22_
 
 **Current phase: none in progress. Phase 22 (show data age everywhere) is
-complete and verified locally; not yet committed or deployed.** Phases 0
+complete, verified, and deployed.** Phases 0
 through 12 (the MVP) plus Phase 14 (company leadership), Phase 18 (ETF
 profiles), Phase 20 (strongest & weakest home panels), Phase 21 (home &
-search refinements) and Phase 23 + 24 (financials table) are complete,
-verified, and **live in production at https://finance.bythewood.me**.
-Phase 22 adds a consistent, quiet data-age caption across the whole app —
-the home dashboard, search, and every symbol-page data section, not just
-`/health` — see the Done list and the decisions log; it ships on the next
-`git push server master`. Remaining post-MVP work: the loose-ordered
-Phase 13, 15, 16, 17, 19 backlog.
+search refinements), Phase 23 + 24 (financials table) and Phase 22 (data-age
+captions) are complete, verified, and **live in production at
+https://finance.bythewood.me**. Phase 22 adds a consistent, quiet data-age
+caption across the whole app — the home dashboard, search, and every
+symbol-page data section, not just `/health` — see the Done list and the
+decisions log. Remaining post-MVP work: the loose-ordered Phase 13, 15, 16,
+17, 19 backlog.
 
 **Roadmap (restructured 2026-05-22, see decisions log):** the home-page
 redesign and commodities are pre-ship MVP phases. Order: 9 Search +
@@ -699,8 +699,8 @@ schema, unused for now.
     line). Desktop (1280px) and phone (390px) render with no overflow and
     zero console errors; the wide quarterly table scrolls within its card.
 
-- **Phase 22 show data age everywhere.** Complete, verified locally; not yet
-  committed or deployed. A consistent, quiet data-freshness caption now rides
+- **Phase 22 show data age everywhere.** Complete, verified, and deployed to
+  production. A consistent, quiet data-freshness caption now rides
   across the whole app — the home dashboard, search, and every symbol-page
   data section — not only `/health`. Built per a small design pass (see the
   decisions log): a section-level caption (one quiet line per section, never
@@ -756,16 +756,14 @@ schema, unused for now.
     too-long caption wraps cleanly to a second line at 360px.
 
 **Resuming, next action**
-**Phase 22 (show data age everywhere) is complete and verified locally**
-(2026-05-22) but **not yet committed or deployed** — it ships on the next
-`git push server master`. The MVP plus Phase 14, Phase 18, Phase 20,
-Phase 21 and Phase 23 + 24 are live at https://finance.bythewood.me;
-Phase 22 will join them on the next push. No phase is in progress.
-Remaining post-MVP work: the loose-ordered Phase 13, 15, 16, 17, 19
-backlog; the user picks which to take next. There is still no GitHub repo
-for finance: the user deferred that; if one is created later, add it as
-`origin` and the `overshard/finance` slug already in taproot's
-`projects.conf` lines up.
+**Phase 22 (show data age everywhere) is complete, verified, and deployed**
+to production (2026-05-22, commit `39a863e`). The MVP plus Phase 14,
+Phase 18, Phase 20, Phase 21, Phase 23 + 24 and Phase 22 are all live at
+https://finance.bythewood.me. No phase is in progress. Remaining post-MVP
+work: the loose-ordered Phase 13, 15, 16, 17, 19 backlog; the user picks
+which to take next. There is still no GitHub repo for finance: the user
+deferred that; if one is created later, add it as `origin` and the
+`overshard/finance` slug already in taproot's `projects.conf` lines up.
 
 Note: Phase 18 added the `quick-xml` crate (N-PORT XML streaming parser) and
 migration `0005`. A fresh `make run` applies `0005`; the ETF fund profiles
@@ -1100,9 +1098,9 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   exactly one symbol, redirect straight to that symbol's page instead of
   rendering a one-card result the user must then click.
 
-- [x] **Phase 22: Show data age everywhere.** Complete and verified locally
-  2026-05-22; not yet committed or deployed. See the Phase 22 Done entry in
-  Status and the decisions log. (Captured 2026-05-22 from a
+- [x] **Phase 22: Show data age everywhere.** Complete, verified and deployed
+  to production 2026-05-22. See the Phase 22 Done entry in Status and the
+  decisions log. (Captured 2026-05-22 from a
   vibe-coding side note.) The user considers data freshness critically
   important and wants the age of displayed data surfaced consistently across
   the whole app, the home page included — not only on `/health`. Today
@@ -1738,7 +1736,8 @@ finance/
   age) for the section captions precisely so they never drift stale on screen
   while live prices tick; only genuinely relative things (a quote age, a sync
   age) use `ago`. No schema change, no new data source, no new network calls.
-  Not yet committed or deployed; ships on the next `git push server master`.
+  Deployed to production on 2026-05-22 via `git push server master`
+  (commit `39a863e`).
 
 ---
 
