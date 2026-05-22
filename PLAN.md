@@ -32,8 +32,8 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-22_
 
-**Current phase: Phase 26 (dividend payouts) is complete and verified
-locally; the deploy has not been pushed yet.** Phases 0
+**Current phase: none in progress. Phase 26 (dividend payouts) is complete,
+verified, and deployed to production (commit `7608b06`).** Phases 0
 through 12 (the MVP) plus Phase 14 (company leadership), Phase 18 (ETF
 profiles), Phase 20 (strongest & weakest home panels), Phase 21 (home &
 search refinements), Phase 23 + 24 (financials table) and Phase 22 (data-age
@@ -759,8 +759,8 @@ schema, unused for now.
     (360px) render with no horizontal overflow and zero console errors; a
     too-long caption wraps cleanly to a second line at 360px.
 
-- **Phase 26 dividend payouts.** Complete and verified locally; not yet
-  deployed. Per-payout dividend history sourced from Yahoo's chart endpoint
+- **Phase 26 dividend payouts.** Complete, verified, and deployed to
+  production (commit `7608b06`). Per-payout dividend history sourced from Yahoo's chart endpoint
   via `events=div`, surfaced as a new Dividends section on the symbol page
   between Fundamentals and Leadership. Stocks only — ETFs, indexes and
   futures show none of it.
@@ -817,12 +817,12 @@ schema, unused for now.
     hid the section; ETFs / indexes / futures showed no section.
 
 **Resuming, next action**
-**Phase 26 (dividend payouts) is complete and verified locally; the deploy
-is the next step.** The MVP plus Phase 14, Phase 18, Phase 20, Phase 21,
-Phase 23 + 24 and Phase 22 are all live at https://finance.bythewood.me.
-Phase 26 builds clean and runs end-to-end on the dev box; pushing
-`server master` ships it (migration `0007` applies on boot, the new
-`dividends` scheduler job backfills the universe over its first tick).
+**Phase 26 (dividend payouts) is complete, verified, and deployed** to
+production on 2026-05-22 (commit `7608b06`). The MVP plus Phase 14,
+Phase 18, Phase 20, Phase 21, Phase 23 + 24, Phase 22 and Phase 26 are all
+live at https://finance.bythewood.me; migration `0007` applied cleanly on
+the box and the new `dividends` scheduler job backfills the universe over
+the first tick.
 Remaining post-MVP work: the loose-ordered Phase 13, 15, 16, 17, 19, 25, 27
 backlog; the user picks which to take next. Phase 27 (provider redundancy)
 was captured 2026-05-22 from a vibe-coding side note while Phase 26 was
@@ -1237,8 +1237,9 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   (3); piece (2) may want a small `next_earnings_at` column on `symbols`
   if it takes the Yahoo calendar path.
 
-- [x] **Phase 26: Dividend payout history and pace.** Complete and verified
-  locally 2026-05-22 (not yet deployed); see the Phase 26 Done entry in
+- [x] **Phase 26: Dividend payout history and pace.** Complete, verified,
+  and deployed to production 2026-05-22 (commit `7608b06`); see the
+  Phase 26 Done entry in
   Status and the decisions log. Per-payout dividend history from Yahoo
   chart `events.dividends`, new `dividends` table (migration `0007`),
   a weekly `dividends` scheduler job on the existing `yahoo` guard, and a
@@ -1957,8 +1958,10 @@ finance/
   user-added symbol's page is complete the moment the add returns.
   Per-share figures display to the cent normally (`$0.24`) and widen to
   4dp for sub-cent payouts (`$0.0625`, the monthly REIT case) so a small
-  payment is not lost to rounding. Not yet deployed; ships on the next
-  `git push server master` (migration `0007` applies on the box).
+  payment is not lost to rounding. Deployed to production on 2026-05-22
+  via `git push server master` (commit `7608b06`); migration `0007`
+  applied cleanly on the box, and the new `dividends` scheduler job
+  backfilled the universe on its first tick post-boot.
 - **2026-05-22 — Phase 27 captured: backup providers for redundancy.**
   While Phase 26 was mid-build the user floated a wish for additional
   *backup* providers per data concern (history / quotes / fundamentals /
