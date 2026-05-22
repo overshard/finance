@@ -45,8 +45,11 @@ decisions log. Phase 26 (the user picked it as the next backlog phase)
 adds a stock Dividends section on the symbol page — inferred cadence,
 prior-year and YTD totals, a count-tempered on-track projection, and a per-
 event payout history — backed by a new weekly Yahoo `dividends` scheduler
-job. Built locally; not yet deployed (commit pending). Remaining
-post-MVP work: the loose-ordered Phase 13, 15, 16, 17, 19, 25, 27 backlog.
+job. Deployed to production 2026-05-22 (commit `7608b06`). Remaining
+post-MVP work: the loose-ordered Phase 13, 15, 16, 17, 19, 25, 27, 28
+backlog. Phase 28 (ETFs as first-class citizens) was captured right after
+Phase 26 deployed; the user flagged it as a strong wish — see its
+Phases-list entry for the seven planned pieces and the data sources.
 
 **Roadmap (restructured 2026-05-22, see decisions log):** the home-page
 redesign and commodities are pre-ship MVP phases. Order: 9 Search +
@@ -1278,6 +1281,97 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   each stock's dividend history through the `yahoo` `EndpointGuard` on a
   slow cadence (weekly is enough; the data rarely changes).
 
+- [ ] **Phase 28: ETFs as first-class citizens.** (Captured 2026-05-22 from
+  a vibe-coding side note immediately after Phase 26 shipped.) The user's
+  steer, verbatim: *"I really need ETFs treated as first class citizens
+  like with as much data as possible, AUM, cashflow maybe, dividends,
+  everything — right now we are ignoring a lot of stats for ETFs and
+  treating them as second class."* The goal: an ETF symbol page that
+  reads as densely and informatively as a stock's, not the smaller card
+  it currently is.
+
+  **What an ETF page carries today (the gap):** Phase 18 ships the fund
+  profile (AUM via N-PORT, holdings count, top-25 holdings, asset-class
+  mix) and the SEC filings list. Phase 26's Dividends section was stocks
+  only and skips ETFs. There is no expense ratio, no distribution yield,
+  no NAV / premium-discount, no sector or geography breakdown, no return
+  metrics, no inception date or strategy summary, no benchmark comparison.
+
+  **Planned pieces (settle scope at build time; one big phase or split
+  into 28a / 28b):**
+
+  (1) **ETF distributions.** Lift Phase 26 to cover ETFs — Yahoo's
+  `events.dividends` series carries an ETF's distributions the same way
+  it carries a stock's dividend, so the existing `YahooProvider::dividends`
+  and the `dividends` scheduler job already work for ETF tickers. Drop
+  the `kind = 'stock'` filter in `run_dividends` and `backfill_symbol`'s
+  dividend step, and surface the same Dividends section on the ETF page.
+  Cheapest piece; ships almost for free.
+
+  (2) **Expense ratio and yield.** The two figures most consumers ask of
+  an ETF. Not in SEC structured data (the wall Phase 18 hit). Source
+  options: (a) Yahoo's `quoteSummary` endpoint, modules
+  `fundProfile` + `defaultKeyStatistics` + `summaryDetail`, which carry
+  `annualReportExpenseRatio`, `yield`, `trailingAnnualDividendYield`, fund
+  family, category, inception date and the strategy summary in one
+  request — a new path on the `yahoo` provider behind the existing guard.
+  (b) Hand-curated values in `universe/starter.csv`. Phase 18 considered
+  (a) and dropped it; revisit it here, because hand-curation does not
+  scale to user-added ETFs.
+
+  (3) **NAV and premium / discount.** An ETF's market price drifts from
+  its true net-asset-value intraday — a fresh metric the app does not
+  carry. Yahoo serves `navPrice` in the chart `meta` (or via the
+  `quoteSummary` price module); compute `(price - nav) / nav * 100` and
+  display the day's premium / discount with a quiet good / ok / bad band
+  (a persistent large premium is a yellow flag, a small discount can be
+  a buying opportunity). A small chart of historical premium / discount
+  is a stretch goal.
+
+  (4) **Sector and geography exposure.** N-PORT carries each holding's
+  `industryCode` (the standard SOC / GICS-ish code field) and country of
+  issuer; aggregate them into "Sector exposure" and "Geographic exposure"
+  panels alongside the existing asset-class mix bar. Pure derivation
+  from the per-holding data the Phase 18 parser already streams past
+  (right now it keeps only the top-25 issue + amount); no new network
+  call, but the N-PORT parser needs to keep these fields as it streams.
+
+  (5) **Return metrics.** Trailing returns 1m / 3m / YTD / 1y / 3y / 5y /
+  10y / since inception, computed from `daily_prices` which we already
+  have for ETFs. Pure `compute.rs` work, lots of small displays. Annualize
+  for periods over a year. A "growth of $10,000" chart over the longest
+  available range is a strong skim metric.
+
+  (6) **Strategy summary + inception date + category.** From Yahoo's
+  `quoteSummary.fundProfile.longBusinessSummary` (a paragraph the issuer
+  writes) plus `firstTradeDateEpochUtc` in chart `meta`. A small "About
+  this fund" panel below the profile.
+
+  (7) **Benchmark comparison.** Most ETFs track an index (`SPY`/`VOO`
+  -> `^SPX`, `QQQ` -> `^NDX`, etc.). A small relative-performance line
+  on the chart over the visible range would read at a glance whether the
+  fund is tracking or drifting. Hard part: knowing the benchmark — Yahoo
+  occasionally carries it but inconsistently; an optional `benchmark`
+  column on `symbols` filled by hand for the curated universe is the
+  pragmatic path.
+
+  **Schema implications:** likely new `etf_stats` table (or extra columns
+  on `symbols`) for the slow-moving figures — expense ratio, yield,
+  inception date, category, fund family, benchmark, strategy summary —
+  populated by a new scheduler section on the `yahoo` guard, monthly
+  cadence (these change rarely). Sector / geography mixes can ride in
+  JSON columns on `fund_profiles` like `asset_mix` already does.
+
+  **Dependencies:** none hard. Piece (1) is a small detour on Phase 26's
+  code. Pieces (2)+(6) need the `quoteSummary` endpoint added to
+  `YahooProvider`. The user did not specify ordering — pick at build
+  time, or split into 28a (distributions + expense ratio + yield, the
+  table-stakes ETF figures) and 28b (NAV / sector / returns / benchmark,
+  the richer analytics).
+
+  **Anti-spam:** every new fetch rides the existing `yahoo` /
+  `sec` `EndpointGuard`. No new endpoint guards required.
+
 - [ ] **Phase 27: Backup providers for redundancy.** (Captured 2026-05-22
   from a vibe-coding side note while Phase 26 was mid-build.) For each
   data concern (history / live quotes / fundamentals / dividends),
@@ -1973,6 +2067,22 @@ finance/
   also enumerates the four open design points to settle when building (a
   `MultiProvider<T>` wrapper, candidate sources, routing rules and
   stickiness, health-page surfacing of the active source).
+- **2026-05-22 — Phase 28 captured: ETFs as first-class citizens.** Right
+  after Phase 26 deployed, the user flagged a strong wish: ETFs are
+  currently treated as second-class — they get a small fund profile
+  (AUM, holdings, asset mix) and the SEC filings list, but no
+  distributions (Phase 26 was stocks-only), no expense ratio, no
+  distribution yield, no NAV / premium-discount, no sector or geography
+  breakdown, no trailing returns, no benchmark comparison, no strategy
+  summary. The user wants ETFs to read as densely as a stock page. Per
+  the vibe-coding rule the idea was budgeted into the plan rather than
+  acted on at once — Phase 28 in the Phases list enumerates seven
+  planned pieces (distributions, expense ratio + yield via Yahoo
+  `quoteSummary`, NAV / premium-discount, sector + geography exposure
+  from N-PORT, trailing returns, strategy summary + inception, benchmark
+  comparison) with their data sources and the schema implications. The
+  user did not specify order; built as one phase or split 28a / 28b at
+  build time. No new endpoint guards required.
 - **2026-05-22: two side notes captured as Phases 25 and 26.** While waiting
   on the search-Add fix to deploy, the user floated two ideas: (1) earnings
   dates on the symbol page (last and next, with days-to / days-since), and
