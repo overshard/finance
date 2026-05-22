@@ -436,6 +436,11 @@ schema, unused for now.
     `dist/`, `target/`, `node_modules/` all correctly gitignored). No remote
     configured and nothing pushed — creating the GitHub repo and the `server`
     remote is left to the user.
+  - Verified: `docker build` produces a 49.9MB image; the container boots
+    (migrations apply, scheduler starts, listens on 8000), serves `/` and
+    `/health` with 200 and resolved `/static/` assets, and degrades
+    gracefully when `STOOQ_APIKEY` / `SEC_CONTACT_EMAIL` are unset (seed and
+    SEC jobs disabled, prune still runs).
 
 **Resuming, next action**
 **Phase 12 (Polish + ship) — final UI polish pass.** The ship infrastructure
