@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use chrono::Datelike;
+use chrono::Datelike as _;
 use serde::{Deserialize, Serialize};
 
 use crate::compute;
@@ -534,6 +534,109 @@ fn build_fund(profile: FundProfileRow, holdings: Vec<HoldingRow>) -> FundView {
     }
 }
 
+// ── dividend payouts (Phase 26) ────────────────────────────────────────────
+
+/// One dividend payment, shaped for the page.
+#[derive(Serialize)]
+struct DividendRow {
+    /// Ex-dividend date, `YYYY-MM-DD` (the template's `shortdate` filter
+    /// formats it for display).
+    ex_date: String,
+    /// Per-share amount, formatted as plain dollars, e.g. `$0.24`.
+    amount: String,
+}
+
+/// Everything the symbol page's Dividends section needs.
+#[derive(Serialize)]
+struct DividendsView {
+    /// Whether the Yahoo dividend sweep has reached this stock yet — picks the
+    /// "not synced yet" pending note apart from a genuine no-dividends history.
+    synced: bool,
+    /// The inferred pace read: cadence, prior-year and YTD totals, projection,
+    /// and the on-track grade.
+    pace: compute::DividendPace,
+    /// Prior-year total per share, formatted, e.g. `$0.92`. Empty string when
+    /// there were no payouts in the prior calendar year.
+    prior_year_display: String,
+    /// YTD total per share, formatted.
+    ytd_display: String,
+    /// Calendar year YTD belongs to (e.g. `2026`).
+    current_year: i32,
+    /// Projected current-year total, formatted; `None` when the projection is.
+    projection_display: Option<String>,
+    /// Signed percent change vs prior year, e.g. `+4.3%`; `None` when the
+    /// projection is.
+    pct_change_display: Option<String>,
+    /// All payouts on file, newest first.
+    history: Vec<DividendRow>,
+}
+
+/// Load the Dividends section for a stock (PLAN.md Phase 26). Returns `None`
+/// when there is nothing to show *and* the sweep has already run: a stock that
+/// pays no dividend gets no section. A pending stock (sweep has not reached it
+/// yet) still returns a `DividendsView` so the template can render the "not
+/// synced yet" note in place.
+async fn build_dividends(
+    pool: &sqlx::SqlitePool,
+    ticker: &str,
+    synced: bool,
+) -> Option<DividendsView> {
+    // Newest first for the per-event history; the pace math wants oldest first.
+    let rows: Vec<(String, f64)> = sqlx::query_as(
+        "SELECT ex_date, amount FROM dividends WHERE ticker = ? ORDER BY ex_date DESC",
+    )
+    .bind(ticker)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    // Pending sweep on a stock with no payouts yet — show the pending note.
+    if rows.is_empty() && !synced {
+        let pace = compute::dividend_pace(&[], chrono::Utc::now().date_naive());
+        return Some(DividendsView {
+            synced: false,
+            pace,
+            prior_year_display: String::new(),
+            ytd_display: String::new(),
+            current_year: chrono::Utc::now().date_naive().year(),
+            projection_display: None,
+            pct_change_display: None,
+            history: Vec::new(),
+        });
+    }
+    // A swept stock with no payouts pays no dividend — hide the section
+    // entirely rather than render a heading over an empty table.
+    if rows.is_empty() {
+        return None;
+    }
+
+    let oldest_first: Vec<(String, f64)> = rows.iter().rev().cloned().collect();
+    let pace = compute::dividend_pace(&oldest_first, chrono::Utc::now().date_naive());
+    // Per-share dividends are usually quoted to the cent; monthly REITs sometimes
+    // pay sub-cent amounts (e.g. `$0.0625`), so a sub-cent figure widens to 4dp.
+    let fmt_div = |v: f64| if v < 0.01 { format!("${v:.4}") } else { format!("${v:.2}") };
+    let history: Vec<DividendRow> = rows
+        .iter()
+        .map(|(d, a)| DividendRow {
+            ex_date: d.clone(),
+            amount: fmt_div(*a),
+        })
+        .collect();
+    // Totals and the projection are annual sums of those per-share amounts;
+    // keep the same precision rule so a small payout's effect is not rounded off.
+    let fmt_money = fmt_div;
+    Some(DividendsView {
+        synced,
+        prior_year_display: fmt_money(pace.prior_year_total),
+        ytd_display: fmt_money(pace.ytd_total),
+        projection_display: pace.projection.map(fmt_money),
+        pct_change_display: pace.pct_change.map(|p| format!("{p:+.1}%")),
+        current_year: chrono::Utc::now().date_naive().year(),
+        history,
+        pace,
+    })
+}
+
 // ── company leadership (Phase 14) ──────────────────────────────────────────
 
 /// A `leadership` row as stored.
@@ -859,6 +962,15 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         None
     };
 
+    // Dividend payouts (Phase 26): stocks only. A stock that pays no dividend
+    // (or whose sweep returned nothing) gets no section; an unswept stock
+    // shows a pending note in place.
+    let dividends = if is_stock {
+        build_dividends(&state.pool, &ticker, symbol.dividends_synced_at.is_some()).await
+    } else {
+        None
+    };
+
     let extra = minijinja::context! {
         title => ticker,
         symbol => symbol,
@@ -868,6 +980,7 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         standing => standing,
         fund => fund,
         leadership => leadership,
+        dividends => dividends,
         filings => filings,
     };
     render(&state, "pages/symbol.html", &format!("/s/{ticker}"), extra)

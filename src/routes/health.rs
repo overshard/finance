@@ -239,6 +239,10 @@ fn job_meta(job: &str) -> (&str, &str) {
             "Fundamentals & filings",
             "SEC EDGAR company facts and filing history for each stock, refreshed weekly.",
         ),
+        "dividends" => (
+            "Dividend payouts",
+            "Per-payout dividend history from Yahoo for each stock, refreshed weekly.",
+        ),
         other => (other, ""),
     }
 }
@@ -249,8 +253,9 @@ fn job_rank(job: &str) -> u8 {
         "seed" => 0,
         "history" => 1,
         "sec" => 2,
-        "intraday" => 3,
-        "daily_close" => 4,
+        "dividends" => 3,
+        "intraday" => 4,
+        "daily_close" => 5,
         _ => 9,
     }
 }

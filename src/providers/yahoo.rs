@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use reqwest::{header::RETRY_AFTER, StatusCode};
 use serde::Deserialize;
 
-use crate::providers::{IntradayBar, Quote, QuoteData, QuoteProvider, RateLimited};
+use crate::providers::{DividendEvent, IntradayBar, Quote, QuoteData, QuoteProvider, RateLimited};
 
 /// Near-real-time quotes from Yahoo Finance.
 pub struct YahooProvider {
@@ -92,6 +92,27 @@ struct ChartResult {
     /// Bar-start times, Unix seconds. Absent when the day has no bars yet.
     timestamp: Option<Vec<i64>>,
     indicators: Indicators,
+    /// `events.dividends` carries declared payouts when the request asked for
+    /// `events=div` (Phase 26). Absent on a routine quote fetch.
+    events: Option<ChartEvents>,
+}
+
+/// The events block of a Yahoo chart payload. Each value of `dividends` is
+/// keyed by the event's Unix-second timestamp (a JSON string, which is why
+/// the outer type is a map).
+#[derive(Default, Deserialize)]
+struct ChartEvents {
+    #[serde(default)]
+    dividends: std::collections::HashMap<String, ChartDividend>,
+}
+
+#[derive(Deserialize)]
+struct ChartDividend {
+    /// Per-share amount.
+    amount: f64,
+    /// Ex-dividend date as a Unix second. Yahoo also echoes the timestamp as
+    /// the map key, but the inner field is the canonical one to read off.
+    date: i64,
 }
 
 #[derive(Deserialize)]
@@ -182,6 +203,77 @@ impl YahooProvider {
             .chart
             .result
             .and_then(|mut r| if r.is_empty() { None } else { Some(r.remove(0)) }))
+    }
+
+    /// Fetch the declared dividend history for `ticker` (Phase 26).
+    ///
+    /// The same v8 chart endpoint that serves quotes carries an
+    /// `events.dividends` series when the request asks for `events=div`. Ask
+    /// for a five-year window at daily granularity: that is plenty for the
+    /// page's prior-year + YTD totals and a long history list, while keeping
+    /// the payload modest (the candle stream itself is discarded here — only
+    /// the events block is parsed). Returns the payouts oldest first.
+    ///
+    /// Error semantics mirror [`Self::quote`]: a 429/503 surfaces as
+    /// [`RateLimited`] so the endpoint guard trips at once; an unknown symbol
+    /// (404 or `chart.error`) returns an empty vec, not an error, since the
+    /// guard should not treat it as a transport failure.
+    pub async fn dividends(&self, ticker: &str) -> Result<Vec<DividendEvent>> {
+        let sym = urlencoding::encode(&yahoo_symbol(ticker)).into_owned();
+        let url = format!(
+            "https://query1.finance.yahoo.com/v8/finance/chart/{sym}\
+             ?interval=1d&range=5y&events=div"
+        );
+        let resp = self.client.get(&url).send().await?;
+        let status = resp.status();
+        if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE {
+            let retry_after_secs = resp
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<i64>().ok());
+            return Err(anyhow::Error::new(RateLimited {
+                status: status.as_u16(),
+                retry_after_secs,
+            }));
+        }
+        if status == StatusCode::NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        let resp = resp.error_for_status()?;
+        let env: ChartEnvelope = resp.json().await?;
+        if env.chart.error.is_some() {
+            return Ok(Vec::new());
+        }
+        let Some(result) = env
+            .chart
+            .result
+            .and_then(|mut r| if r.is_empty() { None } else { Some(r.remove(0)) })
+        else {
+            return Ok(Vec::new());
+        };
+        let mut out: Vec<DividendEvent> = result
+            .events
+            .unwrap_or_default()
+            .dividends
+            .into_values()
+            .filter_map(|d| {
+                // A non-positive amount or a nonsense timestamp is filtered;
+                // Yahoo has occasionally emitted a literal 0 placeholder.
+                if d.amount <= 0.0 {
+                    return None;
+                }
+                let ex_date = chrono::DateTime::from_timestamp(d.date, 0)?
+                    .format("%Y-%m-%d")
+                    .to_string();
+                Some(DividendEvent {
+                    ex_date,
+                    amount: d.amount,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| a.ex_date.cmp(&b.ex_date));
+        Ok(out)
     }
 
     /// Identify a symbol: validate it exists on Yahoo and return its name,

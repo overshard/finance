@@ -31,6 +31,9 @@ pub struct SymbolRow {
     pub fund_synced_at: Option<i64>,
     /// When this stock's leadership roster was last refreshed from SEC.
     pub leadership_synced_at: Option<i64>,
+    /// When this stock's dividend history was last refreshed from Yahoo
+    /// (Phase 26). NULL for non-stocks and stocks not yet swept.
+    pub dividends_synced_at: Option<i64>,
     pub last_price: Option<f64>,
     pub prev_close: Option<f64>,
     pub last_quote_at: Option<i64>,

@@ -239,6 +239,25 @@ pub struct PortfolioData {
     pub asset_mix: Vec<(String, f64)>,
 }
 
+// ── dividend events (Phase 26) ─────────────────────────────────────────────
+//
+// Per-payout dividend history comes from Yahoo's chart endpoint, which carries
+// an `events.dividends` series alongside the price bars when asked for
+// `events=div`. SEC XBRL's `DividendsPerShare` (already in `fundamentals`) is
+// per fiscal period, not per payout date, so it does not stand in. The fetch
+// lives on `YahooProvider` as an inherent method (one source); the type sits
+// here next to `Quote`/`IntradayBar` for the scheduler and routes.
+
+/// One declared dividend payment, as carried by Yahoo's chart event series.
+#[derive(Debug, Clone)]
+pub struct DividendEvent {
+    /// Ex-dividend date, `YYYY-MM-DD`. The first trading day a new buyer does
+    /// NOT receive the upcoming payment — Yahoo timestamps each event by it.
+    pub ex_date: String,
+    /// Per-share amount, in the symbol's reporting currency.
+    pub amount: f64,
+}
+
 /// An upstream rejected a request with an explicit rate-limit signal (HTTP 429
 /// or 503). A provider returns this as the source of its `anyhow::Error` so the
 /// `EndpointGuard` (see `src/guard.rs`) can recognise it by downcast and trip

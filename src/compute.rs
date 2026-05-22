@@ -547,6 +547,198 @@ fn earnings_growth(net_income: Option<f64>, prev_net_income: Option<f64>) -> Rat
     mk(KEY, LABEL, EXPLAIN, format!("{v:+.1}%"), grade, reading)
 }
 
+// ──────────────────────── dividend pace (Phase 26) ─────────────────────────
+//
+// Inferred cadence + an on-track read for a stock's dividend payouts. Inputs
+// are sorted (ex_date, amount) pairs and a reference "today" date. Pure code,
+// kept here next to the other graded reads; the route formats display.
+
+/// How frequently a stock pays out — inferred from the median gap between its
+/// recent ex-dividend dates. Drives both the page's "Pays …" caption and the
+/// count-tempered projection of the current year's total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Cadence {
+    /// One payment per year.
+    Annual,
+    /// Two per year (~180-day gap), e.g. some European dual-listings.
+    SemiAnnual,
+    /// Four per year (~90-day gap), the US norm.
+    Quarterly,
+    /// Twelve per year, e.g. monthly-paying real-estate trusts.
+    Monthly,
+    /// Cadence does not fit a clean pattern (special one-off, etc.).
+    Irregular,
+    /// No payouts to read from.
+    None,
+}
+
+impl Cadence {
+    /// A short caption for the page header, e.g. `Pays quarterly`.
+    pub fn caption(self) -> &'static str {
+        match self {
+            Cadence::Annual => "Pays annually",
+            Cadence::SemiAnnual => "Pays twice a year",
+            Cadence::Quarterly => "Pays quarterly",
+            Cadence::Monthly => "Pays monthly",
+            Cadence::Irregular => "Irregular cadence",
+            Cadence::None => "No dividends recorded",
+        }
+    }
+
+    /// Expected number of payouts per calendar year, for the projection.
+    /// `None` for `Irregular` / `None`, where a clean projection is misleading.
+    fn expected_per_year(self) -> Option<u32> {
+        match self {
+            Cadence::Annual => Some(1),
+            Cadence::SemiAnnual => Some(2),
+            Cadence::Quarterly => Some(4),
+            Cadence::Monthly => Some(12),
+            Cadence::Irregular | Cadence::None => None,
+        }
+    }
+}
+
+/// Infer cadence from the most recent payouts' ex-date gaps. Takes a sorted
+/// (oldest first) slice of dates as `YYYY-MM-DD` strings; reads the median
+/// gap across the last few payments so a single irregular one-off does not
+/// throw the classification. Returns `Irregular` when the median lands outside
+/// every clean band, and `None` when there is too little to infer from.
+pub fn infer_cadence(ex_dates_oldest_first: &[String]) -> Cadence {
+    if ex_dates_oldest_first.is_empty() {
+        return Cadence::None;
+    }
+    if ex_dates_oldest_first.len() == 1 {
+        // One payout: not enough to infer a cadence, but better to flag it as
+        // irregular than claim a clean annual.
+        return Cadence::Irregular;
+    }
+    // The most recent up-to-8 payouts give a stable median while still
+    // reflecting any recent change in cadence.
+    let tail = &ex_dates_oldest_first[ex_dates_oldest_first.len().saturating_sub(8)..];
+    let parsed: Vec<chrono::NaiveDate> = tail
+        .iter()
+        .filter_map(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+        .collect();
+    if parsed.len() < 2 {
+        return Cadence::Irregular;
+    }
+    let mut gaps: Vec<i64> = parsed
+        .windows(2)
+        .map(|w| (w[1] - w[0]).num_days())
+        .collect();
+    gaps.sort();
+    // Median rather than mean so a single irregular gap does not skew it.
+    let median = gaps[gaps.len() / 2];
+    match median {
+        // Each band leaves comfortable slack: a quarterly payer's gaps range
+        // ~80-95d in practice depending on the calendar.
+        d if d <= 45 => Cadence::Monthly,
+        d if d <= 130 => Cadence::Quarterly,
+        d if d <= 220 => Cadence::SemiAnnual,
+        d if d <= 450 => Cadence::Annual,
+        _ => Cadence::Irregular,
+    }
+}
+
+/// The on-track read for a stock's dividends: prior-year and YTD totals, the
+/// projected current-year total, and a graded verdict on whether the company
+/// is tracking ahead of, on, or behind its prior-year payout.
+#[derive(Debug, Clone, Serialize)]
+pub struct DividendPace {
+    pub cadence: Cadence,
+    /// Short caption derived from `cadence`, e.g. `Pays quarterly`. Carried
+    /// so the template renders it without poking at the method.
+    pub cadence_caption: &'static str,
+    /// Sum of payouts in the previous calendar year, per share.
+    pub prior_year_total: f64,
+    /// Sum of payouts in the current calendar year so far, per share.
+    pub ytd_total: f64,
+    /// Number of payouts declared so far this calendar year.
+    pub ytd_count: u32,
+    /// Projected current-year total per share, scaling YTD by the count-
+    /// tempered factor (`expected_n / declared_n_so_far`). `None` when the
+    /// cadence is unclear, no payouts have landed this year, or there is no
+    /// prior-year baseline to compare against.
+    pub projection: Option<f64>,
+    /// Projection vs prior-year, as a percent change. `None` whenever
+    /// `projection` is.
+    pub pct_change: Option<f64>,
+    /// On-track verdict (rise is good for dividends, matching the Phase 24
+    /// trend reading): `Good` for a clear rise, `Bad` for a clear fall, `Ok`
+    /// for a small move or a flat year, `Unknown` whenever `projection` is.
+    pub grade: Grade,
+    /// One-word badge text derived from `grade` — `Strong` / `Fair` / `Weak`,
+    /// or `No data` when there is nothing to read.
+    pub verdict: &'static str,
+}
+
+/// A small one-week-each-side band around prior-year that reads as flat, so a
+/// rounding-grade payment increase does not register as "growing" /
+/// "shrinking".
+const PACE_FLAT_BAND: f64 = 2.0;
+
+/// Build a [`DividendPace`] from dividend events oldest first. `today` carries
+/// the date the YTD window closes at (taken from the route's clock). Returns a
+/// `DividendPace` even when there is little to say, so the page can show the
+/// raw cadence and totals alone; the verdict downgrades to `Unknown` when a
+/// pace projection is not meaningful.
+pub fn dividend_pace(events: &[(String, f64)], today: chrono::NaiveDate) -> DividendPace {
+    use chrono::Datelike;
+    let year = today.year();
+    let prior = year - 1;
+    let (mut prior_total, mut ytd_total, mut ytd_count) = (0.0_f64, 0.0_f64, 0_u32);
+    for (date, amount) in events {
+        let Ok(d) = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d") else {
+            continue;
+        };
+        if d.year() == year && d <= today {
+            ytd_total += amount;
+            ytd_count += 1;
+        } else if d.year() == prior {
+            prior_total += amount;
+        }
+    }
+
+    let dates: Vec<String> = events.iter().map(|(d, _)| d.clone()).collect();
+    let cadence = infer_cadence(&dates);
+
+    // Count-tempered projection: scale YTD by (expected_n / declared_n_so_far).
+    // A quarterly payer at end-of-Q1 thus projects ×4, not ×~4 by elapsed days,
+    // which is what the user picked over a calendar-elapsed-fraction approach.
+    let (projection, pct_change, grade) = match (
+        cadence.expected_per_year(),
+        ytd_count,
+        prior_total,
+    ) {
+        (Some(expected), declared, prior_year) if declared > 0 && prior_year > 0.0 => {
+            let p = ytd_total * f64::from(expected) / f64::from(declared);
+            let pct = (p - prior_year) / prior_year * 100.0;
+            let grade = if pct > PACE_FLAT_BAND {
+                Grade::Good
+            } else if pct < -PACE_FLAT_BAND {
+                Grade::Bad
+            } else {
+                Grade::Ok
+            };
+            (Some(p), Some(pct), grade)
+        }
+        _ => (None, None, Grade::Unknown),
+    };
+
+    DividendPace {
+        cadence,
+        cadence_caption: cadence.caption(),
+        prior_year_total: prior_total,
+        ytd_total,
+        ytd_count,
+        projection,
+        pct_change,
+        grade,
+        verdict: grade.verdict(),
+    }
+}
+
 // ─────────────────────── company standing (Phase 20) ───────────────────────
 //
 // A stock's overall standing rolls its nine graded ratios into a single

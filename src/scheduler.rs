@@ -35,8 +35,9 @@ use crate::market;
 use crate::providers::sec::SecProvider;
 use crate::providers::yahoo::YahooProvider;
 use crate::providers::{
-    self, stooq::StooqProvider, Fact, FilingRecord, FundId, FundShape, FundamentalsProvider,
-    HistoryProvider, IntradayBar, OwnershipPerson, PortfolioData, Quote, QuoteProvider,
+    self, stooq::StooqProvider, DividendEvent, Fact, FilingRecord, FundId, FundShape,
+    FundamentalsProvider, HistoryProvider, IntradayBar, OwnershipPerson, PortfolioData, Quote,
+    QuoteProvider,
 };
 use crate::stream::{Hub, QuoteUpdate, StreamEvent};
 use crate::{seed, Config};
@@ -89,6 +90,13 @@ const SEC_BUDGET: i64 = 600;
 const LEADERSHIP_STALE_SECS: i64 = 30 * 24 * 3600;
 const LEADERSHIP_MAX_FILINGS: usize = 30;
 
+/// Dividend history refresh (Phase 26). Declared dividends are confirmed and
+/// stable once an ex-date passes, so the data changes slowly: a stock pays out
+/// at most a handful of times a year. A weekly cadence is plenty to land each
+/// new payment within a few days while keeping the Yahoo budget light.
+const DIVIDENDS_INTERVAL_SECS: i64 = 24 * 3600;
+const DIVIDENDS_STALE_SECS: i64 = 7 * 24 * 3600;
+
 /// Spawn the scheduler. The returned handle is normally dropped: dropping it
 /// detaches the task, which then runs for the lifetime of the process.
 pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle<()> {
@@ -126,6 +134,14 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
             // new SEC-backed data (e.g. the Phase 18 ETF profiles) backfills
             // within a tick instead of waiting out the ~24h interval.
             tracing::warn!("[scheduler] bring sec job forward: {e}");
+        }
+
+        // Dividends job (Phase 26): bring it forward the same way the SEC job
+        // is, so a deploy adding the table backfills the universe within a
+        // tick rather than waiting out the daily interval. The sweep is
+        // resumable and the no-stale fast path is free.
+        if let Err(e) = schedule_next(&pool, "dividends", now_ms()).await {
+            tracing::warn!("[scheduler] bring dividends job forward: {e}");
         }
 
         // Prune's last-run time is loop-local: a restart simply re-prunes once,
@@ -173,6 +189,20 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
                     Ok(false) => {}
                     Err(e) => tracing::warn!("[scheduler] sec due-check: {e}"),
                 }
+            }
+
+            // Dividend payouts (Phase 26): sweep stocks whose dividend
+            // history has gone stale (weekly). Runs only when Yahoo is
+            // reachable; gated nowhere else — declared dividends drift after
+            // the ex-date passes, so a fresh pull every week is enough.
+            match is_due(&pool, "dividends", now_ms()).await {
+                Ok(true) => {
+                    if let Err(e) = run_dividends(&pool, &config, &hub).await {
+                        tracing::warn!("[scheduler] dividends: {e:#}");
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!("[scheduler] dividends due-check: {e}"),
             }
 
             // Intraday quotes: demand-driven (only symbols a browser is
@@ -963,6 +993,139 @@ async fn run_sec(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Resul
     Ok(())
 }
 
+/// Dividend payout sweep (Phase 26).
+///
+/// For every stock whose dividend history is stale, ask Yahoo for the last
+/// five years of declared dividends and upsert them. Stocks only — ETFs,
+/// indexes and futures do not pay regular dividends in this app's sense; an
+/// ETF's distributions live in the fund profile, not here. Routed through the
+/// shared `yahoo` `EndpointGuard` so it shares pacing and the per-hour budget
+/// with the intraday and daily-close jobs.
+///
+/// Resumable in the same way as the SEC job: each stock's
+/// `dividends_synced_at` is stamped only on a successful fetch, so a guard
+/// stop leaves the rest for the next cycle.
+async fn run_dividends(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Result<()> {
+    let started = now_ms();
+    let next = started + DIVIDENDS_INTERVAL_SECS * 1000;
+    let cutoff = started - DIVIDENDS_STALE_SECS * 1000;
+    let stale: Vec<String> = sqlx::query_scalar(
+        "SELECT ticker FROM symbols \
+         WHERE kind = 'stock' \
+           AND (dividends_synced_at IS NULL OR dividends_synced_at < ?) \
+         ORDER BY ticker",
+    )
+    .bind(cutoff)
+    .fetch_all(pool)
+    .await?;
+
+    if stale.is_empty() {
+        // The fast path: nothing stale, nothing to do. No fetching banner.
+        mark_ok(pool, "dividends", Some(next)).await?;
+        return Ok(());
+    }
+
+    mark_fetching(pool, "dividends").await?;
+    notify_health(hub);
+    tracing::info!("[scheduler] dividends: refreshing {} stocks", stale.len());
+
+    let yahoo = YahooProvider::new(providers::http::build_client(config));
+    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    let t0 = Instant::now();
+    let mut ok = 0i64;
+    let mut payouts = 0i64;
+    let mut errors = 0i64;
+    let mut stopped: Option<String> = None;
+
+    for ticker in &stale {
+        match guard.acquire().await? {
+            Permit::Granted => {}
+            Permit::Denied(why) => {
+                stopped = Some(why);
+                break;
+            }
+        }
+        match yahoo.dividends(ticker).await {
+            Ok(events) => {
+                guard.record_success().await?;
+                payouts += events.len() as i64;
+                if let Err(e) = store_dividends(pool, ticker, &events).await {
+                    tracing::warn!("[scheduler] dividends store {ticker}: {e:#}");
+                    errors += 1;
+                    continue;
+                }
+                mark_dividends_synced(pool, ticker).await?;
+                ok += 1;
+            }
+            Err(e) => {
+                guard.record_failure(&e).await?;
+                errors += 1;
+                tracing::warn!("[scheduler] dividends {ticker}: {e:#}");
+            }
+        }
+    }
+
+    let dur = t0.elapsed().as_millis() as i64;
+    let detail = format!("{ok}/{} stocks, {payouts} payouts, {errors} errors", stale.len());
+    match stopped {
+        Some(why) => {
+            let full = format!("stopped early ({why}); {detail}");
+            tracing::warn!("[scheduler] dividends: {full}");
+            log_fetch(pool, "dividends", "yahoo", "skipped", Some(&full), Some(ok), dur, started)
+                .await?;
+        }
+        None => {
+            tracing::info!("[scheduler] dividends: {detail}");
+            log_fetch(pool, "dividends", "yahoo", "ok", Some(&detail), Some(ok), dur, started)
+                .await?;
+        }
+    }
+    mark_ok(pool, "dividends", Some(next)).await?;
+    notify_health(hub);
+    Ok(())
+}
+
+/// Replace one stock's dividend history with what Yahoo returned. Yahoo serves
+/// the canonical, corrected history each call, so a `DELETE` + `INSERT` keeps
+/// the table honest if a payout is later retracted or restated. `pub(crate)`:
+/// the add-symbol backfill reuses it.
+pub(crate) async fn store_dividends(
+    pool: &SqlitePool,
+    ticker: &str,
+    events: &[DividendEvent],
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM dividends WHERE ticker = ?")
+        .bind(ticker)
+        .execute(&mut *tx)
+        .await?;
+    for e in events {
+        sqlx::query(
+            "INSERT INTO dividends (ticker, ex_date, amount) VALUES (?, ?, ?) \
+             ON CONFLICT(ticker, ex_date) DO UPDATE SET amount = excluded.amount",
+        )
+        .bind(ticker)
+        .bind(&e.ex_date)
+        .bind(e.amount)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Stamp a stock as freshly dividend-synced.
+async fn mark_dividends_synced(pool: &SqlitePool, ticker: &str) -> sqlx::Result<()> {
+    let now = now_ms();
+    sqlx::query("UPDATE symbols SET dividends_synced_at = ?, updated_at = ? WHERE ticker = ?")
+        .bind(now)
+        .bind(now)
+        .bind(ticker)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Fill in `symbols.cik` for any stock found in the bulk SEC ticker map.
 /// Returns how many were newly resolved.
 async fn resolve_ciks(pool: &SqlitePool, map: &HashMap<String, String>) -> sqlx::Result<i64> {
@@ -1347,6 +1510,11 @@ async fn guarded<T>(
 /// the normal scheduler sweeps pick up whatever this run missed.
 pub(crate) async fn backfill_symbol(pool: &SqlitePool, config: &Config, ticker: &str, kind: &str) {
     backfill_history(pool, config, ticker, kind).await;
+    // Dividends are stocks-only and ride the Yahoo guard, not SEC, so they
+    // run independently of the SEC contact-email gate below.
+    if kind == "stock" {
+        backfill_dividends(pool, config, ticker).await;
+    }
 
     // SEC data covers stocks and ETFs; indexes and futures do not file. The
     // whole SEC step is skipped with no contact email configured, as `run_sec`
@@ -1360,6 +1528,26 @@ pub(crate) async fn backfill_symbol(pool: &SqlitePool, config: &Config, ticker: 
         "stock" => backfill_stock_sec(pool, &sec, &guard, ticker).await,
         "etf" => backfill_etf_sec(pool, &sec, &guard, ticker).await,
         _ => {}
+    }
+}
+
+/// Pull and store a freshly-added stock's dividend history (Phase 26). Stocks
+/// only — the caller already filters; routed through the same `yahoo` guard
+/// the dividends sweep uses. Best-effort: a guard denial or upstream error
+/// leaves the stock for the next normal sweep.
+async fn backfill_dividends(pool: &SqlitePool, config: &Config, ticker: &str) {
+    let yahoo = YahooProvider::new(providers::http::build_client(config));
+    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    match guarded(&guard, yahoo.dividends(ticker)).await {
+        Some(Ok(events)) => match store_dividends(pool, ticker, &events).await {
+            Ok(()) => {
+                let _ = mark_dividends_synced(pool, ticker).await;
+                tracing::info!("[backfill] {ticker} <- {} dividends", events.len());
+            }
+            Err(e) => tracing::warn!("[backfill] store dividends {ticker}: {e:#}"),
+        },
+        Some(Err(e)) => tracing::warn!("[backfill] dividends {ticker}: {e:#}"),
+        None => {}
     }
 }
 

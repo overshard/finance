@@ -247,6 +247,59 @@
   </section>
   {% endif %}
 
+  {# --- dividends: payout history + on-track pace (Phase 26) --- #}
+  {% if dividends %}
+  <h2 class="section-title">Dividends{% if symbol.dividends_synced_at %}<span class="section-title__asof">synced from Yahoo {{ symbol.dividends_synced_at|ago }}</span>{% endif %}</h2>
+  {% if dividends.synced and dividends.history %}
+  <section class="panel div-panel">
+    {# headline: inferred cadence + the on-track verdict pill #}
+    <div class="div-head">
+      <span class="div-cadence">{{ dividends.pace.cadence_caption }}</span>
+      {% if dividends.projection_display %}
+      <span class="vbadge vbadge--{{ dividends.pace.grade }}">{{ dividends.pace.verdict }}</span>
+      {% endif %}
+    </div>
+
+    {# pace: prior calendar year vs YTD-projected current year #}
+    <dl class="div-pace">
+      <div class="div-pace__item">
+        <dt class="div-pace__cap">{{ dividends.current_year - 1 }} total</dt>
+        <dd class="div-pace__val num">{% if dividends.pace.prior_year_total > 0 %}{{ dividends.prior_year_display }}{% else %}—{% endif %}</dd>
+      </div>
+      <div class="div-pace__item">
+        <dt class="div-pace__cap">{{ dividends.current_year }} so far</dt>
+        <dd class="div-pace__val num">{{ dividends.ytd_display }}<span class="div-pace__sub">{{ dividends.pace.ytd_count }} payment{% if dividends.pace.ytd_count != 1 %}s{% endif %}</span></dd>
+      </div>
+      {% if dividends.projection_display %}
+      <div class="div-pace__item">
+        <dt class="div-pace__cap">{{ dividends.current_year }} projected</dt>
+        <dd class="div-pace__val num">{{ dividends.projection_display }}<span class="div-pace__sub div-pace__sub--{{ dividends.pace.grade }}">{{ dividends.pct_change_display }} vs {{ dividends.current_year - 1 }}</span></dd>
+      </div>
+      {% endif %}
+    </dl>
+    <p class="div-pace__src">Projection scales {{ symbol.ticker }}&rsquo;s declared payments so far this year up to the inferred cadence, then compares to last year&rsquo;s total. Between payouts it is an estimate, not a guarantee.</p>
+
+    {# per-event history, newest first #}
+    <h3 class="div-hist__title">Payment history</h3>
+    <ul class="div-hist">
+      {% for d in dividends.history %}
+      <li class="div-row">
+        <span class="div-row__date">{{ d.ex_date|shortdate }}</span>
+        <span class="div-row__amt num">{{ d.amount }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% elif dividends.synced %}
+  <div class="fund-pending">{{ symbol.ticker }} has not paid a dividend in the past five years.</div>
+  {% else %}
+  <div class="fund-pending">
+    Dividend history for {{ symbol.ticker }} has not synced yet. It lands on the
+    next data refresh; see <a href="/health">data health</a>.
+  </div>
+  {% endif %}
+  {% endif %}
+
   {# --- leadership: officers, board & recent changes (Phase 14) --- #}
   <h2 class="section-title">Leadership{% if symbol.leadership_synced_at %}<span class="section-title__asof">synced from SEC {{ symbol.leadership_synced_at|ago }}</span>{% endif %}</h2>
   {% if leadership and leadership.roster %}

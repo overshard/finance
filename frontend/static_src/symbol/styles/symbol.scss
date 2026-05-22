@@ -1020,6 +1020,120 @@
   }
 }
 
+/* ---------- dividends (Phase 26) ---------- */
+.div-panel {
+  padding: 14px 16px;
+}
+
+/* headline: inferred cadence over an on-track pill on the right */
+.div-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-bottom: 14px;
+}
+
+.div-cadence {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* a 2- or 3-column row of prior-year / YTD / projected totals */
+.div-pace {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px 18px;
+  margin: 0 0 12px;
+}
+
+@media (min-width: 520px) {
+  .div-pace {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.div-pace__item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+}
+
+.div-pace__cap {
+  @include eyebrow;
+  font-size: 0.6rem;
+}
+
+.div-pace__val {
+  font-size: 1.05rem;
+  font-weight: 600;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+}
+
+.div-pace__sub {
+  @include eyebrow;
+  font-size: 0.62rem;
+  font-weight: 400;
+}
+
+.div-pace__sub--good { color: var(--up); }
+.div-pace__sub--bad  { color: var(--down); }
+.div-pace__sub--ok   { color: var(--ink-dim); }
+
+.div-pace__src {
+  margin: 0 0 16px;
+  padding-top: 11px;
+  border-top: 1px solid var(--rule);
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+}
+
+/* per-event history; mirrors the .roster row layout */
+.div-hist__title {
+  @include eyebrow;
+  color: var(--ink);
+  margin-bottom: 2px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule-strong);
+}
+
+.div-hist {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.div-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  padding: 9px 0;
+  border-top: 1px solid var(--rule);
+}
+
+.div-row:first-child {
+  border-top: none;
+}
+
+.div-row__date {
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+}
+
+.div-row__amt {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
 /* ---------- desktop layering ---------- */
 @media (min-width: $bp-md) {
   #chart {

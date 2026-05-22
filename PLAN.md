@@ -32,8 +32,8 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-22_
 
-**Current phase: none in progress. Phase 22 (show data age everywhere) is
-complete, verified, and deployed.** Phases 0
+**Current phase: Phase 26 (dividend payouts) is complete and verified
+locally; the deploy has not been pushed yet.** Phases 0
 through 12 (the MVP) plus Phase 14 (company leadership), Phase 18 (ETF
 profiles), Phase 20 (strongest & weakest home panels), Phase 21 (home &
 search refinements), Phase 23 + 24 (financials table) and Phase 22 (data-age
@@ -41,8 +41,12 @@ captions) are complete, verified, and **live in production at
 https://finance.bythewood.me**. Phase 22 adds a consistent, quiet data-age
 caption across the whole app — the home dashboard, search, and every
 symbol-page data section, not just `/health` — see the Done list and the
-decisions log. Remaining post-MVP work: the loose-ordered Phase 13, 15, 16,
-17, 19, 25, 26 backlog.
+decisions log. Phase 26 (the user picked it as the next backlog phase)
+adds a stock Dividends section on the symbol page — inferred cadence,
+prior-year and YTD totals, a count-tempered on-track projection, and a per-
+event payout history — backed by a new weekly Yahoo `dividends` scheduler
+job. Built locally; not yet deployed (commit pending). Remaining
+post-MVP work: the loose-ordered Phase 13, 15, 16, 17, 19, 25, 27 backlog.
 
 **Roadmap (restructured 2026-05-22, see decisions log):** the home-page
 redesign and commodities are pre-ship MVP phases. Order: 9 Search +
@@ -755,18 +759,79 @@ schema, unused for now.
     (360px) render with no horizontal overflow and zero console errors; a
     too-long caption wraps cleanly to a second line at 360px.
 
+- **Phase 26 dividend payouts.** Complete and verified locally; not yet
+  deployed. Per-payout dividend history sourced from Yahoo's chart endpoint
+  via `events=div`, surfaced as a new Dividends section on the symbol page
+  between Fundamentals and Leadership. Stocks only — ETFs, indexes and
+  futures show none of it.
+  - **Migration `0007`** adds the `dividends` table keyed `(ticker, ex_date)`
+    with a per-share `amount`, plus `symbols.dividends_synced_at`. Five-year
+    history pulled per stock (the user's pick over `max` or `5y` shorter
+    windows: enough for prior-year + YTD pace and a long visible list, while
+    keeping the per-call payload modest).
+  - **Yahoo provider.** A new `YahooProvider::dividends(ticker)` inherent
+    method calls the same v8 chart endpoint with `interval=1d&range=5y&events=div`
+    and parses the `events.dividends` map. Like `lookup`, a 429/503 surfaces
+    as the typed `RateLimited` (the `yahoo` `EndpointGuard` trips at once);
+    a 404 or `chart.error` returns an empty list (a clean "no dividends
+    history" answer, not a guard failure). Non-positive amounts and unparsable
+    timestamps are filtered.
+  - **Scheduler.** A new `dividends` job sweeps every stock whose
+    `dividends_synced_at` is older than a week, paced through the existing
+    `yahoo` guard alongside intraday and daily-close. Daily due-check;
+    skipped wholesale on a no-stale run. Brought forward to the first tick
+    on boot, like `sec`, so a deploy adding the table backfills the universe
+    within a tick rather than the daily interval. Resumable: each stock's
+    `dividends_synced_at` is stamped only on success.
+  - **Pace math (`compute.rs`).** `infer_cadence` reads the median gap
+    between the last up-to-8 payouts to classify a stock as monthly /
+    quarterly / semi-annual / annual / irregular. `dividend_pace` builds a
+    `DividendPace` carrying prior-year + YTD totals, the inferred cadence's
+    caption, and a count-tempered projection: `YTD × expected_n /
+    declared_n_so_far` (the user picked this over an elapsed-fraction-of-year
+    projection, since it does not misread a quarterly payer just after a
+    payout). The on-track grade is `Good` / `Ok` / `Bad` on a ±2% flat band,
+    rise-is-good (matching the Phase 24 trend reading).
+  - **Symbol page.** A new "Dividends" section between Fundamentals and
+    Leadership (the user's slot pick). Header: the cadence caption + the
+    on-track verdict pill. Below: a 3-card pace row — prior-year total, YTD
+    so far (with a payment count), and the count-tempered projection (with a
+    coloured `+x.x% vs <prior year>` sub). A provenance note labels the
+    projection as an estimate between payouts. Below that, a per-event
+    history list (date + per-share amount, newest first). A stock that has
+    not been swept yet shows a pending note; a swept stock with no payouts
+    in the past five years hides the section entirely (it pays no dividend).
+  - **Add-symbol backfill** (`scheduler::backfill_symbol`) now also pulls a
+    new stock's dividend history before responding, so a user-added stock's
+    Dividends section is complete the moment the add returns.
+  - **Health page** lists the new `dividends` job between `sec` and
+    `intraday` (job_meta + job_rank). The job runs on the existing `yahoo`
+    endpoint guard, so no new guard row was needed.
+  - Currency formatting: per-share figures show as `$0.24` to the cent
+    normally and widen to `$0.0625` for sub-cent payouts (the monthly REIT
+    case), so a small payment is not lost to rounding.
+  - Verified: cargo + bun build clean; the boot sweep ran and stamped every
+    curated stock; `/s/AAPL` rendered the Dividends section with the
+    quarterly cadence caption, prior-year + YTD totals, the projection with
+    its on-track badge, and the per-event history list; a non-paying stock
+    hid the section; ETFs / indexes / futures showed no section.
+
 **Resuming, next action**
-**Phase 22 (show data age everywhere) is complete, verified, and deployed**
-to production (2026-05-22, commit `39a863e`). The MVP plus Phase 14,
-Phase 18, Phase 20, Phase 21, Phase 23 + 24 and Phase 22 are all live at
-https://finance.bythewood.me. No phase is in progress. Remaining post-MVP
-work: the loose-ordered Phase 13, 15, 16, 17, 19, 25, 26 backlog; the user
-picks which to take next. A small Phase 9 bug fix (the `/search` "Add"
-affordance for short tickers like `W`) shipped 2026-05-22 alongside the
-backlog capture of Phases 25 and 26; see the decisions log. There is still
-no GitHub repo for finance: the user deferred that; if one is created
-later, add it as `origin` and the `overshard/finance` slug already in
-taproot's `projects.conf` lines up.
+**Phase 26 (dividend payouts) is complete and verified locally; the deploy
+is the next step.** The MVP plus Phase 14, Phase 18, Phase 20, Phase 21,
+Phase 23 + 24 and Phase 22 are all live at https://finance.bythewood.me.
+Phase 26 builds clean and runs end-to-end on the dev box; pushing
+`server master` ships it (migration `0007` applies on boot, the new
+`dividends` scheduler job backfills the universe over its first tick).
+Remaining post-MVP work: the loose-ordered Phase 13, 15, 16, 17, 19, 25, 27
+backlog; the user picks which to take next. Phase 27 (provider redundancy)
+was captured 2026-05-22 from a vibe-coding side note while Phase 26 was
+mid-build; see the decisions log. A small Phase 9 bug fix (the `/search`
+"Add" affordance for short tickers like `W`) shipped 2026-05-22 alongside
+the backlog capture of Phases 25 and 26; see the decisions log. There is
+still no GitHub repo for finance: the user deferred that; if one is
+created later, add it as `origin` and the `overshard/finance` slug already
+in taproot's `projects.conf` lines up.
 
 Note: Phase 18 added the `quick-xml` crate (N-PORT XML streaming parser) and
 migration `0005`. A fresh `make run` applies `0005`; the ETF fund profiles
@@ -1172,7 +1237,17 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   (3); piece (2) may want a small `next_earnings_at` column on `symbols`
   if it takes the Yahoo calendar path.
 
-- [ ] **Phase 26: Dividend payout history and pace.** (Captured 2026-05-22
+- [x] **Phase 26: Dividend payout history and pace.** Complete and verified
+  locally 2026-05-22 (not yet deployed); see the Phase 26 Done entry in
+  Status and the decisions log. Per-payout dividend history from Yahoo
+  chart `events.dividends`, new `dividends` table (migration `0007`),
+  a weekly `dividends` scheduler job on the existing `yahoo` guard, and a
+  symbol-page Dividends section between Fundamentals and Leadership with
+  inferred cadence, prior-year + YTD totals, a count-tempered on-track
+  projection, and a per-event history list. Ex-div pips on the candlestick
+  chart deferred to Phase 25 per the design Q&A. Stocks only.
+
+  (Captured 2026-05-22
   as a vibe-coding side note alongside Phase 25.) On the symbol page,
   surface the dividend cadence and how the current year is tracking against
   the last. Pieces:
@@ -1201,6 +1276,38 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   the per-share amount, populated by a new scheduler section that pulls
   each stock's dividend history through the `yahoo` `EndpointGuard` on a
   slow cadence (weekly is enough; the data rarely changes).
+
+- [ ] **Phase 27: Backup providers for redundancy.** (Captured 2026-05-22
+  from a vibe-coding side note while Phase 26 was mid-build.) For each
+  data concern (history / live quotes / fundamentals / dividends),
+  configure one or more *backup* upstreams behind the existing provider
+  traits, and switch over to the backup whenever the primary is unhappy:
+  its `EndpointGuard` breaker has opened, its hourly budget is spent, or
+  the primary returned a transport error. The user considers this critical
+  for keeping the app up when an upstream blocks, rate-limits, or simply
+  has an outage — "as much redundancy as possible".
+  Open design points to settle when building:
+  (1) **Trait composition.** A small `MultiProvider<T: Provider>` wrapper
+  that holds a primary + ordered fallbacks; `acquire()` tries the primary's
+  guard first, falls through on `Permit::Denied` / typed error, and records
+  which source succeeded for the health page. Likely lives in
+  `src/providers/mod.rs`.
+  (2) **Candidate sources.** Likely free/free-tier: Tiingo, Alpha Vantage,
+  Polygon (with caveats), or Stooq's CSV mirror for daily history; a second
+  Yahoo path or Marketstack for quotes; a fixed snapshot from `companyfacts`
+  for fundamentals where SEC is already the canonical source. Each gets
+  its own `EndpointGuard` row and budget (per PLAN.md's anti-spam policy).
+  (3) **Routing rules.** Stickiness — once a fallback is in use, when does
+  the system retry the primary? Likely a probe at the next due-check tick
+  once the primary's breaker closes. Per-symbol overrides for upstreams
+  that cover a different sub-universe (e.g. some sources don't carry
+  futures or non-US stocks).
+  (4) **Health page surfacing.** The page should show which source is
+  currently in use per concern, when a fallback last took over, and the
+  full list of configured backups with their own breaker / budget state.
+  No new core feature, but a meaningful change to the provider layer; it
+  goes beyond a small refinement, so the user can pick the ordering after
+  the current backlog.
 
 ---
 
@@ -1808,6 +1915,61 @@ finance/
   offer still shows only when the query matched nothing, or matched at least
   one result as a ticker substring (a name-only search such as `Inc` does not
   trigger it). The add panel can now render above a populated results grid.
+- **2026-05-22 — Phase 26 picked next; design Q&A settled four points.**
+  Asked which loose-ordered backlog phase to take next, the user chose
+  Phase 26 (dividend payouts). A short design pass settled the open
+  questions the plan had flagged. (1) **Chart pips deferred to Phase 25.**
+  Phase 26 ships the page section only; Phase 25 will build the
+  lightweight-charts marker layer for earnings + ex-div together, which
+  keeps Phase 26 tight and avoids writing marker plumbing without an
+  earnings caller to compare against. (2) **Yahoo dividend-history depth:
+  range=5y, interval=1d, events=div** — enough for prior-year + YTD pace
+  and a long visible history list, with a modest per-call payload; the
+  candle stream itself is discarded by the new method. (3) **Count-tempered
+  projection.** Project YTD up by the ratio of expected payments this year
+  to declared so far (so a quarterly payer at end-of-Q1 projects ×4, not
+  ×~4 by elapsed days). Reads more honest around the cadence than an
+  elapsed-fraction-of-year approach. (4) **Symbol-page slot.** The new
+  Dividends section sits between Fundamentals and Leadership, so the page
+  reads as key stats → fundamentals → financials → dividends → leadership
+  → filings.
+- **2026-05-22 — Phase 26 dividend payouts shipped (local).** Yahoo is now
+  the source for a third concern beyond quotes and intraday bars. Design
+  calls made during the build: (1) the `dividends(ticker)` method is
+  inherent to `YahooProvider`, not behind a new trait — the data lives on
+  the same v8 chart endpoint as the existing quote / lookup methods, and
+  the Phase 27 backlog (provider redundancy) is the right place to lift it
+  to a trait if it gains a second source. (2) The new `dividends`
+  scheduler job rides the existing `yahoo` `EndpointGuard` (no new row,
+  budget shared with intraday + daily-close); declared dividends drift
+  slowly, so a weekly staleness window keeps the steady-state cost tiny.
+  (3) A stock that has not been swept yet shows a "not synced yet" pending
+  note in place; a swept stock with no payouts in the past five years
+  hides the section entirely (it pays no dividend — no heading over an
+  empty table). (4) Cadence is inferred from the *median* gap between the
+  last up-to-8 payouts, with comfortable bands (≤45d monthly, ≤130d
+  quarterly, ≤220d semi-annual, ≤450d annual) so a single irregular gap
+  does not throw the classification. (5) The on-track grade uses a small
+  ±2% flat band to keep a rounding-grade payment change from reading as
+  "growing" or "shrinking" (PACE_FLAT_BAND). (6) The add-symbol backfill
+  (`scheduler::backfill_symbol`) was extended to pull a new stock's
+  dividend history before responding, mirroring Phase 21's intent that a
+  user-added symbol's page is complete the moment the add returns.
+  Per-share figures display to the cent normally (`$0.24`) and widen to
+  4dp for sub-cent payouts (`$0.0625`, the monthly REIT case) so a small
+  payment is not lost to rounding. Not yet deployed; ships on the next
+  `git push server master` (migration `0007` applies on the box).
+- **2026-05-22 — Phase 27 captured: backup providers for redundancy.**
+  While Phase 26 was mid-build the user floated a wish for additional
+  *backup* providers per data concern (history / quotes / fundamentals /
+  dividends), so the app can switch over when the primary's
+  `EndpointGuard` is unhappy — breaker open, hourly budget spent, or any
+  transport error — and so we have "as much redundancy as possible". Per
+  the vibe-coding rule the idea was budgeted into the plan rather than
+  acted on mid-phase: see the new Phase 27 entry in the Phases list, which
+  also enumerates the four open design points to settle when building (a
+  `MultiProvider<T>` wrapper, candidate sources, routing rules and
+  stickiness, health-page surfacing of the active source).
 - **2026-05-22: two side notes captured as Phases 25 and 26.** While waiting
   on the search-Add fix to deploy, the user floated two ideas: (1) earnings
   dates on the symbol page (last and next, with days-to / days-since), and
