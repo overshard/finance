@@ -188,7 +188,7 @@
   </section>
   {% endif %}
 
-  {# --- fundamentals + filings: stocks only --- #}
+  {# --- fundamentals + financials: stocks only --- #}
   {% if symbol.kind == 'stock' %}
 
   <h2 class="section-title">Fundamentals</h2>
@@ -228,6 +228,77 @@
   </section>
   {% endif %}
 
+  {% endif %}
+
+  {# --- fund profile: ETFs only (Phase 18) --- #}
+  {% if symbol.kind == 'etf' %}
+  <h2 class="section-title">Fund profile</h2>
+  {% if fund %}
+  <section class="panel fund">
+    <dl class="fund__stats">
+      <div class="fund__stat">
+        <dt class="fund__stat-cap">Net assets</dt>
+        <dd class="fund__stat-val num">{{ fund.net_assets if fund.net_assets else '·' }}</dd>
+      </div>
+      {% if not fund.is_commodity %}
+      <div class="fund__stat">
+        <dt class="fund__stat-cap">Holdings</dt>
+        <dd class="fund__stat-val num">{{ fund.holdings_count if fund.holdings_count is not none else '·' }}</dd>
+      </div>
+      {% endif %}
+      {% if fund.report_date %}
+      <div class="fund__stat">
+        <dt class="fund__stat-cap">As of</dt>
+        <dd class="fund__stat-val num">{{ fund.report_date }}</dd>
+      </div>
+      {% endif %}
+    </dl>
+    {% if fund.is_commodity %}
+    <p class="fund__note">{{ symbol.ticker }} is a grantor trust: it holds the physical commodity directly rather than a portfolio of securities, so it reports no holdings.</p>
+    {% elif fund.asset_mix %}
+    <div class="fund__mix">
+      <div class="mixbar">
+        {% for s in fund.asset_mix %}
+        <span class="mixbar__seg" style="width:{{ s.width }}%" title="{{ s.label }} {{ s.pct }}"></span>
+        {% endfor %}
+      </div>
+      <dl class="mixlegend">
+        {% for s in fund.asset_mix %}
+        <div class="mixlegend__item">
+          <dt><i class="mixlegend__dot"></i>{{ s.label }}</dt>
+          <dd class="num">{{ s.pct }}</dd>
+        </div>
+        {% endfor %}
+      </dl>
+    </div>
+    {% endif %}
+  </section>
+
+  {% if fund.holdings %}
+  <h2 class="section-title">Top holdings</h2>
+  <section class="panel holdings">
+    <ol class="hold-list">
+      {% for h in fund.holdings %}
+      <li class="hold">
+        <span class="hold__fill" style="width:{{ h.bar_pct }}%"></span>
+        <span class="hold__rank num">{{ h.rank }}</span>
+        <span class="hold__name">{{ h.name }}</span>
+        <span class="hold__wt num">{{ h.weight }}</span>
+        <span class="hold__val num">{{ h.value }}</span>
+      </li>
+      {% endfor %}
+    </ol>
+  </section>
+  {% endif %}
+  {% else %}
+  <div class="fund-pending">
+    The fund profile for {{ symbol.ticker }} has not synced yet. It lands on the
+    next SEC data refresh; see <a href="/health">data health</a>.
+  </div>
+  {% endif %}
+  {% endif %}
+
+  {# --- SEC filings: stocks and ETFs --- #}
   {% if filings %}
   <h2 class="section-title">Recent SEC filings</h2>
   <section class="panel filings">
@@ -248,8 +319,6 @@
       {% endfor %}
     </ul>
   </section>
-  {% endif %}
-
   {% endif %}
 </div>
 {% endblock %}

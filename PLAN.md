@@ -32,14 +32,16 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-22_
 
-**Current phase:** Phases 0 through 12 complete and verified. The MVP is
-shipped and **live in production at https://finance.bythewood.me** (deployed
-2026-05-22). Next work is the post-MVP backlog, phases 13 through 19.
+**Current phase:** Phases 0 through 12 (the MVP) plus Phase 18 (ETF profiles)
+are complete, verified, and **live in production at
+https://finance.bythewood.me** (Phase 18 deployed 2026-05-22). Remaining
+post-MVP backlog: phases 13 through 17 and 19.
 
 **Roadmap (restructured 2026-05-22, see decisions log):** the home-page
 redesign and commodities are pre-ship MVP phases. Order: 9 Search +
 add-symbol, 10 Commodities & futures, 11 Home dashboard redesign, 12 Polish +
-ship. Post-MVP backlog is phases 13 through 19.
+ship. Post-MVP backlog is phases 13 through 19; the user picked Phase 18 (ETF
+profiles) as the first post-MVP phase, done 2026-05-22.
 
 **Watchlists dropped from the MVP (2026-05-22, see decisions log):** the user
 no longer wants watchlists for now and wants the app to stay an opinionated,
@@ -467,14 +469,70 @@ schema, unused for now.
     return 200 over HTTPS with a valid cert and the page renders the Paper
     Ledger UI; the first-run seed backfills on the live box.
 
+- **Phase 18 ETF profiles.** Complete, verified, deployed to production.
+  - The first post-MVP phase (the user picked it over the rest of the 13-19
+    backlog). ETFs are now first-class: each ETF page carries a fund profile
+    section — net assets (AUM), holdings count, top 25 holdings by weight,
+    asset-class mix — plus its own SEC filing history.
+  - **Data source: SEC N-PORT.** An ETF files as a registered fund, so its
+    portfolio is not in the XBRL `companyfacts` behind the stock fundamentals;
+    it is in quarterly N-PORT filings, one large XML each. `providers/sec.rs`
+    gained inherent fund methods on `SecProvider` (N-PORT is wholly SEC-
+    specific, no second source to trait over): `fund_ticker_map` (the bulk
+    `company_tickers_mf.json`, ticker -> CIK + series id), `fund_filings` (one
+    browse-edgar Atom request -> filing list + the fund's shape), and
+    `fund_portfolio` (fetch + stream-parse one N-PORT `primary_doc.xml`).
+    Migration `0005` adds `symbols.series_id` / `fund_synced_at` and the
+    `fund_profiles` + `fund_holdings` tables. `quick-xml` is a new dependency
+    (streaming parser — a bond-fund N-PORT runs to 15+ MB / 13k positions).
+  - **Series filtering.** One registrant CIK can host dozens of fund series
+    (the Vanguard and iShares trusts). Lookups are keyed on the SEC *series
+    id* via browse-edgar, so a fund never picks up a sibling fund's filings or
+    N-PORT. The unit investment trusts (SPY, DIA) and the commodity grantor
+    trusts (GLD, SLV) are absent from `company_tickers_mf.json`, so a small
+    hardcoded CIK fallback covers them.
+  - **Filing-agent N-PORTs.** An N-PORT's accession number leads with the
+    *filer's* CIK, which for a fund using a filing agent is not the
+    registrant's; the Archives path needs the registrant CIK. The N-PORT XML
+    is located from the filing's browse-edgar index-page URL (which always
+    carries the registrant CIK) rather than from the accession.
+  - **Commodity trusts.** GLD and SLV hold physical bullion, not a securities
+    portfolio, so they file no N-PORT. They are detected by shape (files 10-K,
+    no N-PORT, no N-CEN) and get a minimal profile: AUM from their 10-K
+    `companyfacts` `Assets`, the filing list, and a "holds physical bullion"
+    note — no holdings table.
+  - **Scheduler.** `run_sec` now also resolves ETF fund CIKs and sweeps stale
+    ETF profiles (weekly staleness on `fund_synced_at`), through the same
+    `sec` `EndpointGuard` — 2 requests per ETF, well inside the 600/hr budget.
+  - **No expense ratio, no category** (user decision, see decisions log):
+    those are not in SEC structured data, only in prospectus HTML, so they are
+    dropped. The asset mix derived from N-PORT holdings stands in.
+  - **UI.** `symbol.html` gained a "Fund profile" panel (AUM / holdings / as-of
+    + a thin ink-shaded asset-mix bar), a "Top holdings" list (each row a
+    weight bar scaled to the largest holding), and the filing list is now
+    shown for ETFs as well as stocks. Holdings display the N-PORT issue
+    `title` (clean mixed-case) over the issuer `name` (often truncated caps).
+  - Verified: a full 28-ETF sweep stored 28/28 profiles with 0 errors (26
+    portfolio funds, 2 commodity trusts) in ~83s. N-PORT parsing is correct —
+    QQQ 101 holdings (NVIDIA 9.0%, Apple 8.0%, ...), VOO 518, SPY 503, AGG
+    13,186 from a 15.8 MB XML; AUM figures plausible (VTI $2.06T, GLD $155B).
+    `/s/QQQ`, `/s/GLD`, `/s/AGG` render the profile, mix bar and holdings in
+    the Paper Ledger look at 1280px and 390px with no overflow and zero
+    console errors; `/s/AAPL` (stock) and `/s/^VIX` (index) are unchanged.
+
 **Resuming, next action**
-**The MVP is shipped and live at https://finance.bythewood.me.** Phases 0
-through 12 are complete, verified, and deployed. No phase is in progress.
-Future work is the post-MVP backlog, phases 13 through 19 below. Redeploys
-are `git push server master` from this repo (the `server` remote is set).
-There is still no GitHub repo for finance — the user deferred that; if one is
-created later, add it as `origin` and the `overshard/finance` slug already in
-taproot's `projects.conf` lines up.
+**The MVP plus Phase 18 (ETF profiles) are live at
+https://finance.bythewood.me.** No phase is in progress. Phase 18 was deployed
+on 2026-05-22 via `git push server master`; migration `0005` applies on the
+box and the `sec` job backfills the 28 ETF profiles on its first due cycle.
+Remaining future work is the post-MVP backlog, phases 13 through 17 and 19
+below; ordering among them is loose. There is still no GitHub repo for
+finance: the user deferred that; if one is created later, add it as `origin`
+and the `overshard/finance` slug already in taproot's `projects.conf` lines up.
+
+Note: Phase 18 added the `quick-xml` crate (N-PORT XML streaming parser) and
+migration `0005`. A fresh `make run` applies `0005`; the ETF fund profiles
+populate on the first `sec` job cycle that finds them stale.
 
 Note: because `^RUT`/`^VIX` stay historyless, `meta.seed_completed` is never
 set, so the boot seed re-runs on every restart (cheap: ~2 Stooq calls that
@@ -727,12 +785,13 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   the industry, solid fundamentals, consistent gains with the occasional
   acceptable setback)? Explicitly NOT buy or sell advice, and labelled as such
   in the UI. Builds on Phases 7, 14 and 15.
-- [ ] **Phase 18: ETF profiles.** Treat ETFs as first-class rather than the
-  Phase 7 stocks-only treatment: top holdings and their weights (from SEC
-  N-PORT), expense ratio, fund category, and the fund's own filing history
-  (prospectus / 485BPOS, N-CEN). Needs a fund ticker-to-CIK source distinct
-  from the operating-company `company_tickers.json`. Captured 2026-05-22 from a
-  user question about ETF filings; see decisions log.
+- [x] **Phase 18: ETF profiles.** Complete and verified (2026-05-22) — the
+  first post-MVP phase, see the Phase 18 entry in Status and the decisions
+  log. ETFs are first-class: a fund profile (AUM, holdings count, top 25
+  holdings by weight, asset mix) and a fund filing history, sourced from SEC
+  N-PORT via the new `company_tickers_mf.json` ticker map. Expense ratio and
+  fund category were dropped (not in SEC structured data — user decision).
+  Commodity grantor trusts (GLD, SLV) get a minimal AUM-only profile.
 
 - [ ] **Phase 19: Watchlists.** Named lists of symbols the user curates:
   watchlist and per-list pages plus mutation APIs (create / delete / rename
@@ -750,7 +809,7 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
 finance/
   Cargo.toml  Makefile
   migrations/  0001_initial.sql  0002_endpoint_guard.sql  0003_guard_budget.sql
-               0004_fundamentals_unique.sql
+               0004_fundamentals_unique.sql  0005_fund_profiles.sql
   universe/starter.csv                curated seed list
   src/
     main.rs        entry + `seed` subcommand
@@ -1063,6 +1122,60 @@ finance/
   renders, and the first-run seed backfills on the live box. This closes
   Phase 12; the MVP is shipped. Remaining work is the post-MVP backlog
   (phases 13-19).
+- **2026-05-22: Phase 18 picked as the first post-MVP phase.** Asked which of
+  the loose-ordered backlog (13-19) to take first, the user chose 18, ETF
+  profiles. It is the most self-contained: it builds only on data sources
+  already shipped (SEC EDGAR) and needs no prior backlog phase.
+- **2026-05-22: expense ratio and fund category dropped from Phase 18.**
+  Research found neither is in SEC structured data — N-PORT carries holdings,
+  net assets and an asset-class breakdown, but the expense ratio and a
+  Morningstar-style category live only in prospectus (485BPOS) HTML, with no
+  clean machine-readable field. Offered to curate them in `starter.csv`, parse
+  the prospectus, or drop them; the user chose to drop both and show only what
+  N-PORT provides. The asset-class mix computed from N-PORT holdings stands in
+  for a category label.
+- **2026-05-22: GLD/SLV get a minimal commodity-trust profile.** GLD and SLV
+  are grantor trusts holding physical metal: they file 10-Ks, not N-PORT, and
+  have no securities portfolio. The user chose a minimal profile for them —
+  AUM (from the 10-K `companyfacts`), the filing list, and a plain note that
+  the trust holds bullion directly — over either a bare filings list or the
+  no-section treatment indexes get.
+- **2026-05-22: Phase 18 ETF profiles shipped.** SEC N-PORT is now a fourth
+  use of the EDGAR source. Design calls made during the build: (1) the fund
+  methods are inherent to `SecProvider`, not behind a trait — N-PORT is wholly
+  SEC-specific with no second source to abstract over, unlike the
+  `HistoryProvider` / `QuoteProvider` / `FundamentalsProvider` concerns. (2)
+  N-PORT lookups are keyed on the SEC *series id* (via the legacy browse-edgar
+  Atom interface, validated to still work and routed through the `sec` guard),
+  because one registrant CIK hosts many fund series and the modern
+  `submissions` JSON cannot filter by series. (3) The N-PORT XML is located
+  from the filing's browse-edgar index-page URL, not from the accession
+  number, because a fund that files through a filing agent has the agent's
+  CIK on the accession while the Archives path needs the registrant's — the
+  index URL always carries the registrant CIK (this bit during verification:
+  AGG and SPY 404'd until the fix). (4) `quick-xml` was added as a streaming
+  parser: a bond aggregate fund's N-PORT runs to 15+ MB and 13k positions, so
+  a DOM parse is wrong; only the top 25 holdings, the count and the asset mix
+  are kept. (5) Holdings display the N-PORT issue `title` over the issuer
+  `name`, since `name` often arrives truncated and all-caps. (6) The asset-mix
+  bar uses ink shades, not semantic green/amber/red — a fund's composition is
+  not a good/ok/bad judgement (the same exception the Phase 8 chart-indicator
+  palette took). Phase 18 was deployed to production on 2026-05-22 via
+  `git push server master` (migration `0005` applies on the box; the `sec` job
+  backfills the 28 ETF profiles on its first due cycle).
+- **2026-05-22: dashboard futures cards now update overnight.** The user
+  noticed the home-page sparkline cards showing stale "last night" numbers
+  while futures were trading. Cause: the demand-driven `intraday` poll was
+  gated to the US *equity* session (`session.is_open()`: pre, regular, post),
+  so through the overnight `Closed` window nothing was polled and the
+  commodity-futures cards (CL=F, GC=F, NG=F) sat frozen on the 16:00 ET
+  daily-close snapshot. Fix: `run_intraday` now always runs; inside a trading
+  session it polls every viewed symbol as before, but outside one it polls
+  only viewed *futures*, which trade nearly around the clock. Indexes, stocks
+  and ETFs stay correctly frozen off-hours. Still demand-driven and guarded:
+  nothing is polled unless a browser is viewing it. No futures-hours calendar
+  is modelled (a closed futures market just returns a flat quote), consistent
+  with the no-holiday-calendar decision in `market.rs`.
 
 ---
 
@@ -1079,6 +1192,9 @@ finance/
 - `/` has a "Futures & commodities" section; futures (`kind = 'future'`) are
   never sent to Stooq and carry a live quote only — `/s/GC=F` renders with no
   daily chart, like `^VIX`.
+- An ETF page (`/s/QQQ`) shows a Fund profile (AUM, holdings count, asset mix)
+  and a Top holdings list, plus its SEC filing history; a commodity-trust ETF
+  (`/s/GLD`) shows AUM and filings only, with no holdings.
 - Phone (~360 px) and desktop are both fully usable: no unintended horizontal
   scroll, chart resizes, every feature reachable.
 - No automated test suite or linter, matching the sibling projects.

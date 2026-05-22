@@ -14,6 +14,8 @@ pub struct SymbolRow {
     pub exchange: Option<String>,
     pub currency: String,
     pub cik: Option<String>,
+    /// SEC fund series id; set for an ETF, NULL otherwise (see migration 0005).
+    pub series_id: Option<String>,
     pub sector: Option<String>,
     pub industry: Option<String>,
     pub is_seeded: i64,
@@ -23,6 +25,8 @@ pub struct SymbolRow {
     pub history_last_date: Option<String>,
     pub fundamentals_synced_at: Option<i64>,
     pub filings_synced_at: Option<i64>,
+    /// When this ETF's fund profile was last refreshed from SEC.
+    pub fund_synced_at: Option<i64>,
     pub last_price: Option<f64>,
     pub prev_close: Option<f64>,
     pub last_quote_at: Option<i64>,

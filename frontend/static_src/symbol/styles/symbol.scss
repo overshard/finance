@@ -658,6 +658,214 @@
   color: var(--ink-faint);
 }
 
+/* ---------- ETF fund profile ---------- */
+.fund {
+  padding: 16px 18px;
+}
+
+.fund__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 36px;
+}
+
+.fund__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.fund__stat-cap {
+  @include eyebrow;
+  font-size: 0.58rem;
+}
+
+.fund__stat-val {
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+
+/* the physical-bullion note for a commodity-trust ETF (GLD, SLV) */
+.fund__note {
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid var(--rule);
+  color: var(--ink-dim);
+  font-size: 0.86rem;
+}
+
+/* asset-class mix: a thin segmented bar plus a compact legend. Segments are
+   ink shades, not semantic green/amber/red — a fund's composition is not a
+   good/ok/bad judgement (same reasoning as the chart indicator palette). */
+.fund__mix {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--rule);
+}
+
+.mixbar {
+  display: flex;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--well);
+}
+
+.mixbar__seg {
+  height: 100%;
+  border-right: 1px solid var(--surface);
+}
+
+.mixbar__seg:last-child {
+  border-right: none;
+}
+
+.mixbar__seg:nth-child(1) {
+  background: var(--ink);
+}
+
+.mixbar__seg:nth-child(2) {
+  background: var(--ink-dim);
+}
+
+.mixbar__seg:nth-child(3) {
+  background: var(--ink-faint);
+}
+
+.mixbar__seg:nth-child(n + 4) {
+  background: var(--rule-strong);
+}
+
+.mixlegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+  margin-top: 13px;
+}
+
+.mixlegend__item {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.mixlegend__item dt {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.83rem;
+  color: var(--ink-dim);
+}
+
+.mixlegend__item dd {
+  font-size: 0.83rem;
+  font-weight: 600;
+}
+
+.mixlegend__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: none;
+  background: var(--ink-faint);
+}
+
+.mixlegend__item:nth-child(1) .mixlegend__dot {
+  background: var(--ink);
+}
+
+.mixlegend__item:nth-child(2) .mixlegend__dot {
+  background: var(--ink-dim);
+}
+
+.mixlegend__item:nth-child(3) .mixlegend__dot {
+  background: var(--ink-faint);
+}
+
+.mixlegend__item:nth-child(n + 4) .mixlegend__dot {
+  background: var(--rule-strong);
+}
+
+/* ---------- top holdings ---------- */
+.holdings {
+  padding: 2px 16px;
+}
+
+.hold-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* each row carries a faint left-anchored fill sized to the holding's weight,
+   scaled so the largest holding shown fills the rail */
+.hold {
+  position: relative;
+  display: grid;
+  grid-template-columns: 2.6ch 1fr auto auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  padding: 10px 7px;
+  border-top: 1px solid var(--rule);
+}
+
+.hold:first-child {
+  border-top: none;
+}
+
+.hold__fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 0;
+  background: var(--well);
+  border-radius: 3px;
+}
+
+/* the row text rides above the weight fill */
+.hold > :not(.hold__fill) {
+  position: relative;
+  z-index: 1;
+}
+
+.hold__rank {
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+}
+
+.hold__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+.hold__wt {
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.hold__val {
+  min-width: 6.5ch;
+  text-align: right;
+  font-size: 0.82rem;
+  color: var(--ink-dim);
+}
+
+/* on a narrow phone the position value yields to the weight, the key figure */
+@media (max-width: $bp-sm) {
+  .hold {
+    grid-template-columns: 2.6ch 1fr auto;
+  }
+
+  .hold__val {
+    display: none;
+  }
+}
+
 /* ---------- desktop layering ---------- */
 @media (min-width: $bp-md) {
   #chart {

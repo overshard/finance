@@ -22,7 +22,7 @@
 //! hours apart, not seconds, and are inherently sequential (the pacing is the
 //! point), so they run inline in the loop task rather than via semaphores.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -35,8 +35,8 @@ use crate::market;
 use crate::providers::sec::SecProvider;
 use crate::providers::yahoo::YahooProvider;
 use crate::providers::{
-    self, stooq::StooqProvider, Fact, FilingRecord, FundamentalsProvider, HistoryProvider,
-    IntradayBar, Quote, QuoteProvider,
+    self, stooq::StooqProvider, Fact, FilingRecord, FundId, FundShape, FundamentalsProvider,
+    HistoryProvider, IntradayBar, PortfolioData, Quote, QuoteProvider,
 };
 use crate::stream::{Hub, QuoteUpdate, StreamEvent};
 use crate::{seed, Config};
@@ -159,12 +159,12 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
                 }
             }
 
-            // Intraday quotes: demand-driven (only symbols with a live viewer)
-            // and gated to trading hours. Does no network work otherwise.
-            if session.is_open() {
-                if let Err(e) = run_intraday(&pool, &config, &hub).await {
-                    tracing::warn!("[scheduler] intraday: {e:#}");
-                }
+            // Intraday quotes: demand-driven (only symbols a browser is
+            // viewing). Inside a trading session every viewed symbol is
+            // polled; outside it, only viewed futures, which trade nearly
+            // around the clock. Does no network work when neither applies.
+            if let Err(e) = run_intraday(&pool, &config, &hub, session).await {
+                tracing::warn!("[scheduler] intraday: {e:#}");
             }
 
             if let Err(e) = run_daily_close_if_due(&pool, &config, &hub).await {
@@ -368,17 +368,42 @@ async fn run_history(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::R
 ///
 /// Polls Yahoo only for the symbols a browser is currently viewing (the stream
 /// hub's interest registry). With nobody watching, `hub.viewed()` is empty and
-/// this returns at once having done no network work — that is the user's hard
-/// rule: poll only what is on screen. Each tick re-sweeps the viewed set, so
-/// one open symbol page refreshes about every minute, while an open dashboard
-/// (~144 symbols) refreshes more slowly as the guard's 1.5s pacing carries it.
+/// this returns at once having done no network work: the user's hard rule is
+/// to poll only what is on screen.
+///
+/// Which viewed symbols are polled depends on the session. Inside any trading
+/// session (pre, regular, post) every viewed symbol is fair game. Outside it,
+/// only viewed futures are polled: index futures and commodities trade nearly
+/// around the clock, while indexes, stocks and ETFs sit frozen until the next
+/// session, so polling them off-hours would only re-fetch a flat quote. This
+/// is what keeps the dashboard's commodity cards live overnight.
 ///
 /// A clean run is recorded only in `data_status` (plus each `quotes.fetched_at`
-/// row); a `fetch_log` row is written only for a notable run — an error or a
-/// guard stop — so the minute-cadence job does not bury the log.
-async fn run_intraday(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Result<()> {
+/// row); a `fetch_log` row is written only for a notable run, an error or a
+/// guard stop, so the minute-cadence job does not bury the log.
+async fn run_intraday(
+    pool: &SqlitePool,
+    config: &Config,
+    hub: &Hub,
+    session: market::Session,
+) -> anyhow::Result<()> {
     let viewed = hub.viewed();
     if viewed.is_empty() {
+        return Ok(());
+    }
+    // Inside a session, poll every viewed symbol; outside it, only the futures.
+    let targets: Vec<String> = if session.is_open() {
+        viewed
+    } else {
+        let futures: HashSet<String> =
+            sqlx::query_scalar("SELECT ticker FROM symbols WHERE kind = 'future'")
+                .fetch_all(pool)
+                .await?
+                .into_iter()
+                .collect();
+        viewed.into_iter().filter(|t| futures.contains(t)).collect()
+    };
+    if targets.is_empty() {
         return Ok(());
     }
     let started = now_ms();
@@ -393,7 +418,7 @@ async fn run_intraday(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::
     let mut errors = 0i64;
     let mut stopped: Option<String> = None;
 
-    for ticker in &viewed {
+    for ticker in &targets {
         match guard.acquire().await? {
             Permit::Granted => {}
             Permit::Denied(why) => {
@@ -545,17 +570,22 @@ async fn run_daily_close_if_due(
     Ok(())
 }
 
-/// SEC fundamentals & filings sweep.
+/// SEC fundamentals, filings & ETF fund-profile sweep.
 ///
-/// On the first run (and whenever new symbols appear) one bulk
-/// `company_tickers.json` fetch fills in each stock's CIK. Then every stock
-/// whose SEC data has gone stale is refreshed: its XBRL `companyfacts` into
-/// `fundamentals` and its submission history into `filings`. ETFs and indexes
-/// are skipped; they do not file with the SEC.
+/// On the first run (and whenever new symbols appear) two bulk ticker-map
+/// fetches fill in CIKs — `company_tickers.json` for stocks,
+/// `company_tickers_mf.json` for ETFs. Then every symbol whose SEC data has
+/// gone stale is refreshed:
+///  - a stock's XBRL `companyfacts` into `fundamentals`, its submission
+///    history into `filings`;
+///  - an ETF's latest N-PORT into `fund_profiles` + `fund_holdings`, its
+///    filing history into `filings`. A physical-commodity grantor trust files
+///    no N-PORT, so its AUM comes from `companyfacts` instead.
+/// Indexes are skipped; they do not file with the SEC.
 ///
-/// Resumable like the history job: each company's two timestamps
-/// (`fundamentals_synced_at`, `filings_synced_at`) are stamped only on a
-/// successful fetch, so a guard stop simply leaves the rest for the next cycle.
+/// Resumable like the history job: each symbol's sync timestamps are stamped
+/// only on a successful fetch, so a guard stop simply leaves the rest for the
+/// next cycle.
 async fn run_sec(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Result<()> {
     let started = now_ms();
     let next = started + SEC_INTERVAL_SECS * 1000;
@@ -566,8 +596,8 @@ async fn run_sec(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Resul
     let guard = EndpointGuard::with_budget(pool.clone(), sec.name(), SEC_BUDGET);
     let t0 = Instant::now();
 
-    // 1. CIK resolution. One bulk call maps the whole market; only needed
-    //    while some stock still lacks a CIK.
+    // 1. Stock CIK resolution. One bulk call maps the whole market; only
+    //    needed while some stock still lacks a CIK.
     let missing: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM symbols WHERE kind = 'stock' AND cik IS NULL",
     )
@@ -603,10 +633,37 @@ async fn run_sec(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Resul
         }
     }
 
-    // 2. Stale sweep. A company is due when either of its SEC timestamps is
-    //    unset or older than the staleness window.
+    // 1b. ETF fund-CIK resolution from the mutual-fund ticker map. Best-effort:
+    //     a guard stop or error here only leaves the ETFs for a later cycle,
+    //     rather than aborting the stock sweep below.
+    let etfs_missing: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM symbols WHERE kind = 'etf' AND cik IS NULL",
+    )
+    .fetch_one(pool)
+    .await?;
+    if etfs_missing > 0 {
+        match guard.acquire().await? {
+            Permit::Granted => match sec.fund_ticker_map().await {
+                Ok(map) => {
+                    guard.record_success().await?;
+                    let resolved = resolve_fund_ciks(pool, &map).await?;
+                    tracing::info!("[scheduler] sec: resolved {resolved}/{etfs_missing} fund CIKs");
+                }
+                Err(e) => {
+                    guard.record_failure(&e).await?;
+                    tracing::warn!("[scheduler] sec fund CIK map: {e:#}");
+                }
+            },
+            Permit::Denied(why) => {
+                tracing::info!("[scheduler] sec: fund CIK map skipped ({why})");
+            }
+        }
+    }
+
+    // 2. Stale sweep. A symbol is due when one of its SEC timestamps is unset
+    //    or older than the staleness window.
     let cutoff = started - SEC_STALE_SECS * 1000;
-    let stale: Vec<(String, String, Option<i64>, Option<i64>)> = sqlx::query_as(
+    let stale_stocks: Vec<(String, String, Option<i64>, Option<i64>)> = sqlx::query_as(
         "SELECT ticker, cik, fundamentals_synced_at, filings_synced_at FROM symbols \
          WHERE kind = 'stock' AND cik IS NOT NULL \
            AND (fundamentals_synced_at IS NULL OR filings_synced_at IS NULL \
@@ -617,24 +674,38 @@ async fn run_sec(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Resul
     .bind(cutoff)
     .fetch_all(pool)
     .await?;
+    let stale_etfs: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT ticker, cik, series_id FROM symbols \
+         WHERE kind = 'etf' AND cik IS NOT NULL \
+           AND (fund_synced_at IS NULL OR fund_synced_at < ?) \
+         ORDER BY ticker",
+    )
+    .bind(cutoff)
+    .fetch_all(pool)
+    .await?;
 
-    if stale.is_empty() {
-        log_fetch(pool, "sec", "sec", "ok", Some("no stale companies"), Some(0), 0, started)
+    if stale_stocks.is_empty() && stale_etfs.is_empty() {
+        log_fetch(pool, "sec", "sec", "ok", Some("no stale companies or funds"), Some(0), 0, started)
             .await?;
         mark_ok(pool, "sec", Some(next)).await?;
         notify_health(hub);
         return Ok(());
     }
-    tracing::info!("[scheduler] sec: refreshing {} companies", stale.len());
+    tracing::info!(
+        "[scheduler] sec: refreshing {} companies, {} funds",
+        stale_stocks.len(),
+        stale_etfs.len()
+    );
 
-    // A company's metric is due when its timestamp is unset or past the cutoff.
+    // A metric is due when its timestamp is unset or past the cutoff.
     let due = |at: Option<i64>| at.map_or(true, |t| t < cutoff);
     let mut funds_ok = 0i64;
     let mut filings_ok = 0i64;
+    let mut etfs_ok = 0i64;
     let mut errors = 0i64;
     let mut stopped: Option<String> = None;
 
-    'sweep: for (ticker, cik, f_at, fl_at) in &stale {
+    'stocks: for (ticker, cik, f_at, fl_at) in &stale_stocks {
         if due(*f_at) {
             match guard.acquire().await? {
                 Permit::Granted => match sec.facts(cik).await {
@@ -652,7 +723,7 @@ async fn run_sec(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Resul
                 },
                 Permit::Denied(why) => {
                     stopped = Some(why);
-                    break 'sweep;
+                    break 'stocks;
                 }
             }
         }
@@ -673,14 +744,94 @@ async fn run_sec(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Resul
                 },
                 Permit::Denied(why) => {
                     stopped = Some(why);
-                    break 'sweep;
+                    break 'stocks;
+                }
+            }
+        }
+    }
+
+    // 3. ETF fund-profile sweep, sharing the guard and the early-exit. Skipped
+    //    wholesale if the stock sweep above already hit a guard stop.
+    if stopped.is_none() {
+        'funds: for (ticker, cik, series_id) in &stale_etfs {
+            let id = FundId {
+                cik: cik.clone(),
+                series_id: series_id.clone(),
+            };
+            // 3a. The filing list, and what it says about the fund's shape.
+            let shape = match guard.acquire().await? {
+                Permit::Granted => match sec.fund_filings(&id).await {
+                    Ok(ff) => {
+                        guard.record_success().await?;
+                        store_filings(pool, ticker, &ff.filings).await?;
+                        ff.shape
+                    }
+                    Err(e) => {
+                        guard.record_failure(&e).await?;
+                        errors += 1;
+                        tracing::warn!("[scheduler] sec fund_filings {ticker} failed: {e:#}");
+                        continue 'funds;
+                    }
+                },
+                Permit::Denied(why) => {
+                    stopped = Some(why);
+                    break 'funds;
+                }
+            };
+            // 3b. Holdings from N-PORT, or AUM for a commodity trust.
+            match shape {
+                FundShape::Portfolio { nport_href } => match guard.acquire().await? {
+                    Permit::Granted => match sec.fund_portfolio(&nport_href).await {
+                        Ok(portfolio) => {
+                            guard.record_success().await?;
+                            store_fund_portfolio(pool, ticker, &portfolio).await?;
+                            mark_fund_synced(pool, ticker).await?;
+                            etfs_ok += 1;
+                        }
+                        Err(e) => {
+                            guard.record_failure(&e).await?;
+                            errors += 1;
+                            tracing::warn!("[scheduler] sec fund_portfolio {ticker} failed: {e:#}");
+                        }
+                    },
+                    Permit::Denied(why) => {
+                        stopped = Some(why);
+                        break 'funds;
+                    }
+                },
+                FundShape::CommodityTrust => match guard.acquire().await? {
+                    Permit::Granted => match sec.fund_aum(cik).await {
+                        Ok(aum) => {
+                            guard.record_success().await?;
+                            store_fund_commodity(pool, ticker, aum).await?;
+                            mark_fund_synced(pool, ticker).await?;
+                            etfs_ok += 1;
+                        }
+                        Err(e) => {
+                            guard.record_failure(&e).await?;
+                            errors += 1;
+                            tracing::warn!("[scheduler] sec fund_aum {ticker} failed: {e:#}");
+                        }
+                    },
+                    Permit::Denied(why) => {
+                        stopped = Some(why);
+                        break 'funds;
+                    }
+                },
+                FundShape::Unknown => {
+                    // The filing list synced but there is no portfolio to
+                    // record. Stamp it so it is not retried until next stale.
+                    mark_fund_synced(pool, ticker).await?;
+                    etfs_ok += 1;
                 }
             }
         }
     }
 
     let dur = t0.elapsed().as_millis() as i64;
-    let counts = format!("{funds_ok} fundamentals, {filings_ok} filings, {errors} errors");
+    let counts = format!(
+        "{funds_ok} fundamentals, {filings_ok} filings, {etfs_ok} fund profiles, {errors} errors"
+    );
     match stopped {
         Some(why) => {
             let detail = format!("stopped early ({why}); {counts}");
@@ -716,6 +867,35 @@ async fn resolve_ciks(pool: &SqlitePool, map: &HashMap<String, String>) -> sqlx:
                 .bind(&ticker)
                 .execute(pool)
                 .await?;
+            resolved += 1;
+        }
+    }
+    Ok(resolved)
+}
+
+/// Fill in `symbols.cik` and `symbols.series_id` for any ETF found in the bulk
+/// SEC mutual-fund ticker map. Returns how many were newly resolved.
+async fn resolve_fund_ciks(
+    pool: &SqlitePool,
+    map: &HashMap<String, FundId>,
+) -> sqlx::Result<i64> {
+    let etfs: Vec<String> =
+        sqlx::query_scalar("SELECT ticker FROM symbols WHERE kind = 'etf' AND cik IS NULL")
+            .fetch_all(pool)
+            .await?;
+    let mut resolved = 0;
+    for ticker in etfs {
+        if let Some(id) = map.get(&crate::providers::sec::normalize_ticker(&ticker)) {
+            let now = now_ms();
+            sqlx::query(
+                "UPDATE symbols SET cik = ?, series_id = ?, updated_at = ? WHERE ticker = ?",
+            )
+            .bind(&id.cik)
+            .bind(&id.series_id)
+            .bind(now)
+            .bind(&ticker)
+            .execute(pool)
+            .await?;
             resolved += 1;
         }
     }
@@ -799,6 +979,96 @@ async fn store_filings(
         .await?;
     }
     tx.commit().await?;
+    Ok(())
+}
+
+/// Upsert one ETF's N-PORT fund profile and replace its stored holdings. The
+/// kept holdings are a small top slice, so they are deleted and re-inserted
+/// wholesale on each refresh.
+async fn store_fund_portfolio(
+    pool: &SqlitePool,
+    ticker: &str,
+    p: &PortfolioData,
+) -> anyhow::Result<()> {
+    // Asset mix is variable-length, so it rides in one JSON column rather than
+    // its own table: [["Equity", 99.8], ["Cash & equivalents", 0.2], ...].
+    let asset_mix = serde_json::to_string(&p.asset_mix)?;
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO fund_profiles \
+           (ticker, kind, net_assets, total_assets, holdings_count, report_date, \
+            asset_mix, updated_at) \
+         VALUES (?, 'portfolio', ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(ticker) DO UPDATE SET \
+           kind = excluded.kind, net_assets = excluded.net_assets, \
+           total_assets = excluded.total_assets, holdings_count = excluded.holdings_count, \
+           report_date = excluded.report_date, asset_mix = excluded.asset_mix, \
+           updated_at = excluded.updated_at",
+    )
+    .bind(ticker)
+    .bind(p.net_assets)
+    .bind(p.total_assets)
+    .bind(p.holdings_count)
+    .bind(&p.report_date)
+    .bind(&asset_mix)
+    .bind(now_ms())
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM fund_holdings WHERE ticker = ?")
+        .bind(ticker)
+        .execute(&mut *tx)
+        .await?;
+    for (i, h) in p.top_holdings.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO fund_holdings (ticker, rank, name, pct, value_usd) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(ticker)
+        .bind(i as i64 + 1)
+        .bind(&h.name)
+        .bind(h.pct)
+        .bind(h.value_usd)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Record a physical-commodity grantor trust's profile: just the AUM read from
+/// its 10-K. It holds bullion, not a securities portfolio, so there are no
+/// holdings and no asset mix.
+async fn store_fund_commodity(
+    pool: &SqlitePool,
+    ticker: &str,
+    aum: Option<f64>,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO fund_profiles \
+           (ticker, kind, net_assets, total_assets, holdings_count, report_date, \
+            asset_mix, updated_at) \
+         VALUES (?, 'commodity_trust', ?, NULL, NULL, NULL, NULL, ?) \
+         ON CONFLICT(ticker) DO UPDATE SET \
+           kind = excluded.kind, net_assets = excluded.net_assets, \
+           updated_at = excluded.updated_at",
+    )
+    .bind(ticker)
+    .bind(aum)
+    .bind(now_ms())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Stamp an ETF's fund profile as freshly synced.
+async fn mark_fund_synced(pool: &SqlitePool, ticker: &str) -> sqlx::Result<()> {
+    let now = now_ms();
+    sqlx::query("UPDATE symbols SET fund_synced_at = ?, updated_at = ? WHERE ticker = ?")
+        .bind(now)
+        .bind(now)
+        .bind(ticker)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

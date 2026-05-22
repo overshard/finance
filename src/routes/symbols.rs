@@ -217,6 +217,14 @@ fn filing_title(form: &str) -> String {
         "Annual report"
     } else if form.starts_with("6-K") {
         "Interim report"
+    } else if form.starts_with("NPORT") {
+        "Portfolio holdings report"
+    } else if form.starts_with("N-CEN") {
+        "Annual fund census"
+    } else if form.starts_with("N-CSR") {
+        "Shareholder report"
+    } else if form.starts_with("485") {
+        "Prospectus"
     } else {
         "Filing"
     };
@@ -338,6 +346,111 @@ fn build_fundamentals(facts: &[FundFact], price: Option<f64>) -> Option<Fundamen
     })
 }
 
+// ── ETF fund profile (Phase 18) ────────────────────────────────────────────
+
+/// A `fund_profiles` row as stored.
+#[derive(sqlx::FromRow)]
+struct FundProfileRow {
+    /// `portfolio` or `commodity_trust`.
+    kind: String,
+    net_assets: Option<f64>,
+    holdings_count: Option<i64>,
+    report_date: Option<String>,
+    /// JSON `[[bucket, percent], ...]`.
+    asset_mix: Option<String>,
+}
+
+/// A `fund_holdings` row as stored.
+#[derive(sqlx::FromRow)]
+struct HoldingRow {
+    rank: i64,
+    name: String,
+    pct: Option<f64>,
+    value_usd: Option<f64>,
+}
+
+/// One asset-class slice of an ETF's portfolio mix.
+#[derive(Serialize)]
+struct AssetSlice {
+    label: String,
+    /// Percent string, e.g. `99.8%`.
+    pct: String,
+    /// Segment width 0..100 for the mix bar.
+    width: f64,
+}
+
+/// One holding row shaped for the page.
+#[derive(Serialize)]
+struct HoldingView {
+    rank: i64,
+    name: String,
+    /// Weight as a percent string, e.g. `8.42%`.
+    weight: String,
+    /// Bar width 0..100, scaled so the largest holding shown fills the rail.
+    bar_pct: f64,
+    /// Position value, compact USD, e.g. `$3.3B`.
+    value: String,
+}
+
+/// Everything the symbol page's ETF fund-profile section needs.
+#[derive(Serialize)]
+struct FundView {
+    /// A physical-commodity grantor trust (GLD, SLV): holds bullion, not a
+    /// securities portfolio, so it has no holdings and no asset mix.
+    is_commodity: bool,
+    /// Net assets / AUM, compact USD. `None` when the fund reported none.
+    net_assets: Option<String>,
+    holdings_count: Option<i64>,
+    /// The N-PORT "as of" date, `YYYY-MM-DD`.
+    report_date: Option<String>,
+    asset_mix: Vec<AssetSlice>,
+    holdings: Vec<HoldingView>,
+}
+
+/// Assemble the fund view from a stored profile row and its holdings.
+fn build_fund(profile: FundProfileRow, holdings: Vec<HoldingRow>) -> FundView {
+    // Asset mix: the stored JSON `[[label, percent], ...]`. The percentages
+    // already sum to ~100, so each is its own segment width directly.
+    let asset_mix = profile
+        .asset_mix
+        .as_deref()
+        .and_then(|j| serde_json::from_str::<Vec<(String, f64)>>(j).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(label, pct)| AssetSlice {
+            pct: format!("{pct:.1}%"),
+            width: pct.clamp(0.0, 100.0),
+            label,
+        })
+        .collect();
+
+    // Holdings: each weight bar is scaled to the largest holding shown, so the
+    // top position fills the rail and the rest read against it.
+    let max_pct = holdings.iter().filter_map(|h| h.pct).fold(0.0_f64, f64::max);
+    let holdings = holdings
+        .into_iter()
+        .map(|h| HoldingView {
+            rank: h.rank,
+            name: h.name,
+            weight: h.pct.map_or_else(|| DASH.to_string(), |p| format!("{p:.2}%")),
+            bar_pct: match h.pct {
+                Some(p) if max_pct > 0.0 => (p / max_pct * 100.0).clamp(0.0, 100.0),
+                _ => 0.0,
+            },
+            value: h.value_usd.map_or_else(|| DASH.to_string(), fmt_usd_compact),
+        })
+        .collect();
+
+    FundView {
+        is_commodity: profile.kind == "commodity_trust",
+        net_assets: profile.net_assets.map(fmt_usd_compact),
+        holdings_count: profile.holdings_count,
+        report_date: profile.report_date,
+        asset_mix,
+        holdings,
+    }
+}
+
 async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) -> Response {
     let ticker = ticker.to_uppercase();
 
@@ -416,8 +529,10 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         }
     });
 
-    // Fundamentals and filings are stocks-only: ETFs and indexes do not file.
+    // Fundamentals are stocks-only; an ETF gets a fund profile instead; an
+    // index gets neither. Filings cover both stocks and ETFs.
     let is_stock = symbol.kind == "stock";
+    let is_etf = symbol.kind == "etf";
     // Ratios price off the live quote, falling back to the last daily close.
     let price = quote
         .as_ref()
@@ -438,7 +553,7 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         None
     };
 
-    let filings: Vec<FilingView> = if is_stock {
+    let filings: Vec<FilingView> = if is_stock || is_etf {
         sqlx::query_as::<_, FilingRow>(
             "SELECT form, filed_at, period_of_report, url FROM filings \
              WHERE ticker = ? ORDER BY filed_at DESC, accession DESC LIMIT 18",
@@ -460,12 +575,42 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         Vec::new()
     };
 
+    // The ETF fund profile, when the SEC sweep has reached this symbol.
+    let fund = if is_etf {
+        let profile = sqlx::query_as::<_, FundProfileRow>(
+            "SELECT kind, net_assets, holdings_count, report_date, asset_mix \
+             FROM fund_profiles WHERE ticker = ?",
+        )
+        .bind(&ticker)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten();
+        match profile {
+            Some(profile) => {
+                let holdings = sqlx::query_as::<_, HoldingRow>(
+                    "SELECT rank, name, pct, value_usd FROM fund_holdings \
+                     WHERE ticker = ? ORDER BY rank",
+                )
+                .bind(&ticker)
+                .fetch_all(&state.pool)
+                .await
+                .unwrap_or_default();
+                Some(build_fund(profile, holdings))
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+
     let extra = minijinja::context! {
         title => ticker,
         symbol => symbol,
         stats => stats,
         quote => quote,
         fundamentals => fundamentals,
+        fund => fund,
         filings => filings,
     };
     render(&state, "pages/symbol.html", &format!("/s/{ticker}"), extra)

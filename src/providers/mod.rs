@@ -135,6 +135,76 @@ pub trait FundamentalsProvider: Send + Sync {
     async fn filings(&self, cik: &str) -> Result<Vec<FilingRecord>>;
 }
 
+// ── ETF fund profiles (Phase 18) ───────────────────────────────────────────
+//
+// ETFs file as registered funds: their portfolio comes from quarterly N-PORT
+// filings, not the XBRL companyfacts behind the stock fundamentals above. The
+// fund methods live on `SecProvider` as inherent methods (N-PORT is wholly
+// SEC-specific, with no second source to abstract over), but their data types
+// sit here next to `Fact` / `FilingRecord` for the scheduler and routes.
+
+/// Identifies one ETF to the SEC's fund endpoints.
+#[derive(Debug, Clone)]
+pub struct FundId {
+    /// 10-digit zero-padded registrant CIK.
+    pub cik: String,
+    /// SEC series id (e.g. `S000002839`), present when the registrant hosts
+    /// more than one fund — then it, not the CIK, pins a lookup to this ETF.
+    pub series_id: Option<String>,
+}
+
+/// One portfolio holding parsed from an N-PORT filing.
+#[derive(Debug, Clone)]
+pub struct FundHolding {
+    /// Issuer / security name as the fund reported it.
+    pub name: String,
+    /// Percent of the fund's net assets, e.g. `8.4`.
+    pub pct: Option<f64>,
+    /// Market value of the position, USD.
+    pub value_usd: Option<f64>,
+    /// N-PORT asset-category code (`EC` equity, `DBT` debt, ...), for the mix.
+    pub asset_cat: Option<String>,
+}
+
+/// What a fund's filing history reveals about how to read its portfolio.
+#[derive(Debug, Clone)]
+pub enum FundShape {
+    /// A fund that files N-PORT: fetch this filing for its holdings. The value
+    /// is the filing's EDGAR index-page URL, whose directory also holds the
+    /// N-PORT XML — and which carries the registrant CIK even when a filing
+    /// agent (not the fund) is the named filer on the accession number.
+    Portfolio { nport_href: String },
+    /// A physical-commodity grantor trust (GLD, SLV): no N-PORT — it holds
+    /// bullion, not a securities portfolio — so AUM comes from its 10-K.
+    CommodityTrust,
+    /// Neither pattern matched; the page can still show the filing list.
+    Unknown,
+}
+
+/// The filing list for an ETF plus what it implies about the fund's shape.
+#[derive(Debug, Clone)]
+pub struct FundFilings {
+    pub filings: Vec<FilingRecord>,
+    pub shape: FundShape,
+}
+
+/// A fund's portfolio snapshot, parsed from one N-PORT filing.
+#[derive(Debug, Clone, Default)]
+pub struct PortfolioData {
+    /// Total net assets (AUM), USD.
+    pub net_assets: Option<f64>,
+    /// Gross assets, USD.
+    pub total_assets: Option<f64>,
+    /// The date the holdings are reported as of, `YYYY-MM-DD`.
+    pub report_date: Option<String>,
+    /// Positions in the full portfolio (not just the top slice kept below).
+    pub holdings_count: i64,
+    /// The largest holdings by weight, largest first.
+    pub top_holdings: Vec<FundHolding>,
+    /// Asset-class mix as `(bucket, percent)` pairs, largest bucket first.
+    pub asset_mix: Vec<(String, f64)>,
+}
+
 /// An upstream rejected a request with an explicit rate-limit signal (HTTP 429
 /// or 503). A provider returns this as the source of its `anyhow::Error` so the
 /// `EndpointGuard` (see `src/guard.rs`) can recognise it by downcast and trip

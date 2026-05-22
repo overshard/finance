@@ -26,7 +26,13 @@ use chrono::{Datelike, NaiveDate};
 use reqwest::{header::RETRY_AFTER, StatusCode};
 use serde::Deserialize;
 
-use crate::providers::{Fact, FilingRecord, FundamentalsProvider, RateLimited};
+use quick_xml::events::{BytesStart, Event};
+use quick_xml::Reader;
+
+use crate::providers::{
+    Fact, FilingRecord, FundFilings, FundHolding, FundId, FundShape, FundamentalsProvider,
+    PortfolioData, RateLimited,
+};
 
 /// Fundamentals and filings from SEC EDGAR.
 pub struct SecProvider {
@@ -473,4 +479,418 @@ impl FundamentalsProvider for SecProvider {
         }
         Ok(out)
     }
+}
+
+// ── ETF fund profiles: N-PORT holdings, AUM, filing history (Phase 18) ─────
+//
+// An ETF files as a registered fund, so its portfolio is not in the XBRL
+// `companyfacts` above — it is in quarterly N-PORT filings, one large XML per
+// fund. These methods are inherent to `SecProvider` rather than behind a
+// trait: N-PORT is wholly SEC-specific, with no second source to abstract
+// over. Each method makes exactly one HTTP request so the scheduler can keep
+// wrapping every call in the endpoint guard, as it does for `facts`/`filings`.
+
+/// Fund trusts that file with the SEC but are absent from
+/// `company_tickers_mf.json` (which is keyed on the series/class structure of
+/// open-end funds): the unit investment trusts (SPY, DIA) and the physical-
+/// commodity grantor trusts (GLD, SLV). Mapped straight to their registrant
+/// CIK, with no series id since each trust is a single fund.
+const FUND_FALLBACK: &[(&str, i64)] = &[
+    ("SPY", 884394),
+    ("DIA", 1041130),
+    ("GLD", 1222333),
+    ("SLV", 1330568),
+];
+
+/// How many of a fund's holdings to keep — the largest by weight. A bond
+/// aggregate fund holds thousands of positions; the page shows only the top.
+const TOP_HOLDINGS: usize = 25;
+
+/// How many of a fund's filings to keep for the page's filing list.
+const MAX_FUND_FILINGS: usize = 40;
+
+/// `company_tickers_mf.json`: a `fields` header plus row tuples of
+/// `(cik, seriesId, classId, symbol)`.
+#[derive(Deserialize)]
+struct MfFile {
+    data: Vec<(i64, String, String, String)>,
+}
+
+/// One filing parsed from a browse-edgar Atom feed.
+#[derive(Default)]
+struct AtomEntry {
+    form: String,
+    accession: String,
+    filed: String,
+    /// EDGAR filing-index page URL.
+    href: String,
+}
+
+/// One holding accumulated while streaming through an `<invstOrSec>` block.
+#[derive(Default)]
+struct HoldingAcc {
+    name: String,
+    title: String,
+    pct: Option<f64>,
+    value: Option<f64>,
+    asset_cat: Option<String>,
+}
+
+impl HoldingAcc {
+    fn into_holding(self) -> FundHolding {
+        // Prefer `title` (the issue title): it is clean mixed-case, where the
+        // issuer `name` often arrives truncated and all-caps. Fall back to
+        // `name` for the rare holding that carried no title.
+        let name = if self.title.is_empty() {
+            self.name
+        } else {
+            self.title
+        };
+        FundHolding {
+            name,
+            pct: self.pct,
+            value_usd: self.value,
+            asset_cat: self.asset_cat,
+        }
+    }
+}
+
+impl SecProvider {
+    /// Ticker -> fund identity, from the SEC mutual-fund ticker file plus the
+    /// hardcoded fallback for fund trusts absent from it. Keys are normalised
+    /// like `cik_map`'s. One bulk request, fetched while some ETF lacks a CIK.
+    pub async fn fund_ticker_map(&self) -> Result<HashMap<String, FundId>> {
+        let url = "https://www.sec.gov/files/company_tickers_mf.json";
+        let resp = self
+            .get(url)
+            .await?
+            .ok_or_else(|| anyhow!("sec company_tickers_mf.json not found"))?;
+        let body: MfFile = resp.json().await?;
+        let mut map = HashMap::with_capacity(body.data.len() + FUND_FALLBACK.len());
+        for (cik, series_id, _class_id, symbol) in body.data {
+            map.entry(normalize_ticker(&symbol)).or_insert(FundId {
+                cik: format!("{cik:010}"),
+                series_id: Some(series_id),
+            });
+        }
+        for (ticker, cik) in FUND_FALLBACK {
+            map.entry(normalize_ticker(ticker)).or_insert(FundId {
+                cik: format!("{cik:010}"),
+                series_id: None,
+            });
+        }
+        Ok(map)
+    }
+
+    /// A fund's filing list, plus what the filing history says about its shape
+    /// (whether to read an N-PORT for holdings, or treat it as a commodity
+    /// trust). One browse-edgar request, keyed on the series id when the
+    /// registrant hosts several funds so a sibling fund's filings never leak in.
+    pub async fn fund_filings(&self, id: &FundId) -> Result<FundFilings> {
+        let key = id.series_id.as_deref().unwrap_or(&id.cik);
+        let url = format!(
+            "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={key}\
+             &type=&dateb=&owner=include&count=100&output=atom"
+        );
+        let resp = self
+            .get(&url)
+            .await?
+            .ok_or_else(|| anyhow!("edgar filing index for {key} not found"))?;
+        let bytes = resp.bytes().await?;
+        let entries = parse_edgar_atom(&bytes)?;
+
+        // Entries arrive newest-first. Read the fund's shape from the whole set
+        // before trimming the list to the material forms shown on the page.
+        let mut nport: Option<String> = None;
+        let mut has_ncen = false;
+        let mut has_10k = false;
+        for e in &entries {
+            if nport.is_none() && e.form.starts_with("NPORT-P") && !e.href.is_empty() {
+                nport = Some(e.href.clone());
+            }
+            has_ncen |= e.form.starts_with("N-CEN");
+            has_10k |= e.form.starts_with("10-K");
+        }
+        let shape = if let Some(nport_href) = nport {
+            FundShape::Portfolio { nport_href }
+        } else if has_10k && !has_ncen {
+            // Files 10-Ks and no fund-census report: a grantor trust holding a
+            // physical commodity rather than a securities portfolio.
+            FundShape::CommodityTrust
+        } else {
+            FundShape::Unknown
+        };
+
+        let filings = entries
+            .into_iter()
+            .filter(|e| is_material_fund_form(&e.form))
+            .take(MAX_FUND_FILINGS)
+            .map(|e| FilingRecord {
+                accession: e.accession,
+                form: e.form,
+                filed_at: e.filed,
+                period_of_report: None,
+                primary_doc: None,
+                url: e.href,
+                description: None,
+            })
+            .collect();
+
+        Ok(FundFilings { filings, shape })
+    }
+
+    /// Parse one N-PORT filing into a portfolio snapshot: net assets, the
+    /// holdings (top slice by weight), the holding count, and the asset mix.
+    /// `index_href` is the filing's EDGAR index-page URL; the N-PORT XML sits
+    /// beside it in the same Archives directory. One request.
+    pub async fn fund_portfolio(&self, index_href: &str) -> Result<PortfolioData> {
+        // `.../data/{cik}/{nodash}/{accession}-index.htm` -> swap the index
+        // page for `primary_doc.xml` in the same directory.
+        let dir = index_href
+            .rsplit_once('/')
+            .map(|(d, _)| d)
+            .ok_or_else(|| anyhow!("malformed filing href {index_href}"))?;
+        let url = format!("{dir}/primary_doc.xml");
+        let resp = self
+            .get(&url)
+            .await?
+            .ok_or_else(|| anyhow!("N-PORT not found at {url}"))?;
+        let bytes = resp.bytes().await?;
+        parse_nport(&bytes)
+    }
+
+    /// The latest total-assets figure a company has reported, USD. Gives a
+    /// physical-commodity grantor trust (GLD, SLV) an AUM: those file 10-Ks,
+    /// not N-PORT, so `Assets` from their XBRL companyfacts stands in for net
+    /// assets. Unlike `facts`, this takes the single most recent value
+    /// regardless of fiscal period, so a mid-year 10-Q figure beats a stale
+    /// prior year-end. `None` when the company has no `Assets` concept.
+    pub async fn fund_aum(&self, cik: &str) -> Result<Option<f64>> {
+        let url = format!("https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json");
+        let Some(resp) = self.get(&url).await? else {
+            return Ok(None); // 404: no XBRL facts
+        };
+        let body: CompanyFacts = resp.json().await?;
+        let Some(assets) = body.facts.us_gaap.get("Assets") else {
+            return Ok(None);
+        };
+        // Newest by period-end date, ties broken by the later filing.
+        let mut best: Option<&UnitEntry> = None;
+        for entries in assets.units.values() {
+            for e in entries {
+                let newer = best.map_or(true, |b| {
+                    (e.end.as_str(), e.filed.as_deref().unwrap_or(""))
+                        > (b.end.as_str(), b.filed.as_deref().unwrap_or(""))
+                });
+                if newer {
+                    best = Some(e);
+                }
+            }
+        }
+        Ok(best.map(|e| e.val))
+    }
+}
+
+/// Filing forms worth showing on a fund's page: its portfolio reports
+/// (N-PORT), the annual fund census and shareholder reports, the prospectus,
+/// and — for a commodity trust — the 10-K family it files instead.
+fn is_material_fund_form(form: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "NPORT-P", "NPORT-EX", "N-CEN", "N-CSR", "485BPOS", "485APOS", "10-K", "10-Q", "8-K",
+    ];
+    PREFIXES.iter().any(|p| form.starts_with(p))
+}
+
+/// Map an N-PORT `assetCat` code to a human asset-class bucket for the mix.
+/// The codes are from the N-PORT technical schema; the long tail is "Other".
+fn asset_bucket(cat: &str) -> &'static str {
+    match cat {
+        "EC" | "EP" => "Equity",
+        "DBT" | "SF" => "Bonds",
+        "STIV" | "RA" => "Cash & equivalents",
+        "COMM" => "Commodities",
+        "RE" => "Real estate",
+        "LON" => "Loans",
+        c if c.starts_with("ABS") => "Bonds",
+        // Every other derivative category code begins `D` (DBT is matched above).
+        c if c.starts_with('D') => "Derivatives",
+        _ => "Other",
+    }
+}
+
+/// Read one attribute off a start tag as a `String`.
+fn attr_val(e: &BytesStart, key: &[u8]) -> Option<String> {
+    e.attributes()
+        .flatten()
+        .find(|a| a.key.as_ref() == key)
+        .and_then(|a| String::from_utf8(a.value.into_owned()).ok())
+}
+
+/// Set the current entry's form from a `<category term="..."/>` tag.
+fn set_form_from_category(e: &BytesStart, cur: &mut Option<AtomEntry>) {
+    if let (Some(c), Some(term)) = (cur.as_mut(), attr_val(e, b"term")) {
+        c.form = term;
+    }
+}
+
+/// Parse a browse-edgar Atom feed into its filing entries, newest first.
+fn parse_edgar_atom(xml: &[u8]) -> Result<Vec<AtomEntry>> {
+    let mut reader = Reader::from_reader(xml);
+    let mut buf = Vec::new();
+    let mut path: Vec<Vec<u8>> = Vec::new();
+    let mut entries = Vec::new();
+    let mut cur: Option<AtomEntry> = None;
+
+    loop {
+        match reader.read_event_into(&mut buf)? {
+            Event::Start(e) => {
+                let name = e.local_name().as_ref().to_vec();
+                if name == b"entry" {
+                    cur = Some(AtomEntry::default());
+                }
+                if name == b"category" {
+                    set_form_from_category(&e, &mut cur);
+                }
+                path.push(name);
+            }
+            // The form type usually rides a self-closing `<category term=".."/>`.
+            Event::Empty(e) => {
+                if e.local_name().as_ref() == b"category" {
+                    set_form_from_category(&e, &mut cur);
+                }
+            }
+            Event::End(e) => {
+                if e.local_name().as_ref() == b"entry" {
+                    if let Some(c) = cur.take() {
+                        if !c.accession.is_empty() {
+                            entries.push(c);
+                        }
+                    }
+                }
+                path.pop();
+            }
+            Event::Text(t) => {
+                let (Some(tag), Some(c)) = (path.last(), cur.as_mut()) else {
+                    continue;
+                };
+                let raw = t.unescape().unwrap_or_default();
+                let txt = raw.trim();
+                if txt.is_empty() {
+                    continue;
+                }
+                match tag.as_slice() {
+                    b"accession-number" if c.accession.is_empty() => c.accession = txt.to_string(),
+                    b"filing-date" if c.filed.is_empty() => c.filed = txt.to_string(),
+                    b"filing-href" if c.href.is_empty() => c.href = txt.to_string(),
+                    b"filing-type" if c.form.is_empty() => c.form = txt.to_string(),
+                    _ => {}
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    Ok(entries)
+}
+
+/// Stream-parse an N-PORT `primary_doc.xml` into a portfolio snapshot. The file
+/// can run to many megabytes for a bond fund's thousands of positions, so this
+/// walks events rather than building a DOM, keeping only the running totals
+/// and, at the end, the largest holdings.
+fn parse_nport(xml: &[u8]) -> Result<PortfolioData> {
+    let mut reader = Reader::from_reader(xml);
+    let mut buf = Vec::new();
+    // Stack of open element local names, so a leaf is read in context.
+    let mut path: Vec<Vec<u8>> = Vec::new();
+    let mut out = PortfolioData::default();
+    let mut all: Vec<FundHolding> = Vec::new();
+    // The holding currently being assembled, set while inside `<invstOrSec>`.
+    let mut cur: Option<HoldingAcc> = None;
+
+    loop {
+        match reader.read_event_into(&mut buf)? {
+            Event::Start(e) => {
+                let name = e.local_name().as_ref().to_vec();
+                if name == b"invstOrSec" {
+                    cur = Some(HoldingAcc::default());
+                }
+                path.push(name);
+            }
+            Event::End(e) => {
+                if e.local_name().as_ref() == b"invstOrSec" {
+                    if let Some(h) = cur.take() {
+                        all.push(h.into_holding());
+                    }
+                }
+                path.pop();
+            }
+            Event::Text(t) => {
+                let Some(tag) = path.last() else {
+                    continue;
+                };
+                let raw = t.unescape().unwrap_or_default();
+                let txt = raw.trim();
+                if txt.is_empty() {
+                    continue;
+                }
+                let tag = tag.as_slice();
+                // Holding fields, captured only inside an `<invstOrSec>`.
+                // First-wins: the issuer-level value precedes any nested block.
+                if let Some(h) = cur.as_mut() {
+                    match tag {
+                        b"name" if h.name.is_empty() => h.name = txt.to_string(),
+                        b"title" if h.title.is_empty() => h.title = txt.to_string(),
+                        b"pctVal" if h.pct.is_none() => h.pct = txt.parse().ok(),
+                        b"valUSD" if h.value.is_none() => h.value = txt.parse().ok(),
+                        b"assetCat" if h.asset_cat.is_none() => {
+                            h.asset_cat = Some(txt.to_string())
+                        }
+                        _ => {}
+                    }
+                }
+                // Fund-level fields, scoped by their parent element.
+                let parent = path.iter().rev().nth(1).map(Vec::as_slice);
+                match (parent, tag) {
+                    (Some(b"fundInfo"), b"netAssets") if out.net_assets.is_none() => {
+                        out.net_assets = txt.parse().ok();
+                    }
+                    (Some(b"fundInfo"), b"totAssets") if out.total_assets.is_none() => {
+                        out.total_assets = txt.parse().ok();
+                    }
+                    (Some(b"genInfo"), b"repPdDate") if out.report_date.is_none() => {
+                        out.report_date = Some(txt.to_string());
+                    }
+                    _ => {}
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    out.holdings_count = all.len() as i64;
+
+    // Asset-class mix: each holding's weight summed into its bucket. Tiny
+    // residual buckets (rounding noise) are dropped.
+    let mut mix: HashMap<&'static str, f64> = HashMap::new();
+    for h in &all {
+        let bucket = h.asset_cat.as_deref().map_or("Other", asset_bucket);
+        *mix.entry(bucket).or_insert(0.0) += h.pct.unwrap_or(0.0);
+    }
+    let mut mix: Vec<(String, f64)> = mix
+        .into_iter()
+        .filter(|(_, p)| *p >= 0.05)
+        .map(|(b, p)| (b.to_string(), p))
+        .collect();
+    mix.sort_by(|a, b| b.1.total_cmp(&a.1));
+    out.asset_mix = mix;
+
+    // Largest holdings first; keep only the top slice.
+    all.sort_by(|a, b| b.pct.unwrap_or(0.0).total_cmp(&a.pct.unwrap_or(0.0)));
+    all.truncate(TOP_HOLDINGS);
+    out.top_holdings = all;
+
+    Ok(out)
 }
