@@ -420,6 +420,161 @@ fn build_fund(profile: FundProfileRow, holdings: Vec<HoldingRow>) -> FundView {
     }
 }
 
+// ── company leadership (Phase 14) ──────────────────────────────────────────
+
+/// A `leadership` row as stored.
+#[derive(sqlx::FromRow)]
+struct LeadershipRow {
+    name: String,
+    is_director: i64,
+    is_officer: i64,
+    officer_title: Option<String>,
+}
+
+/// One person on the leadership roster, shaped for the page.
+#[derive(Serialize)]
+struct LeaderView {
+    /// Display name, title-cased from the as-filed upper-case form.
+    name: String,
+    /// Role line, e.g. `Chief Executive Officer · Director`.
+    role: String,
+    /// Sort key only: officers ahead of directors, chiefs first. `serde(skip)`
+    /// keeps it out of the template context.
+    #[serde(skip)]
+    rank: u8,
+}
+
+/// One 8-K item-5.02 leadership-change event, shaped for the page.
+#[derive(Serialize)]
+struct ChangeView {
+    filed_at: String,
+    url: String,
+}
+
+/// Everything the symbol page's Leadership section needs.
+#[derive(Serialize)]
+struct LeadershipView {
+    /// Whether the SEC leadership sweep has reached this stock yet — picks the
+    /// "not synced yet" pending note apart from a genuine empty roster.
+    synced: bool,
+    roster: Vec<LeaderView>,
+    /// Recent officer/director changes, newest first.
+    changes: Vec<ChangeView>,
+}
+
+/// Title-case a name filed in SEC's upper-case form: `COOK TIMOTHY D` ->
+/// `Cook Timothy D`. The first letter of each word, and of each part after an
+/// apostrophe or hyphen, is capitalized — so `O'BRIEN` reads `O'Brien`. The
+/// order is left as filed (last name first); reordering it is unreliable for
+/// compound surnames and generational suffixes.
+fn title_case(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut cap_next = true;
+    for ch in s.chars() {
+        if ch.is_whitespace() || ch == '\'' || ch == '-' {
+            out.push(ch);
+            cap_next = true;
+        } else if cap_next {
+            out.extend(ch.to_uppercase());
+            cap_next = false;
+        } else {
+            out.extend(ch.to_lowercase());
+        }
+    }
+    out
+}
+
+/// Sort rank for the roster: officers ahead of directors, with the chief
+/// executive / financial / operating officers ahead of the other officers.
+/// Both the spelled-out titles and the abbreviations are matched, since filers
+/// use either (`Chief Executive Officer` or `CEO and Chairman`).
+fn role_rank(is_director: bool, is_officer: bool, title: Option<&str>) -> u8 {
+    let t = title.unwrap_or("").to_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| t.contains(n));
+    if has(&["chief executive", "ceo"]) {
+        0
+    } else if has(&["chief financial", "cfo"]) {
+        1
+    } else if has(&["chief operating", "coo"]) {
+        2
+    } else if is_officer {
+        3
+    } else if is_director {
+        4
+    } else {
+        5
+    }
+}
+
+/// The role line for a roster row: the officer title (when the filer gave one)
+/// and `Director`, joined — e.g. `Chief Financial Officer · Director`.
+fn role_text(is_director: bool, is_officer: bool, title: Option<&str>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    match title.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => parts.push(t.to_string()),
+        None if is_officer => parts.push("Officer".to_string()),
+        None => {}
+    }
+    if is_director {
+        parts.push("Director".to_string());
+    }
+    if parts.is_empty() {
+        parts.push("Insider".to_string());
+    }
+    parts.join(" \u{00b7} ")
+}
+
+/// Load the Leadership section for a stock: the current officer/board roster
+/// and the recent 8-K item-5.02 change events. The roster is filtered to
+/// insiders seen filing within the recency window, so people who left long ago
+/// drop off (ownership filings carry no explicit departure signal).
+async fn build_leadership(pool: &sqlx::SqlitePool, ticker: &str, synced: bool) -> LeadershipView {
+    // ~18 months: long enough that an annually-filing director still shows,
+    // short enough that a departed insider ages out.
+    let cutoff = (chrono::Utc::now().date_naive() - chrono::Duration::days(550)).to_string();
+    let rows: Vec<LeadershipRow> = sqlx::query_as(
+        "SELECT name, is_director, is_officer, officer_title FROM leadership \
+         WHERE ticker = ? AND last_seen >= ?",
+    )
+    .bind(ticker)
+    .bind(&cutoff)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    let mut roster: Vec<LeaderView> = rows
+        .into_iter()
+        .map(|r| {
+            let (is_dir, is_off) = (r.is_director != 0, r.is_officer != 0);
+            LeaderView {
+                rank: role_rank(is_dir, is_off, r.officer_title.as_deref()),
+                role: role_text(is_dir, is_off, r.officer_title.as_deref()),
+                name: title_case(&r.name),
+            }
+        })
+        .collect();
+    roster.sort_by(|a, b| a.rank.cmp(&b.rank).then_with(|| a.name.cmp(&b.name)));
+
+    let changes: Vec<ChangeView> = sqlx::query_as::<_, (String, String)>(
+        "SELECT filed_at, url FROM filings \
+         WHERE ticker = ? AND form LIKE '8-K%' AND items LIKE '%5.02%' \
+         ORDER BY filed_at DESC, accession DESC LIMIT 8",
+    )
+    .bind(ticker)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(filed_at, url)| ChangeView { filed_at, url })
+    .collect();
+
+    LeadershipView {
+        synced,
+        roster,
+        changes,
+    }
+}
+
 async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) -> Response {
     let ticker = ticker.to_uppercase();
 
@@ -582,6 +737,14 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         None
     };
 
+    // The leadership roster + change feed (Phase 14): stocks only, like the
+    // fundamentals above.
+    let leadership = if is_stock {
+        Some(build_leadership(&state.pool, &ticker, symbol.leadership_synced_at.is_some()).await)
+    } else {
+        None
+    };
+
     let extra = minijinja::context! {
         title => ticker,
         symbol => symbol,
@@ -590,6 +753,7 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         fundamentals => fundamentals,
         standing => standing,
         fund => fund,
+        leadership => leadership,
         filings => filings,
     };
     render(&state, "pages/symbol.html", &format!("/s/{ticker}"), extra)

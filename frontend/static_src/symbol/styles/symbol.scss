@@ -679,6 +679,108 @@
   color: var(--ink-faint);
 }
 
+/* ---------- leadership: roster + change feed ---------- */
+.leadership {
+  padding: 14px 16px;
+}
+
+.roster {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.roster__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 16px;
+  padding: 9px 0;
+  border-top: 1px solid var(--rule);
+}
+
+.roster__row:first-child {
+  border-top: none;
+}
+
+.roster__name {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.roster__role {
+  font-size: 0.8rem;
+  color: var(--ink-dim);
+  text-align: right;
+}
+
+/* the provenance note, set off below a hairline like .ratio__explain */
+.roster__src {
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--rule);
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+}
+
+/* recent officer/director changes, from 8-K item 5.02 */
+.lead-changes {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule-strong);
+}
+
+.lead-changes__title {
+  @include eyebrow;
+  color: var(--ink);
+  margin-bottom: 2px;
+}
+
+.lead-changes__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lead-change {
+  border-top: 1px solid var(--rule);
+}
+
+.lead-change:first-child {
+  border-top: none;
+}
+
+.lead-change__link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 0;
+  color: var(--ink);
+}
+
+.lead-change__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.lead-change__desc {
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+.lead-change__link:hover .lead-change__desc {
+  color: var(--ink-dim);
+}
+
+.lead-change__meta {
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+}
+
 /* ---------- ETF fund profile ---------- */
 .fund {
   padding: 16px 18px;

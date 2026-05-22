@@ -31,7 +31,7 @@ use quick_xml::Reader;
 
 use crate::providers::{
     Fact, FilingRecord, FundFilings, FundHolding, FundId, FundShape, FundamentalsProvider,
-    PortfolioData, RateLimited,
+    OwnershipFiling, OwnershipPerson, PortfolioData, RateLimited,
 };
 
 /// Fundamentals and filings from SEC EDGAR.
@@ -321,6 +321,9 @@ struct RecentFilings {
     primary_document: Vec<String>,
     #[serde(default)]
     primary_doc_description: Vec<String>,
+    /// 8-K item codes, one comma-separated string per filing (empty otherwise).
+    #[serde(default)]
+    items: Vec<String>,
 }
 
 /// The filing forms worth showing a market-watcher: periodic reports (10-K,
@@ -472,6 +475,7 @@ impl FundamentalsProvider for SecProvider {
                     .get(i)
                     .filter(|s| !s.is_empty())
                     .cloned(),
+                items: r.items.get(i).filter(|s| !s.is_empty()).cloned(),
             });
             if out.len() >= MAX_FILINGS {
                 break;
@@ -633,6 +637,7 @@ impl SecProvider {
                 primary_doc: None,
                 url: e.href,
                 description: None,
+                items: None,
             })
             .collect();
 
@@ -893,4 +898,162 @@ fn parse_nport(xml: &[u8]) -> Result<PortfolioData> {
     out.top_holdings = all;
 
     Ok(out)
+}
+
+// ── company leadership: officers & board from Form 3/4/5 (Phase 14) ────────
+//
+// Every director and Section-16 officer of a company must file Form 3 (on
+// becoming an insider) and Form 4 (on each trade); each ownership XML carries
+// a structured `reportingOwnerRelationship`. The roster is built by parsing a
+// window of a company's recent ownership filings. Like the fund methods above,
+// each of these makes exactly one HTTP request so the scheduler wraps every
+// call in the endpoint guard.
+
+/// Whether `form` is an ownership form — Form 3, 4 or 5, or an amendment.
+fn is_ownership_form(form: &str) -> bool {
+    matches!(form.trim_end_matches("/A"), "3" | "4" | "5")
+}
+
+impl SecProvider {
+    /// A company's recent Form 3/4/5 ownership filings, newest first, read from
+    /// the same `submissions` JSON that backs `filings`. One request. Only
+    /// filings whose primary document is an `.xml` are returned: `ownership_doc`
+    /// parses that XML, and the rare legacy filing with a non-XML primary
+    /// document has nothing to parse.
+    pub async fn ownership_index(&self, cik: &str) -> Result<Vec<OwnershipFiling>> {
+        let url = format!("https://data.sec.gov/submissions/CIK{cik}.json");
+        let Some(resp) = self.get(&url).await? else {
+            return Ok(Vec::new()); // 404: no submission history
+        };
+        let body: Submissions = resp.json().await?;
+        let r = body.filings.recent;
+
+        let mut out = Vec::new();
+        for i in 0..r.accession_number.len() {
+            let form = r.form.get(i).cloned().unwrap_or_default();
+            if !is_ownership_form(&form) {
+                continue;
+            }
+            let accession = r.accession_number[i].clone();
+            let filed_at = r.filing_date.get(i).cloned().unwrap_or_default();
+            let primary_doc = r.primary_document.get(i).cloned().unwrap_or_default();
+            if accession.is_empty() || filed_at.is_empty() || !primary_doc.ends_with(".xml") {
+                continue;
+            }
+            out.push(OwnershipFiling {
+                accession,
+                filed_at,
+                primary_doc,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Parse one ownership filing's XML into its reporting people. One request.
+    /// A filing names more than one reporting person only for the rare joint
+    /// filing; usually the vec holds one. `Ok(Vec::new())` for a 404 or an
+    /// unparseable document — neither is a circuit-breaker failure.
+    pub async fn ownership_doc(
+        &self,
+        cik: &str,
+        accession: &str,
+        primary_doc: &str,
+    ) -> Result<Vec<OwnershipPerson>> {
+        // EDGAR pads the CIK to 10 digits; the Archives path uses it unpadded.
+        let cik_int = cik.trim_start_matches('0');
+        let nodash = accession.replace('-', "");
+        // The submissions feed sometimes names the primary document as an
+        // xsl-styled viewer path (`xslF345X05/foo.xml`); the raw XML this parses
+        // sits at the bare filename in the accession directory.
+        let doc = primary_doc.rsplit('/').next().unwrap_or(primary_doc);
+        let url = format!("https://www.sec.gov/Archives/edgar/data/{cik_int}/{nodash}/{doc}");
+        let Some(resp) = self.get(&url).await? else {
+            return Ok(Vec::new()); // 404
+        };
+        let bytes = resp.bytes().await?;
+        Ok(parse_ownership(&bytes))
+    }
+}
+
+/// Read an ownership-XML boolean. SEC writes these as `1`/`0`, very
+/// occasionally `true`.
+fn ownership_flag(txt: &str) -> bool {
+    matches!(txt.trim(), "1" | "true" | "TRUE" | "Y")
+}
+
+/// One reporting person accumulated while streaming an ownership XML.
+#[derive(Default)]
+struct OwnerAcc {
+    name: String,
+    is_director: bool,
+    is_officer: bool,
+    officer_title: String,
+}
+
+/// Stream-parse an ownership Form 3/4/5 XML into its reporting people. Walks
+/// the `<reportingOwner>` blocks, reading each owner's name and the
+/// `reportingOwnerRelationship` flags. A malformed document yields whatever was
+/// parsed before the error rather than failing the whole leadership sweep.
+fn parse_ownership(xml: &[u8]) -> Vec<OwnershipPerson> {
+    let mut reader = Reader::from_reader(xml);
+    let mut buf = Vec::new();
+    // Stack of open element local names, so a leaf is read in context.
+    let mut path: Vec<Vec<u8>> = Vec::new();
+    let mut owners: Vec<OwnerAcc> = Vec::new();
+    // The reporting person currently being assembled, set inside a
+    // `<reportingOwner>` block.
+    let mut cur: Option<OwnerAcc> = None;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = e.local_name().as_ref().to_vec();
+                if name == b"reportingOwner" {
+                    cur = Some(OwnerAcc::default());
+                }
+                path.push(name);
+            }
+            Ok(Event::End(e)) => {
+                if e.local_name().as_ref() == b"reportingOwner" {
+                    if let Some(o) = cur.take() {
+                        owners.push(o);
+                    }
+                }
+                path.pop();
+            }
+            Ok(Event::Text(t)) => {
+                let (Some(tag), Some(o)) = (path.last(), cur.as_mut()) else {
+                    continue;
+                };
+                let raw = t.unescape().unwrap_or_default();
+                let txt = raw.trim();
+                if txt.is_empty() {
+                    continue;
+                }
+                match tag.as_slice() {
+                    b"rptOwnerName" if o.name.is_empty() => o.name = txt.to_string(),
+                    b"isDirector" => o.is_director |= ownership_flag(txt),
+                    b"isOfficer" => o.is_officer |= ownership_flag(txt),
+                    b"officerTitle" if o.officer_title.is_empty() => {
+                        o.officer_title = txt.to_string()
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    owners
+        .into_iter()
+        .filter(|o| !o.name.is_empty())
+        .map(|o| OwnershipPerson {
+            name: o.name,
+            is_director: o.is_director,
+            is_officer: o.is_officer,
+            officer_title: (!o.officer_title.is_empty()).then_some(o.officer_title),
+        })
+        .collect()
 }

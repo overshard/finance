@@ -36,7 +36,7 @@ use crate::providers::sec::SecProvider;
 use crate::providers::yahoo::YahooProvider;
 use crate::providers::{
     self, stooq::StooqProvider, Fact, FilingRecord, FundId, FundShape, FundamentalsProvider,
-    HistoryProvider, IntradayBar, PortfolioData, Quote, QuoteProvider,
+    HistoryProvider, IntradayBar, OwnershipPerson, PortfolioData, Quote, QuoteProvider,
 };
 use crate::stream::{Hub, QuoteUpdate, StreamEvent};
 use crate::{seed, Config};
@@ -79,6 +79,15 @@ const SEC_STALE_SECS: i64 = 7 * 24 * 3600;
 /// universe); 600 clears that in a single budget hour while still capping a
 /// runaway loop well short of anything SEC's fair-access policy would refuse.
 const SEC_BUDGET: i64 = 600;
+
+/// Company-leadership refresh (Phase 14). Leadership changes slowly, so the
+/// roster is rebuilt monthly rather than on the weekly SEC cadence above. Each
+/// sweep parses at most this many of a company's most recent ownership filings
+/// (one HTTP request each): enough to capture the actively-filing officers and
+/// board on a first sweep, with later sweeps reading only the filings since,
+/// so the roster fills in and stays current at a small steady-state cost.
+const LEADERSHIP_STALE_SECS: i64 = 30 * 24 * 3600;
+const LEADERSHIP_MAX_FILINGS: usize = 30;
 
 /// Spawn the scheduler. The returned handle is normally dropped: dropping it
 /// detaches the task, which then runs for the lifetime of the process.
@@ -588,6 +597,8 @@ async fn run_daily_close_if_due(
 ///  - an ETF's latest N-PORT into `fund_profiles` + `fund_holdings`, its
 ///    filing history into `filings`. A physical-commodity grantor trust files
 ///    no N-PORT, so its AUM comes from `companyfacts` instead.
+///  - a stock's officer/board roster into `leadership`, parsed from its recent
+///    Form 3/4/5 ownership filings (Phase 14, on a slower monthly cadence).
 /// Indexes are skipped; they do not file with the SEC.
 ///
 /// Resumable like the history job: each symbol's sync timestamps are stamped
@@ -690,8 +701,19 @@ async fn run_sec(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Resul
     .bind(cutoff)
     .fetch_all(pool)
     .await?;
+    // Leadership has its own, longer staleness window (see LEADERSHIP_STALE_SECS).
+    let leadership_cutoff = started - LEADERSHIP_STALE_SECS * 1000;
+    let stale_leadership: Vec<(String, String, Option<i64>)> = sqlx::query_as(
+        "SELECT ticker, cik, leadership_synced_at FROM symbols \
+         WHERE kind = 'stock' AND cik IS NOT NULL \
+           AND (leadership_synced_at IS NULL OR leadership_synced_at < ?) \
+         ORDER BY ticker",
+    )
+    .bind(leadership_cutoff)
+    .fetch_all(pool)
+    .await?;
 
-    if stale_stocks.is_empty() && stale_etfs.is_empty() {
+    if stale_stocks.is_empty() && stale_etfs.is_empty() && stale_leadership.is_empty() {
         log_fetch(pool, "sec", "sec", "ok", Some("no stale companies or funds"), Some(0), 0, started)
             .await?;
         mark_ok(pool, "sec", Some(next)).await?;
@@ -699,9 +721,10 @@ async fn run_sec(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Resul
         return Ok(());
     }
     tracing::info!(
-        "[scheduler] sec: refreshing {} companies, {} funds",
+        "[scheduler] sec: refreshing {} companies, {} funds, {} rosters",
         stale_stocks.len(),
-        stale_etfs.len()
+        stale_etfs.len(),
+        stale_leadership.len()
     );
 
     // A metric is due when its timestamp is unset or past the cutoff.
@@ -709,6 +732,7 @@ async fn run_sec(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Resul
     let mut funds_ok = 0i64;
     let mut filings_ok = 0i64;
     let mut etfs_ok = 0i64;
+    let mut leaders_ok = 0i64;
     let mut errors = 0i64;
     let mut stopped: Option<String> = None;
 
@@ -835,9 +859,91 @@ async fn run_sec(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Resul
         }
     }
 
+    // 4. Leadership sweep (Phase 14): for each stale stock, parse a window of
+    //    its recent Form 3/4/5 ownership filings into the officer/board roster.
+    //    Shares the guard and the early-exit; skipped wholesale once the sweeps
+    //    above have already hit a guard stop.
+    if stopped.is_none() {
+        'leaders: for (ticker, cik, lead_at) in &stale_leadership {
+            // The company's recent ownership filings, newest first.
+            let index = match guard.acquire().await? {
+                Permit::Granted => match sec.ownership_index(cik).await {
+                    Ok(idx) => {
+                        guard.record_success().await?;
+                        idx
+                    }
+                    Err(e) => {
+                        guard.record_failure(&e).await?;
+                        errors += 1;
+                        tracing::warn!("[scheduler] sec ownership_index {ticker} failed: {e:#}");
+                        continue 'leaders;
+                    }
+                },
+                Permit::Denied(why) => {
+                    stopped = Some(why);
+                    break 'leaders;
+                }
+            };
+            // First sweep (no prior sync): the most recent filings. Later
+            // sweeps: only filings since the last sync, with a few days' slack,
+            // so the steady-state cost is a handful of requests per company.
+            let since: Option<String> = lead_at.and_then(|ms| {
+                chrono::DateTime::from_timestamp_millis(ms - 5 * 86_400_000)
+                    .map(|dt| dt.format("%Y-%m-%d").to_string())
+            });
+            let to_parse: Vec<_> = index
+                .into_iter()
+                .filter(|f| since.as_deref().map_or(true, |s| f.filed_at.as_str() >= s))
+                .take(LEADERSHIP_MAX_FILINGS)
+                .collect();
+
+            // Parse each filing's XML, keeping the directors and officers (a
+            // filer who is only a >10% owner is not leadership and is dropped).
+            let mut roster: Vec<(OwnershipPerson, String)> = Vec::new();
+            for f in &to_parse {
+                match guard.acquire().await? {
+                    Permit::Granted => {
+                        match sec.ownership_doc(cik, &f.accession, &f.primary_doc).await {
+                            Ok(people) => {
+                                guard.record_success().await?;
+                                for p in people {
+                                    if p.is_director || p.is_officer {
+                                        roster.push((p, f.filed_at.clone()));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                guard.record_failure(&e).await?;
+                                errors += 1;
+                                tracing::warn!(
+                                    "[scheduler] sec ownership_doc {ticker} failed: {e:#}"
+                                );
+                            }
+                        }
+                    }
+                    Permit::Denied(why) => {
+                        stopped = Some(why);
+                        break;
+                    }
+                }
+            }
+
+            // Upsert what was gathered. A guard stop mid-company still stores
+            // the partial roster (the upsert is idempotent) but leaves
+            // `leadership_synced_at` unset so the next cycle finishes the rest.
+            store_leadership(pool, ticker, &roster).await?;
+            if stopped.is_some() {
+                break 'leaders;
+            }
+            mark_sec_synced(pool, ticker, "leadership_synced_at").await?;
+            leaders_ok += 1;
+        }
+    }
+
     let dur = t0.elapsed().as_millis() as i64;
     let counts = format!(
-        "{funds_ok} fundamentals, {filings_ok} filings, {etfs_ok} fund profiles, {errors} errors"
+        "{funds_ok} fundamentals, {filings_ok} filings, {etfs_ok} fund profiles, \
+         {leaders_ok} rosters, {errors} errors"
     );
     match stopped {
         Some(why) => {
@@ -909,8 +1015,8 @@ async fn resolve_fund_ciks(
     Ok(resolved)
 }
 
-/// Stamp one of a symbol's SEC sync timestamps to now. `column` is one of two
-/// hardcoded literals (never user input), so interpolating it is safe.
+/// Stamp one of a symbol's SEC sync timestamps to now. `column` is one of a
+/// few hardcoded literals (never user input), so interpolating it is safe.
 async fn mark_sec_synced(pool: &SqlitePool, ticker: &str, column: &str) -> sqlx::Result<()> {
     let now = now_ms();
     let sql = format!("UPDATE symbols SET {column} = ?, updated_at = ? WHERE ticker = ?");
@@ -966,13 +1072,13 @@ async fn store_filings(
         sqlx::query(
             "INSERT INTO filings \
                (ticker, accession, form, filed_at, period_of_report, \
-                primary_doc, url, description) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+                primary_doc, url, description, items) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(ticker, accession) DO UPDATE SET \
                form = excluded.form, filed_at = excluded.filed_at, \
                period_of_report = excluded.period_of_report, \
                primary_doc = excluded.primary_doc, url = excluded.url, \
-               description = excluded.description",
+               description = excluded.description, items = excluded.items",
         )
         .bind(ticker)
         .bind(&f.accession)
@@ -982,6 +1088,46 @@ async fn store_filings(
         .bind(&f.primary_doc)
         .bind(&f.url)
         .bind(&f.description)
+        .bind(&f.items)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Upsert a company's leadership roster from parsed ownership filings (Phase
+/// 14). `roster` arrives newest-filing-first, so the first entry seen for a
+/// person is their most recent filing and any later duplicate is skipped. The
+/// upsert is guarded on `last_seen`, so a stale re-parse never overwrites a
+/// person's role with an older filing's; departed insiders simply stop being
+/// re-stamped and age out of the symbol page's recency window.
+async fn store_leadership(
+    pool: &SqlitePool,
+    ticker: &str,
+    roster: &[(OwnershipPerson, String)],
+) -> sqlx::Result<()> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut tx = pool.begin().await?;
+    for (person, filed_at) in roster {
+        if !seen.insert(person.name.as_str()) {
+            continue;
+        }
+        sqlx::query(
+            "INSERT INTO leadership \
+               (ticker, name, is_director, is_officer, officer_title, last_seen) \
+             VALUES (?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(ticker, name) DO UPDATE SET \
+               is_director = excluded.is_director, is_officer = excluded.is_officer, \
+               officer_title = excluded.officer_title, last_seen = excluded.last_seen \
+             WHERE excluded.last_seen >= leadership.last_seen",
+        )
+        .bind(ticker)
+        .bind(&person.name)
+        .bind(person.is_director as i64)
+        .bind(person.is_officer as i64)
+        .bind(&person.officer_title)
+        .bind(filed_at)
         .execute(&mut *tx)
         .await?;
     }

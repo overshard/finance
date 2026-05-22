@@ -32,11 +32,17 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-22_
 
-**Current phase:** Phases 0 through 12 (the MVP) plus Phase 18 (ETF profiles)
-and Phase 20 (strongest & weakest home panels) are complete, verified, and
-**live in production at https://finance.bythewood.me** (Phase 20 deployed
-2026-05-22). No phase is in progress. Remaining post-MVP work: the
-loose-ordered Phase 13-17 and 19 backlog.
+**Current phase: none in progress. Phase 14 (Company leadership) is complete
+and verified, not yet deployed.** Phases 0 through 12 (the MVP) plus Phase 18
+(ETF profiles) and Phase 20 (strongest & weakest home panels) are complete,
+verified, and **live in production at https://finance.bythewood.me**. Phase 14
+— a current officers-and-board roster from SEC Form 3/4/5 ownership XML plus a
+leadership-changes feed from 8-K item 5.02 — was built and verified on
+2026-05-22 (see the Done list and the decisions log) and ships on the next
+`git push server master`. Remaining post-MVP work: the loose-ordered Phase 13,
+15, 16, 17, 19 backlog plus the captured Phase 21 (home & search refinements),
+Phase 22 (show data age everywhere) and Phase 23 (Q4 in the quarterly
+financials table).
 
 **Roadmap (restructured 2026-05-22, see decisions log):** the home-page
 redesign and commodities are pre-ship MVP phases. Order: 9 Search +
@@ -563,12 +569,60 @@ schema, unused for now.
     ~225ms warm — the per-render standings scan, a fixed page-load snapshot
     as planned.
 
+- **Phase 14 company leadership.** Complete, verified, not yet deployed.
+  - Migration `0006` adds the `leadership` table (one row per insider:
+    director/officer flags, officer title, `last_seen`),
+    `symbols.leadership_synced_at`, and an `items` column on `filings` for the
+    8-K item codes.
+  - `providers/sec.rs`: two inherent `SecProvider` methods, one HTTP request
+    each so the `sec` guard wraps every call (as with the Phase 18 fund
+    methods) — `ownership_index` (a company's recent Form 3/4/5 filings, from
+    the `submissions` JSON) and `ownership_doc` (one ownership XML,
+    stream-parsed by `parse_ownership` into its reporting people and their
+    `reportingOwnerRelationship` flags). The `submissions` parse also now
+    reads the `items` array, so 8-K item 5.02 is stored on every filing.
+  - The `submissions` feed names a Form 4's primary document as an xsl-styled
+    viewer path (`xslF345X06/form4.xml`) that serves rendered HTML; the raw
+    parseable XML is the bare filename, so `ownership_doc` strips to the
+    basename. Caught in verification — rosters came back empty until the fix.
+  - `scheduler.rs`: `run_sec` gained a 4th section — for each stock whose
+    `leadership_synced_at` is stale (monthly cadence, `LEADERSHIP_STALE_SECS`),
+    it parses up to `LEADERSHIP_MAX_FILINGS` (30) recent ownership filings
+    (only those since the last sync, after the first sweep), filters to
+    directors and officers, and upserts the roster (`store_leadership`, a
+    `last_seen`-guarded conflict so a newer role always wins). Shares the
+    `sec` guard and early-exit; resumable.
+  - `routes/symbols.rs` + `symbol.html`: a Leadership section on the stock
+    symbol page — the current officer/board roster (officers ahead of
+    directors, chiefs first; names title-cased, e.g. `O'BRIEN` -> `O'Brien`)
+    over a provenance note, plus a "Recent leadership changes" list of 8-K
+    item-5.02 filings linking to EDGAR. Stocks only; an unsynced stock shows a
+    pending note, ETFs and indexes show no section. The roster is filtered to
+    insiders seen filing within ~18 months, so departed people age out
+    (ownership filings carry no explicit departure signal).
+  - The "industry insider vs outsider" read was dropped (not in SEC structured
+    data) and there is no per-leader tenure track record — the scope the user
+    chose (see the decisions log).
+  - Verified: migration `0006` applied on the seeded DB; the `sec` job's
+    leadership sweep parsed ownership XML for the curated stocks (AAPL's roster
+    came back as Tim Cook CEO + 7 more officers and 7 directors with titles;
+    8-K item-5.02 changes detected back through 2024). `/s/AAPL` renders the
+    roster and changes feed in the Paper Ledger look, CEO first; `/s/WMT` (not
+    yet swept) shows the pending note; `/s/QQQ` and `/s/^SPX` show no
+    Leadership section. Desktop (1280px) and phone (390px) render with no
+    overflow and zero console errors. The sweep is paced and guarded — it
+    backfills the universe over several daily `sec` cycles.
+
 **Resuming, next action**
-**The MVP plus Phase 18 (ETF profiles) and Phase 20 (strongest & weakest home
-panels) are live at https://finance.bythewood.me.** No phase is in progress.
-Phase 20 was deployed on 2026-05-22 via `git push server master`. The
-remaining work is the loose-ordered Phase 13-17 and 19 backlog; the user picks
-which to take next. There is still no GitHub repo for finance: the user
+**Phase 14 (company leadership) is complete and verified** (2026-05-22), not
+yet deployed. The MVP plus Phase 18 and Phase 20 are live at
+https://finance.bythewood.me; Phase 14 ships to production on the next
+`git push server master` (migration `0006` applies on the box and the `sec`
+job backfills the leadership rosters over its daily cycles, as Phase 18's
+profiles backfilled). No phase is in progress. Remaining post-MVP work: the
+loose-ordered Phase 13, 15, 16, 17, 19 backlog plus the captured Phase 21
+(home & search refinements), Phase 22 (show data age everywhere) and Phase 23
+(Q4 in the quarterly financials table); the user picks which to take next. There is still no GitHub repo for finance: the user
 deferred that; if one is created later, add it as `origin` and the
 `overshard/finance` slug already in taproot's `projects.conf` lines up.
 
@@ -696,7 +750,10 @@ Timestamps are UTC epoch-ms; trading dates are `TEXT` `YYYY-MM-DD`.
 - `quotes` — latest live quote snapshot, one row per symbol.
 - `fundamentals` — long/narrow SEC XBRL facts, one row per metric/period;
   UNIQUE rekeyed to (ticker, metric, period) by migration `0004`.
-- `filings` — SEC filing history.
+- `filings` — SEC filing history; `items` (8-K item codes, e.g. `5.02`) added
+  by migration `0006`.
+- `leadership` — a company's current officers and board, one row per insider,
+  parsed from SEC Form 3/4/5 ownership XML (migration `0006`). Stocks only.
 - `watchlists` + `watchlist_items` — named lists of tickers. In the schema
   but unused: the watchlist feature is deferred to Phase 19 (see Status).
 - `fetch_log` — append-only history of background fetches.
@@ -805,13 +862,24 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   (a treemap). Market cap is shares outstanding (from SEC, Phase 7) times the
   latest price. (The movers list and index sparklines once bundled here moved
   into the Phase 11 home redesign when it was promoted.)
-- [ ] **Phase 14: Company leadership.** Track each company's current
-  executives and board, leadership changes over time, and a per-leader track
-  record: how the company fared during their tenure, and whether they are an
-  industry insider or an outsider. Data source needs research: SEC DEF 14A
-  proxy statements and 8-K item 5.02 (officer / director changes) give the
-  roster and the changes, but an objective "track record" is partly editorial
-  and needs a deliberate sourcing decision.
+- [x] **Phase 14: Company leadership.** Complete and verified 2026-05-22 (not
+  yet deployed) — see the Phase 14 entry in Status and the decisions log.
+  (Picked as the next backlog phase and scoped 2026-05-22.) Two things on the
+  symbol page,
+  stocks only: a **current roster** of officers and board (name + title),
+  built from SEC Form 3/4/5 ownership XML — each form carries a structured
+  `reportingOwnerRelationship` (`isDirector` / `isOfficer` / `officerTitle`),
+  so directors and Section-16 officers are identified and the >10%-owner
+  filers filtered out; and a **leadership-changes feed**, a dated list of 8-K
+  **item 5.02** filings (officer / director departures and appointments), read
+  from the `items` array of the `submissions` JSON Phase 7 already fetches.
+  The "industry insider vs outsider" read is **dropped** — it is not in SEC
+  structured data (only DEF 14A prose), the same wall Phase 18 hit with
+  expense ratios. **No per-leader tenure track record** (the user picked the
+  roster-plus-changes scope over the fuller tenure-record one). Builds only on
+  the SEC source already shipped; the ownership-XML sweep is network-heavier
+  than Phase 7 (one request per filing) but paced and budgeted by the existing
+  `sec` `EndpointGuard`.
 - [ ] **Phase 15: Industry trends.** Treat industries as first-class:
   aggregate symbols by industry (sector and industry come from SEC in Phase
   7), show industry-level performance, seasonality (the months an industry
@@ -871,6 +939,48 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   later layers leadership (Phase 14) and industry context (Phase 15) on top.
   Built in the Paper Ledger system.
 
+- [ ] **Phase 21: Home & search refinements.** (Captured 2026-05-22 from three
+  vibe-coding "side notes" while Phase 14 was being scoped; budgeted here, not
+  acted on mid-phase.) Three independent tweaks to already-shipped features:
+  (1) **Home page — split commodities from indexes** into their own section,
+  and during the pre-market and post-market sessions show the index *futures*
+  in place of the cash indexes (e.g. the S&P 500 E-mini `ES=F` instead of
+  `^SPX`), the way the commodity futures are already shown. Needs a small
+  design pass: the index->future mapping (^SPX->ES=F, ^NDX->NQ=F, ^DJI->YM=F;
+  ^RUT->RTY=F; ^NDQ and ^VIX have no clean index future — decide their
+  treatment) and which sessions count as "show the future" (pre + post; decide
+  the overnight Closed window). (2) **Add-symbol — pull all data immediately.**
+  Today `POST /api/symbols` stores the lookup quote and brings the history job
+  forward a tick; the user wants the full backfill (history + whatever else)
+  pulled synchronously on add, not deferred to the next scheduler cycle.
+  (3) **Search — auto-navigate on a single result.** When `/search?q=` matches
+  exactly one symbol, redirect straight to that symbol's page instead of
+  rendering a one-card result the user must then click.
+
+- [ ] **Phase 22: Show data age everywhere.** (Captured 2026-05-22 from a
+  vibe-coding side note.) The user considers data freshness critically
+  important and wants the age of displayed data surfaced consistently across
+  the whole app, the home page included — not only on `/health`. Today
+  freshness shows unevenly: the symbol header has a session-derived label and
+  a last-close date, the ETF profile an "as of" date, `/health` the per-job
+  last-ok times — but the home dashboard's sparkline cards and movers, the
+  search cards, the new leadership roster and the fundamentals carry no
+  visible age. The phase: a consistent, quiet "as of / N ago" treatment
+  (quote time, daily-close date, last sync) wherever data is shown. Needs a
+  small design pass on the wording and where it rides without cluttering the
+  Paper Ledger look.
+
+- [ ] **Phase 23: Q4 in the quarterly financials table.** (Captured 2026-05-22
+  from a vibe-coding side note.) The symbol page's quarterly financials table
+  shows only Q1-Q3. The cause is confirmed: SEC XBRL carries no discrete Q4 —
+  there is no Q4 10-Q, the fourth quarter is reported only inside the 10-K's
+  full-year `FY` figure (zero `fiscal_qtr = 4` rows exist in `fundamentals`).
+  The fix is to derive it: Q4 = FY - (Q1 + Q2 + Q3) for the flow metrics shown
+  in that table (revenue, net income, diluted EPS, dividend/share), computed
+  in `routes/symbols.rs` for each fiscal year where the full-year figure and
+  all three quarters are present. No schema change and no new data — a pure
+  derivation from facts already stored.
+
 ---
 
 ## Key files
@@ -880,6 +990,7 @@ finance/
   Cargo.toml  Makefile
   migrations/  0001_initial.sql  0002_endpoint_guard.sql  0003_guard_budget.sql
                0004_fundamentals_unique.sql  0005_fund_profiles.sql
+               0006_leadership.sql
   universe/starter.csv                curated seed list
   src/
     main.rs        entry + `seed` subcommand
@@ -1302,6 +1413,70 @@ finance/
   the movers and the new panels, a fixed page-load snapshot as planned; `/`
   renders in ~225ms warm. No new data source and no new network calls.
   Deployed to production on 2026-05-22 via `git push server master`.
+- **2026-05-22: Phase 14 picked next and scoped.** Asked which loose-ordered
+  backlog phase to take next, the user chose 14, company leadership. The plan
+  had flagged it as needing a data-source decision; research settled it. SEC
+  exposes two things cleanly and structured: a company's officer/board
+  **roster** via Form 3/4/5 ownership XML (each carries
+  `reportingOwnerRelationship` booleans + `officerTitle`), and a
+  **leadership-changes** signal via 8-K **item 5.02**, readable from the
+  `items` array of the `submissions` JSON Phase 7 already fetches (zero new
+  network calls for the changes feed itself). The "industry insider vs
+  outsider" read is not in SEC structured data — only DEF 14A prose — so it
+  was dropped, the same call Phase 18 made on the expense ratio; the user
+  confirmed drop over hand-curation. Scope chosen: the current roster + the
+  changes feed, **not** the fuller variant that adds a per-leader
+  return-during-tenure track record. Phase 14 builds only on the SEC source
+  already shipped; its ownership-XML sweep is heavier than Phase 7 (one
+  request per filing) but paced and budgeted by the existing `sec`
+  `EndpointGuard`.
+- **2026-05-22: three home/search side notes captured as Phase 21.** While
+  Phase 14 was being scoped the user floated three refinements to shipped
+  features: split the home page's commodities out from the indexes and show
+  index *futures* (the S&P E-mini, etc.) during pre/post-market; make the
+  add-symbol flow pull a new ticker's full data immediately instead of
+  deferring the backfill to the next scheduler tick; and auto-navigate to a
+  symbol's page when a search yields exactly one result. Per the vibe-coding
+  process they were budgeted into the plan rather than acted on mid-phase —
+  added as Phase 21 (Home & search refinements), to be taken up after Phase
+  14. The home-page change carries an open design question (the index->future
+  mapping and which sessions trigger it), noted in the Phase 21 entry.
+- **2026-05-22: Phase 14 company leadership shipped.** SEC Form 3/4/5
+  ownership XML is now a fifth use of the EDGAR source, behind two new
+  inherent `SecProvider` methods (`ownership_index` / `ownership_doc`, one
+  HTTP request each so the `sec` guard wraps every call, as with the Phase 18
+  fund methods). Design calls made during the build: (1) the roster is built
+  incrementally — the first sweep parses the 30 most recent ownership filings,
+  later monthly sweeps only the filings since, and `store_leadership` upserts
+  with a `last_seen`-guarded conflict clause so a stale re-parse never
+  overwrites a newer role; the symbol page filters the roster to insiders seen
+  within ~18 months so departed people age out (ownership filings carry no
+  explicit departure signal). (2) The leadership sweep runs on its own monthly
+  cadence (`LEADERSHIP_STALE_SECS`), slower than the weekly fundamentals /
+  filings sweep, because leadership changes slowly and the ownership-XML sweep
+  is the heaviest SEC work — kept comfortably within the guard's pacing and
+  budget. (3) A real bug surfaced in verification: the `submissions` feed
+  names a Form 4's primary document as an xsl viewer path
+  (`xslF345X06/form4.xml`) that serves rendered HTML; the raw parseable XML is
+  the bare filename, so `ownership_doc` strips to the basename. (4) The 8-K
+  item-5.02 changes feed reuses the `filings` table — a new `items` column
+  (migration `0006`) populated from the `submissions` `items` array — so it
+  cost no new request. Names are stored as filed (last-name-first, caps) and
+  title-cased for display. Not yet deployed; ships on the next push.
+- **2026-05-22: two more side notes captured.** (1) The user wants data
+  freshness — the age of displayed data — shown consistently across the whole
+  app, the home page included, since it is critically important; budgeted as
+  Phase 22. (2) The SEC User-Agent contact email should be the real
+  `isaac@bythewood.me` on both local and the server, set via `.env`: the local
+  `.env` already carries it, so no change there; the server's hand-written
+  `.env` should be checked to match (a manual step — `.env` is not in the
+  repo).
+- **2026-05-22: Q4-in-quarterly-financials side note captured as Phase 23.**
+  The user noticed the symbol page's quarterly financials table stops at Q3.
+  Confirmed the cause: SEC XBRL has no discrete Q4 (no Q4 10-Q; the quarter
+  lives only in the 10-K's full-year figure — zero `fiscal_qtr = 4` rows in
+  `fundamentals`). Budgeted as Phase 23 — derive Q4 as FY - (Q1+Q2+Q3) for the
+  flow metrics.
 
 ---
 
@@ -1326,4 +1501,8 @@ finance/
 - `/` carries a "Strongest & weakest" pair of panels below the movers, and a
   strong / fair / weak standing badge rides on the movers, the search result
   cards, and above the symbol page's ratio cards (Phase 20).
+- A stock page (`/s/AAPL`) shows a Leadership section: the current officer and
+  board roster from SEC Form 3/4/5 ownership filings, plus a recent-changes
+  list from 8-K item 5.02. An unsynced stock shows a pending note; ETFs and
+  indexes show no Leadership section (Phase 14).
 - No automated test suite or linter, matching the sibling projects.

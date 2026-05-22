@@ -52,7 +52,7 @@ There are no tests or linters configured.
 finance/
 ├── Cargo.toml, Cargo.lock        # rust deps
 ├── Makefile, README.md, PLAN.md  # top-level (PLAN.md is the living design doc)
-├── migrations/                   # sqlx migrations 0001-0005, applied on boot
+├── migrations/                   # sqlx migrations 0001-0006, applied on boot
 ├── universe/starter.csv          # curated seed list (~150 symbols)
 ├── src/
 │   ├── main.rs        # entry: env init, `seed` subcommand, server boot
@@ -84,7 +84,7 @@ The binary reads `templates/`, `dist/`, `migrations/`, and `universe/` from cwd 
 ## Key Routes
 
 - `/`: home dashboard — index/commodity sparkline cards over the day's top movers
-- `/s/{ticker}`: symbol page — candlestick chart with indicators, key stats; a stock also shows fundamentals, an ETF a fund profile (holdings, AUM), both show SEC filings
+- `/s/{ticker}`: symbol page — candlestick chart with indicators, key stats; a stock also shows fundamentals and a leadership roster, an ETF a fund profile (holdings, AUM), both show SEC filings
 - `/api/symbols/{ticker}/history`: candle + indicator series JSON for the chart
 - `/api/symbols` (POST): add a symbol not yet in the universe (validated against Yahoo)
 - `/search`: browse and search the whole universe (filter by kind, match ticker and company name)
@@ -99,7 +99,7 @@ All free, no account. See `PLAN.md` for the full anti-spam / caching policy.
 
 - **Historical daily OHLCV — Stooq.** One call returns a symbol's entire daily history. Gated behind a free apikey (`STOOQ_APIKEY`, in `.env`, gitignored).
 - **Intraday bars + live quotes — Yahoo Finance.** `v8/finance/chart`; no key, just a browser User-Agent.
-- **Fundamentals, filings + ETF profiles — SEC EDGAR.** `company_tickers.json` / `companyfacts` / `submissions` for stock fundamentals and filings; `company_tickers_mf.json` plus quarterly N-PORT filings for ETF fund profiles (holdings, AUM, asset mix). No key; a contact email (`SEC_CONTACT_EMAIL`) rides in the User-Agent. Indexes do not file with the SEC.
+- **Fundamentals, filings, leadership + ETF profiles — SEC EDGAR.** `company_tickers.json` / `companyfacts` / `submissions` for stock fundamentals and filings; Form 3/4/5 ownership XML for the officer/board roster (Phase 14); `company_tickers_mf.json` plus quarterly N-PORT filings for ETF fund profiles (holdings, AUM, asset mix). No key; a contact email (`SEC_CONTACT_EMAIL`) rides in the User-Agent. Indexes do not file with the SEC.
 
 ## Tooling
 

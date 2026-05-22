@@ -115,6 +115,10 @@ pub struct FilingRecord {
     /// Full URL to the filing's primary document (or index) on EDGAR.
     pub url: String,
     pub description: Option<String>,
+    /// For an 8-K, the reported item codes, comma-separated as EDGAR lists them
+    /// (e.g. `5.02,9.01`); `None` for other forms. Item 5.02 is the
+    /// officer/director change the leadership-changes feed keys on (Phase 14).
+    pub items: Option<String>,
 }
 
 /// Company fundamentals and filing history from SEC EDGAR. Implemented by
@@ -133,6 +137,36 @@ pub trait FundamentalsProvider: Send + Sync {
 
     /// Recent filing history for one company, by its 10-digit CIK.
     async fn filings(&self, cik: &str) -> Result<Vec<FilingRecord>>;
+}
+
+// ── company leadership (Phase 14) ──────────────────────────────────────────
+//
+// A company's officers and board come from SEC Form 3/4/5 ownership filings:
+// every director and Section-16 officer must file these, and each carries a
+// structured `reportingOwnerRelationship`. Like the N-PORT fund methods, the
+// leadership methods are inherent to `SecProvider` (this is wholly EDGAR
+// territory), but their data types sit here beside `FilingRecord`.
+
+/// One Form 3/4/5 ownership filing in a company's submission history — the
+/// pointer the scheduler needs to fetch and parse the ownership XML itself.
+#[derive(Debug, Clone)]
+pub struct OwnershipFiling {
+    pub accession: String,
+    /// Filing date, `YYYY-MM-DD`.
+    pub filed_at: String,
+    /// The ownership XML's file name within the filing's Archives directory.
+    pub primary_doc: String,
+}
+
+/// One insider parsed from an ownership XML's `reportingOwnerRelationship`.
+#[derive(Debug, Clone)]
+pub struct OwnershipPerson {
+    /// Name as filed: last-name-first and upper-case (`COOK TIMOTHY D`).
+    pub name: String,
+    pub is_director: bool,
+    pub is_officer: bool,
+    /// The officer title, present when `is_officer` and the filer gave one.
+    pub officer_title: Option<String>,
 }
 
 // ── ETF fund profiles (Phase 18) ───────────────────────────────────────────
