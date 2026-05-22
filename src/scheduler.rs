@@ -1301,6 +1301,233 @@ pub(crate) async fn store_intraday(
     Ok(())
 }
 
+// ── synchronous backfill for a freshly-added symbol (Phase 21) ─────────────
+
+/// Run one guarded outbound call: acquire a permit, await `call`, and feed the
+/// outcome back to the guard. `None` when the guard denied the request (the
+/// breaker is open or the hourly budget is spent) or the permit could not be
+/// acquired; `Some` carries whatever the call itself returned.
+async fn guarded<T>(
+    guard: &EndpointGuard,
+    call: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> Option<anyhow::Result<T>> {
+    match guard.acquire().await {
+        Ok(Permit::Granted) => {
+            let result = call.await;
+            match &result {
+                Ok(_) => {
+                    let _ = guard.record_success().await;
+                }
+                Err(e) => {
+                    let _ = guard.record_failure(e).await;
+                }
+            }
+            Some(result)
+        }
+        Ok(Permit::Denied(why)) => {
+            tracing::info!("[backfill] guard denied: {why}");
+            None
+        }
+        Err(e) => {
+            tracing::warn!("[backfill] guard error: {e:#}");
+            None
+        }
+    }
+}
+
+/// Synchronously backfill everything for one just-added symbol: its deep daily
+/// history from Stooq and, for a stock or ETF, its SEC data. The add-symbol
+/// route (`routes::symbols`) calls this so a user-added symbol's page is
+/// complete the moment the add returns, rather than filling in over later
+/// scheduler cycles (PLAN.md Phase 21).
+///
+/// Best-effort and guard-routed: every outbound call passes through the same
+/// `EndpointGuard` the background jobs use, and a guard denial or upstream
+/// error for any one piece is logged and skipped. The symbol is already added;
+/// the normal scheduler sweeps pick up whatever this run missed.
+pub(crate) async fn backfill_symbol(pool: &SqlitePool, config: &Config, ticker: &str, kind: &str) {
+    backfill_history(pool, config, ticker, kind).await;
+
+    // SEC data covers stocks and ETFs; indexes and futures do not file. The
+    // whole SEC step is skipped with no contact email configured, as `run_sec`
+    // skips itself.
+    if config.sec_contact_email.is_empty() {
+        return;
+    }
+    let sec = SecProvider::new(providers::http::build_sec_client(config));
+    let guard = EndpointGuard::with_budget(pool.clone(), sec.name(), SEC_BUDGET);
+    match kind {
+        "stock" => backfill_stock_sec(pool, &sec, &guard, ticker).await,
+        "etf" => backfill_etf_sec(pool, &sec, &guard, ticker).await,
+        _ => {}
+    }
+}
+
+/// Pull and store one symbol's deep daily history from Stooq. A no-op for a
+/// future (Stooq carries no `=F` history) or when Stooq is not configured.
+async fn backfill_history(pool: &SqlitePool, config: &Config, ticker: &str, kind: &str) {
+    if kind == "future" || config.stooq_apikey.is_empty() {
+        return;
+    }
+    let stooq = StooqProvider::new(
+        providers::http::build_client(config),
+        config.stooq_apikey.clone(),
+    );
+    let guard = EndpointGuard::new(pool.clone(), stooq.name());
+    match guarded(&guard, stooq.daily(ticker, None)).await {
+        Some(Ok(bars)) if !bars.is_empty() => match seed::store_daily(pool, ticker, &bars).await {
+            Ok(()) => tracing::info!("[backfill] {ticker} <- {} daily bars", bars.len()),
+            Err(e) => tracing::warn!("[backfill] store history {ticker}: {e:#}"),
+        },
+        // A valid but empty response (a historyless symbol): stamp it checked
+        // so the history job does not immediately re-fetch it.
+        Some(Ok(_)) => {
+            let _ = mark_history_checked(pool, ticker).await;
+        }
+        _ => {}
+    }
+}
+
+/// Backfill a stock's SEC data: resolve its CIK, then pull fundamentals,
+/// filings, and the officer/board roster.
+async fn backfill_stock_sec(
+    pool: &SqlitePool,
+    sec: &SecProvider,
+    guard: &EndpointGuard,
+    ticker: &str,
+) {
+    let Some(cik) = resolve_one_cik(pool, sec, guard, ticker, false).await else {
+        tracing::info!("[backfill] {ticker}: no SEC CIK, leaving it for the sec job");
+        return;
+    };
+    if let Some(Ok(facts)) = guarded(guard, sec.facts(&cik)).await {
+        match store_fundamentals(pool, ticker, &facts).await {
+            Ok(()) => {
+                let _ = mark_sec_synced(pool, ticker, "fundamentals_synced_at").await;
+            }
+            Err(e) => tracing::warn!("[backfill] store facts {ticker}: {e:#}"),
+        }
+    }
+    if let Some(Ok(filings)) = guarded(guard, sec.filings(&cik)).await {
+        match store_filings(pool, ticker, &filings).await {
+            Ok(()) => {
+                let _ = mark_sec_synced(pool, ticker, "filings_synced_at").await;
+            }
+            Err(e) => tracing::warn!("[backfill] store filings {ticker}: {e:#}"),
+        }
+    }
+    backfill_leadership(pool, sec, guard, ticker, &cik).await;
+}
+
+/// Backfill a stock's officer/board roster from a window of its most recent
+/// Form 3/4/5 ownership filings, mirroring the leadership sweep in `run_sec`.
+async fn backfill_leadership(
+    pool: &SqlitePool,
+    sec: &SecProvider,
+    guard: &EndpointGuard,
+    ticker: &str,
+    cik: &str,
+) {
+    let Some(Ok(index)) = guarded(guard, sec.ownership_index(cik)).await else {
+        return;
+    };
+    let to_parse: Vec<_> = index.into_iter().take(LEADERSHIP_MAX_FILINGS).collect();
+
+    let mut roster: Vec<(OwnershipPerson, String)> = Vec::new();
+    let mut complete = true;
+    for f in &to_parse {
+        match guarded(guard, sec.ownership_doc(cik, &f.accession, &f.primary_doc)).await {
+            Some(Ok(people)) => {
+                for p in people {
+                    if p.is_director || p.is_officer {
+                        roster.push((p, f.filed_at.clone()));
+                    }
+                }
+            }
+            // A parse or network error for one filing: skip it and build the
+            // roster from the rest, exactly as `run_sec` does.
+            Some(Err(e)) => tracing::warn!("[backfill] ownership_doc {ticker}: {e:#}"),
+            // A guard denial leaves the roster only partial: leave it unsynced
+            // so the next `sec` cycle finishes it.
+            None => complete = false,
+        }
+    }
+    let _ = store_leadership(pool, ticker, &roster).await;
+    if complete {
+        let _ = mark_sec_synced(pool, ticker, "leadership_synced_at").await;
+    }
+}
+
+/// Backfill an ETF's fund profile: resolve its fund CIK, pull the filing list,
+/// then either the N-PORT portfolio or a commodity trust's AUM.
+async fn backfill_etf_sec(pool: &SqlitePool, sec: &SecProvider, guard: &EndpointGuard, ticker: &str) {
+    let Some(cik) = resolve_one_cik(pool, sec, guard, ticker, true).await else {
+        tracing::info!("[backfill] {ticker}: no SEC fund CIK, leaving it for the sec job");
+        return;
+    };
+    // `resolve_fund_ciks` stored the series id alongside the CIK.
+    let series_id: Option<String> =
+        sqlx::query_scalar("SELECT series_id FROM symbols WHERE ticker = ?")
+            .bind(ticker)
+            .fetch_one(pool)
+            .await
+            .ok()
+            .flatten();
+    let id = FundId {
+        cik: cik.clone(),
+        series_id,
+    };
+
+    let Some(Ok(ff)) = guarded(guard, sec.fund_filings(&id)).await else {
+        return;
+    };
+    let _ = store_filings(pool, ticker, &ff.filings).await;
+    match ff.shape {
+        FundShape::Portfolio { nport_href } => {
+            if let Some(Ok(portfolio)) = guarded(guard, sec.fund_portfolio(&nport_href)).await {
+                if store_fund_portfolio(pool, ticker, &portfolio).await.is_ok() {
+                    let _ = mark_fund_synced(pool, ticker).await;
+                }
+            }
+        }
+        FundShape::CommodityTrust => {
+            if let Some(Ok(aum)) = guarded(guard, sec.fund_aum(&cik)).await {
+                if store_fund_commodity(pool, ticker, aum).await.is_ok() {
+                    let _ = mark_fund_synced(pool, ticker).await;
+                }
+            }
+        }
+        FundShape::Unknown => {
+            let _ = mark_fund_synced(pool, ticker).await;
+        }
+    }
+}
+
+/// Resolve and store a freshly-added symbol's SEC CIK from the bulk ticker map.
+/// `fund` selects the mutual-fund map (ETFs) over the operating-company map
+/// (stocks). Returns the stored CIK on success.
+async fn resolve_one_cik(
+    pool: &SqlitePool,
+    sec: &SecProvider,
+    guard: &EndpointGuard,
+    ticker: &str,
+    fund: bool,
+) -> Option<String> {
+    if fund {
+        if let Some(Ok(map)) = guarded(guard, sec.fund_ticker_map()).await {
+            let _ = resolve_fund_ciks(pool, &map).await;
+        }
+    } else if let Some(Ok(map)) = guarded(guard, sec.cik_map()).await {
+        let _ = resolve_ciks(pool, &map).await;
+    }
+    sqlx::query_scalar::<_, Option<String>>("SELECT cik FROM symbols WHERE ticker = ?")
+        .bind(ticker)
+        .fetch_one(pool)
+        .await
+        .ok()
+        .flatten()
+}
+
 /// Prune aged rows once per `PRUNE_INTERVAL_SECS`. `intraday_bars` keeps a
 /// rolling ~14-day window; `fetch_log` keeps ~30 days. `daily_prices` is
 /// permanent and never touched here.

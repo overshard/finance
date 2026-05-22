@@ -14,6 +14,7 @@ use axum::{extract::State, response::Response, routing::get, Router};
 use serde::Serialize;
 
 use crate::compute::{self, Sparkline};
+use crate::market;
 use crate::models::{self, SymbolCardRow};
 use crate::render::render;
 use crate::AppState;
@@ -22,13 +23,25 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/", get(home))
 }
 
-/// The dashboard's curated sparkline row: the major US indexes followed by the
-/// headline commodities (WTI crude, gold, natural gas). Hardcoded on purpose —
-/// the home page is a fixed, opinionated view, not a user-built watchlist.
-const DASHBOARD: &[&str] = &[
-    "^SPX", "^DJI", "^NDX", "^NDQ", "^RUT", "^VIX", // indexes
-    "CL=F", "GC=F", "NG=F", // crude oil, gold, natural gas
+/// The dashboard's index cards: each cash index paired with its index future.
+/// Outside the regular cash session the future is shown in the card's place
+/// (it trades nearly around the clock, while the cash index sits frozen on its
+/// last close; see PLAN.md Phase 21). The Nasdaq Composite (`^NDQ`) and the
+/// volatility index (`^VIX`) have no clean tradable future, so they always
+/// show the cash index. Hardcoded on purpose: the home page is a fixed,
+/// opinionated view, not a user-built watchlist.
+const INDEXES: &[(&str, Option<&str>)] = &[
+    ("^SPX", Some("ES=F")),
+    ("^DJI", Some("YM=F")),
+    ("^NDX", Some("NQ=F")),
+    ("^RUT", Some("RTY=F")),
+    ("^NDQ", None),
+    ("^VIX", None),
 ];
+
+/// The dashboard's commodity cards: WTI crude, gold, natural gas. Shown as the
+/// futures themselves, since there is no cash instrument to swap to.
+const COMMODITIES: &[&str] = &["CL=F", "GC=F", "NG=F"];
 
 /// How many gainers and how many losers each movers panel lists.
 const MOVERS_LIMIT: usize = 8;
@@ -123,7 +136,7 @@ async fn home(State(state): State<AppState>) -> Response {
         .await
         .unwrap_or(seeded);
 
-    let spark_cards = dashboard_cards(&state).await;
+    let (index_cards, commodity_cards) = dashboard_cards(&state).await;
     // One scan of the curated stocks feeds both the movers and the strongest /
     // weakest panels.
     let stocks = load_stocks(&state).await;
@@ -133,7 +146,8 @@ async fn home(State(state): State<AppState>) -> Response {
     let extra = minijinja::context! {
         title => "Markets",
         empty => false,
-        spark_cards => spark_cards,
+        index_cards => index_cards,
+        commodity_cards => commodity_cards,
         gainers => gainers,
         losers => losers,
         strongest => strongest,
@@ -143,12 +157,41 @@ async fn home(State(state): State<AppState>) -> Response {
     render(&state, "pages/home.html", "/", extra)
 }
 
-/// The curated dashboard symbols, in `DASHBOARD` order, each with a current
-/// price, the day's change, and a sparkline of the latest session's bars.
-async fn dashboard_cards(state: &AppState) -> Vec<SparkCard> {
-    // One query for the price rows. The `IN` list is built from the DASHBOARD
-    // const — never user input — so the placeholder count is fixed and safe.
-    let placeholders = vec!["?"; DASHBOARD.len()].join(",");
+/// The dashboard's index and commodity sparkline cards.
+///
+/// Outside the regular cash session each index card resolves to its index
+/// future (see `INDEXES`): the future trades nearly around the clock, so the
+/// card stays live overnight instead of freezing on the 16:00 ET close.
+async fn dashboard_cards(state: &AppState) -> (Vec<SparkCard>, Vec<SparkCard>) {
+    let regular = matches!(
+        market::session_at(chrono::Utc::now()),
+        market::Session::Regular
+    );
+    // During the regular cash session show each index itself; outside it,
+    // swap in the index future where one exists.
+    let index_tickers: Vec<&str> = INDEXES
+        .iter()
+        .map(|&(index, future)| match future {
+            Some(fut) if !regular => fut,
+            _ => index,
+        })
+        .collect();
+    let indexes = spark_cards_for(state, &index_tickers).await;
+    let commodities = spark_cards_for(state, COMMODITIES).await;
+    (indexes, commodities)
+}
+
+/// Build a sparkline card for each ticker in `tickers`, in that order: a
+/// current price, the day's change, and a sparkline of the latest session's
+/// bars. A ticker the universe does not hold is skipped.
+async fn spark_cards_for(state: &AppState, tickers: &[&str]) -> Vec<SparkCard> {
+    if tickers.is_empty() {
+        return Vec::new();
+    }
+    // One query for the price rows. The `IN` list is built from the hardcoded
+    // dashboard consts — never user input — so the placeholder count is fixed
+    // and safe.
+    let placeholders = vec!["?"; tickers.len()].join(",");
     let sql = format!(
         "SELECT s.ticker, s.name, s.kind, \
            COALESCE(s.last_price, \
@@ -158,15 +201,15 @@ async fn dashboard_cards(state: &AppState) -> Vec<SparkCard> {
          FROM symbols s WHERE s.ticker IN ({placeholders})"
     );
     let mut q = sqlx::query_as::<_, SymbolCardRow>(&sql);
-    for t in DASHBOARD {
+    for t in tickers {
         q = q.bind(*t);
     }
     let rows: Vec<SymbolCardRow> = q.fetch_all(&state.pool).await.unwrap_or_default();
     let mut by_ticker: HashMap<String, SymbolCardRow> =
         rows.into_iter().map(|r| (r.0.clone(), r)).collect();
 
-    let mut cards = Vec::with_capacity(DASHBOARD.len());
-    for &t in DASHBOARD {
+    let mut cards = Vec::with_capacity(tickers.len());
+    for &t in tickers {
         // Skip a dashboard symbol the universe somehow does not hold.
         let Some((ticker, name, _kind, last, prev)) = by_ticker.remove(t) else {
             continue;

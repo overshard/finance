@@ -146,6 +146,7 @@ SMCI,Super Micro Computer Inc.,stock,NASDAQ
 ES=F,S&P 500 E-Mini Futures,future,CME
 NQ=F,Nasdaq 100 E-Mini Futures,future,CME
 YM=F,Dow E-Mini Futures,future,CME
+RTY=F,Russell 2000 E-Mini Futures,future,CME
 CL=F,Crude Oil Futures (WTI),future,NYMEX
 BZ=F,Brent Crude Oil Futures,future,NYMEX
 GC=F,Gold Futures,future,COMEX

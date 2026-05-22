@@ -22,9 +22,14 @@
     <a class="page-head__link" href="/search">Browse all {{ total }} symbols</a>
   </div>
 
-  <h2 class="section-title">Indexes &amp; commodities</h2>
+  <h2 class="section-title">Indexes</h2>
   <div class="spark-grid">
-    {% for c in spark_cards %}{{ spark_card(c) }}{% endfor %}
+    {% for c in index_cards %}{{ spark_card(c) }}{% endfor %}
+  </div>
+
+  <h2 class="section-title">Commodities</h2>
+  <div class="spark-grid">
+    {% for c in commodity_cards %}{{ spark_card(c) }}{% endfor %}
   </div>
 
   <h2 class="section-title">Today&rsquo;s movers</h2>

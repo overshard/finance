@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use axum::{
     extract::{Query, State},
-    response::Response,
+    response::{IntoResponse, Redirect, Response},
     routing::get,
     Router,
 };
@@ -91,6 +91,15 @@ async fn search_page(Query(sq): Query<SearchQuery>, State(state): State<AppState
     .unwrap_or_default();
 
     let mut results: Vec<Card> = rows.into_iter().map(to_card).collect();
+
+    // A search that pinpoints exactly one symbol jumps straight to its page,
+    // rather than rendering a single card the user must then click (Phase 21).
+    // Browse mode (an empty query) never redirects.
+    if !query.is_empty() && results.len() == 1 {
+        let target = format!("/s/{}", urlencoding::encode(&results[0].ticker));
+        return Redirect::to(&target).into_response();
+    }
+
     let result_count = results.len() as i64;
 
     // Attach each stock card's strong / fair / weak verdict badge (Phase 20).

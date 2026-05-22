@@ -32,17 +32,19 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-22_
 
-**Current phase: none in progress. Phase 14 (Company leadership) is complete
-and verified, not yet deployed.** Phases 0 through 12 (the MVP) plus Phase 18
-(ETF profiles) and Phase 20 (strongest & weakest home panels) are complete,
-verified, and **live in production at https://finance.bythewood.me**. Phase 14
-— a current officers-and-board roster from SEC Form 3/4/5 ownership XML plus a
-leadership-changes feed from 8-K item 5.02 — was built and verified on
+**Current phase: none in progress. Phase 21 (Home & search refinements) is
+complete and verified, not yet deployed.** Phases 0 through 12 (the MVP) plus
+Phase 14 (company leadership), Phase 18 (ETF profiles) and Phase 20 (strongest
+& weakest home panels) are complete, verified, and **live in production at
+https://finance.bythewood.me**. Phase 21, three refinements to shipped
+features (the home page split into Indexes and Commodities sections with an
+index-futures swap off-hours, a synchronous full backfill on add-symbol, and
+search auto-navigation on a single result), was built and verified on
 2026-05-22 (see the Done list and the decisions log) and ships on the next
 `git push server master`. Remaining post-MVP work: the loose-ordered Phase 13,
-15, 16, 17, 19 backlog plus the captured Phase 21 (home & search refinements),
-Phase 22 (show data age everywhere) and Phase 23 (Q4 in the quarterly
-financials table).
+15, 16, 17, 19 backlog plus Phase 22 (show data age everywhere), Phase 23 (Q4
+in the quarterly financials table) and Phase 24 (financials table
+readability).
 
 **Roadmap (restructured 2026-05-22, see decisions log):** the home-page
 redesign and commodities are pre-ship MVP phases. Order: 9 Search +
@@ -569,7 +571,7 @@ schema, unused for now.
     ~225ms warm — the per-render standings scan, a fixed page-load snapshot
     as planned.
 
-- **Phase 14 company leadership.** Complete, verified, not yet deployed.
+- **Phase 14 company leadership.** Complete, verified, deployed to production.
   - Migration `0006` adds the `leadership` table (one row per insider:
     director/officer flags, officer title, `last_seen`),
     `symbols.leadership_synced_at`, and an `items` column on `filings` for the
@@ -613,17 +615,58 @@ schema, unused for now.
     overflow and zero console errors. The sweep is paced and guarded — it
     backfills the universe over several daily `sec` cycles.
 
+- **Phase 21 home & search refinements.** Complete, verified, not yet deployed.
+  - Three independent refinements to already-shipped features.
+  - **Home page index/commodity split + index-futures swap.** `routes/home.rs`
+    replaced the flat `DASHBOARD` const with `INDEXES` (each cash index paired
+    with its index future) and `COMMODITIES`; `dashboard_cards` now returns two
+    card lists, and a new `spark_cards_for` builds a sparkline section from any
+    ticker slice. Outside the regular cash session each index card resolves to
+    its index future (`^SPX`->`ES=F`, `^DJI`->`YM=F`, `^NDX`->`NQ=F`,
+    `^RUT`->`RTY=F`), which trades nearly around the clock; `^NDQ` and `^VIX`
+    have no clean tradable future and always show the cash index.
+    `templates/pages/home.html` now renders two sections, "Indexes" and
+    "Commodities", in place of the single "Indexes & commodities" row. `RTY=F`
+    (Russell 2000 E-Mini) was added to `universe/starter.csv` as a
+    live-quotes-only future so `^RUT` has a future to swap to.
+  - **Synchronous full backfill on add-symbol.** A new
+    `scheduler::backfill_symbol` pulls a freshly-added symbol's deep daily
+    history from Stooq and its full SEC data (CIK resolution, fundamentals,
+    filings and the leadership roster for a stock; the fund profile for an
+    ETF), routed through the same `EndpointGuard`s as the background jobs and
+    reusing the existing store helpers. `POST /api/symbols` calls it before
+    responding, replacing the old deferred `schedule_next("history")`, so a
+    user-added symbol's page is complete the moment the add returns.
+    Best-effort: a guard denial or upstream error for any one piece is logged
+    and skipped, leaving that piece for the normal scheduler sweep.
+  - **Search auto-navigate on a single result.** `routes/search.rs` now
+    redirects (303) straight to `/s/{ticker}` when a non-empty query matches
+    exactly one symbol; browse mode (empty query) and multi-result searches
+    render the search page as before.
+  - Verified: `/` renders "Indexes" and "Commodities" as two sections; during
+    the regular session the index cards are the cash indexes, and a forced
+    off-hours run showed them swapped to `ES=F`/`YM=F`/`NQ=F`/`RTY=F` with
+    `^NDQ`/`^VIX` staying cash. Adding `RDDT` (Reddit — a real stock absent
+    from the universe) through `POST /api/symbols` took 51s and returned with
+    545 daily bars, 73 fundamentals, 24 filings and a 13-person leadership
+    roster all already stored; `/s/RDDT` then rendered complete.
+    `/search?q=AAPL` and `?q=Microsoft` 303-redirect to the symbol page;
+    browse and a multi-hit query do not. Desktop (1280px) and phone (390px)
+    render with no overflow and zero console errors. (`RDDT` was a
+    verification-only add and was removed afterwards; `RTY=F` stays as a
+    curated symbol.)
+
 **Resuming, next action**
-**Phase 14 (company leadership) is complete and verified** (2026-05-22), not
-yet deployed. The MVP plus Phase 18 and Phase 20 are live at
-https://finance.bythewood.me; Phase 14 ships to production on the next
-`git push server master` (migration `0006` applies on the box and the `sec`
-job backfills the leadership rosters over its daily cycles, as Phase 18's
-profiles backfilled). No phase is in progress. Remaining post-MVP work: the
-loose-ordered Phase 13, 15, 16, 17, 19 backlog plus the captured Phase 21
-(home & search refinements), Phase 22 (show data age everywhere) and Phase 23
-(Q4 in the quarterly financials table); the user picks which to take next. There is still no GitHub repo for finance: the user
-deferred that; if one is created later, add it as `origin` and the
+**Phase 21 (Home & search refinements) is complete and verified** (2026-05-22),
+not yet deployed. The MVP plus Phase 14, Phase 18 and Phase 20 are live at
+https://finance.bythewood.me; Phase 21 ships on the next
+`git push server master` (the boot seed picks up the new `RTY=F` symbol from
+`universe/starter.csv` automatically, as it would any starter-list change). No
+phase is in progress. Remaining post-MVP work: the loose-ordered Phase 13, 15,
+16, 17, 19 backlog plus Phase 22 (show data age everywhere), Phase 23 (Q4 in
+the quarterly financials table) and Phase 24 (financials table readability);
+the user picks which to take next. There is still no GitHub repo for finance:
+the user deferred that; if one is created later, add it as `origin` and the
 `overshard/finance` slug already in taproot's `projects.conf` lines up.
 
 Note: Phase 18 added the `quick-xml` crate (N-PORT XML streaming parser) and
@@ -634,7 +677,7 @@ Note: because `^RUT`/`^VIX` stay historyless, `meta.seed_completed` is never
 set, so the boot seed re-runs on every restart (cheap: ~2 Stooq calls that
 return "No data", which the guard now counts as successful empty responses,
 everything else being a local upsert) and then defers the first incremental
-history run by 6h. This is intended; see the decisions log. The 9 futures are
+history run by 6h. This is intended; see the decisions log. The 10 futures are
 excluded from the seed entirely, so they add nothing to this.
 
 **Build/run reminders for a fresh context**
@@ -862,8 +905,8 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   (a treemap). Market cap is shares outstanding (from SEC, Phase 7) times the
   latest price. (The movers list and index sparklines once bundled here moved
   into the Phase 11 home redesign when it was promoted.)
-- [x] **Phase 14: Company leadership.** Complete and verified 2026-05-22 (not
-  yet deployed) — see the Phase 14 entry in Status and the decisions log.
+- [x] **Phase 14: Company leadership.** Complete, verified and deployed
+  2026-05-22; see the Phase 14 entry in Status and the decisions log.
   (Picked as the next backlog phase and scoped 2026-05-22.) Two things on the
   symbol page,
   stocks only: a **current roster** of officers and board (name + title),
@@ -939,9 +982,11 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   later layers leadership (Phase 14) and industry context (Phase 15) on top.
   Built in the Paper Ledger system.
 
-- [ ] **Phase 21: Home & search refinements.** (Captured 2026-05-22 from three
-  vibe-coding "side notes" while Phase 14 was being scoped; budgeted here, not
-  acted on mid-phase.) Three independent tweaks to already-shipped features:
+- [x] **Phase 21: Home & search refinements.** Complete and verified
+  2026-05-22 (not yet deployed); see the Phase 21 entry in Status and the
+  decisions log. (Captured 2026-05-22 from three vibe-coding "side notes" while
+  Phase 14 was being scoped; budgeted here, not acted on mid-phase.) Three
+  independent tweaks to already-shipped features:
   (1) **Home page — split commodities from indexes** into their own section,
   and during the pre-market and post-market sessions show the index *futures*
   in place of the cash indexes (e.g. the S&P 500 E-mini `ES=F` instead of
@@ -980,6 +1025,22 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   in `routes/symbols.rs` for each fiscal year where the full-year figure and
   all three quarters are present. No schema change and no new data — a pure
   derivation from facts already stored.
+
+- [ ] **Phase 24: Financials table readability.** (Captured 2026-05-22 from
+  two vibe-coding side notes raised while Phase 21 was in progress.) Two
+  presentation refinements to the symbol page's fundamentals area, no new data
+  source: (1) **Per-cell growth cues.** In the annual and quarterly financials
+  tables, make it visible at a glance whether the company is growing period
+  over period: a semantic color and a small up/down icon on each figure
+  showing whether it improved or worsened against the prior period (year over
+  year in the annual table, quarter over quarter in the quarterly one). Needs
+  a small design pass on which metrics a "rise is good" reading even applies
+  to (revenue and net income clearly; total liabilities is the opposite) and
+  how the cue rides without cluttering the Paper Ledger table. (2)
+  **Missing-value glyph.** A fundamentals cell the company did not report
+  currently shows a middle dot (`·`, the `DASH` const in `routes/symbols.rs`),
+  which reads as a stray decimal point — the user noticed it on DELL. Replace
+  it with an em dash (`—`) or a similar unambiguous "no data" mark.
 
 ---
 
@@ -1462,7 +1523,8 @@ finance/
   item-5.02 changes feed reuses the `filings` table — a new `items` column
   (migration `0006`) populated from the `submissions` `items` array — so it
   cost no new request. Names are stored as filed (last-name-first, caps) and
-  title-cased for display. Not yet deployed; ships on the next push.
+  title-cased for display. Deployed to production on 2026-05-22 via
+  `git push server master` (commit `aea52ba`).
 - **2026-05-22: two more side notes captured.** (1) The user wants data
   freshness — the age of displayed data — shown consistently across the whole
   app, the home page included, since it is critically important; budgeted as
@@ -1477,6 +1539,43 @@ finance/
   lives only in the 10-K's full-year figure — zero `fiscal_qtr = 4` rows in
   `fundamentals`). Budgeted as Phase 23 — derive Q4 as FY - (Q1+Q2+Q3) for the
   flow metrics.
+- **2026-05-22 — two financials-readability side notes captured as Phase 24.**
+  While Phase 21 was in progress the user floated two refinements to the
+  symbol page's fundamentals area: per-cell growth cues (a semantic color and
+  a small up/down icon marking whether each figure improved or worsened
+  against the prior period, year over year and quarter over quarter), and
+  replacing the `·` middle-dot missing-value placeholder (which reads as a
+  stray decimal) with a clearer em-dash-style mark. Budgeted as Phase 24 per
+  the vibe-coding process rather than acted on mid-phase.
+- **2026-05-22 — Phase 14 confirmed deployed; Phase 21 picked next.** The
+  Status section briefly recorded Phase 14 as "not yet deployed"; on resuming,
+  the server `master` was checked (`git ls-remote server master`) and found at
+  commit `aea52ba`, the Phase 14 commit, so Phase 14 is in fact live in
+  production. The plan's deployment notes were corrected. Asked which
+  loose-ordered backlog phase to take next, the user chose Phase 21, Home &
+  search refinements.
+- **2026-05-22 — Phase 21 home & search refinements shipped.** Three
+  independent refinements to already-shipped features. Design Q&A settled
+  three points: (1) `RTY=F`, the Russell 2000 E-Mini, was added to the universe
+  so `^RUT` also swaps to a future off-hours, alongside the clean
+  `^SPX`/`^DJI`/`^NDX` swaps; `^NDQ` (Nasdaq Composite) and `^VIX` have no
+  clean tradable future and keep the cash index. (2) The index-future swap
+  shows whenever the regular cash session is closed (pre-market, after-hours,
+  and the overnight/weekend Closed window), matching how the commodity cards
+  already behave. (3) For add-symbol the user chose a fully synchronous
+  backfill: `POST /api/symbols` pulls the new symbol's deep history and its
+  entire SEC data (fundamentals, filings, leadership roster, or an ETF fund
+  profile) inside the request before responding, accepting a longer request
+  (the `RDDT` verification add took 51s) over deferring anything to a later
+  scheduler cycle. Build calls: the home page's single sparkline row became
+  two sections (`INDEXES` + `COMMODITIES` consts, `dashboard_cards` returning
+  two lists, a shared `spark_cards_for`); `scheduler::backfill_symbol` reuses
+  the existing store helpers and endpoint guards and is best-effort, so a
+  guard denial only defers a piece to the normal sweep rather than failing the
+  add; the search redirect is a 303 to `/s/{ticker}` on a single
+  non-empty-query match. Verified end to end (see the Phase 21 Done entry).
+  Not yet deployed; ships on the next push, and the boot seed adds `RTY=F` on
+  the box.
 
 ---
 

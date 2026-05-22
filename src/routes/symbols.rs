@@ -961,10 +961,11 @@ fn add_err(status: StatusCode, msg: impl Into<String>) -> Response {
 /// The Search page calls this when a query names a ticker the universe does
 /// not hold yet. The ticker is validated against Yahoo — one request that also
 /// yields its name, kind, exchange and currency — then the symbol row is
-/// inserted, the quote that same lookup returned is stored, and the history
-/// job is brought forward so the deep daily backfill lands within a tick. The
-/// Yahoo request goes through the shared endpoint guard, like every other
-/// outbound call (see PLAN.md's anti-spam policy).
+/// inserted, the quote that same lookup returned is stored, and the symbol's
+/// full backfill (deep daily history and all SEC data) is pulled synchronously
+/// before the response, so its page is complete the moment the add returns
+/// (PLAN.md Phase 21; see `scheduler::backfill_symbol`). Every outbound call
+/// goes through the shared endpoint guard (see PLAN.md's anti-spam policy).
 async fn add_symbol(State(state): State<AppState>, Json(body): Json<AddSymbolBody>) -> Response {
     let Some(ticker) = valid_ticker(&body.ticker) else {
         return add_err(
@@ -1081,11 +1082,11 @@ async fn add_symbol(State(state): State<AppState>, Json(body): Json<AddSymbolBod
             tracing::warn!("add_symbol store_intraday {ticker}: {e:#}");
         }
     }
-    // Bring the history job forward so the deep daily backfill runs on the
-    // next scheduler tick rather than waiting out the ~6h interval.
-    if let Err(e) = scheduler::schedule_next(&state.pool, "history", now).await {
-        tracing::warn!("add_symbol schedule history for {ticker}: {e:#}");
-    }
+    // Pull the full backfill — deep daily history and all SEC data — before
+    // responding, so the new symbol's page is complete the moment the add
+    // returns rather than filling in over later scheduler cycles. Best-effort
+    // and guard-routed; see `scheduler::backfill_symbol`.
+    scheduler::backfill_symbol(&state.pool, &state.config, &ticker, &info.kind).await;
 
     tracing::info!("add_symbol: added {ticker} ({}, {})", info.name, info.kind);
     Json(AddSymbolResponse {
