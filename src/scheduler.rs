@@ -110,6 +110,13 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
             tracing::warn!(
                 "[scheduler] SEC_CONTACT_EMAIL unset: SEC fundamentals & filings job disabled"
             );
+        } else if let Err(e) = schedule_next(&pool, "sec", now_ms()).await {
+            // Bring the SEC job forward to the first tick. The sweep is
+            // resumable and cheap when nothing is stale, so running it on
+            // each boot is harmless — and it means a deploy that introduces
+            // new SEC-backed data (e.g. the Phase 18 ETF profiles) backfills
+            // within a tick instead of waiting out the ~24h interval.
+            tracing::warn!("[scheduler] bring sec job forward: {e}");
         }
 
         // Prune's last-run time is loop-local: a restart simply re-prunes once,

@@ -1176,6 +1176,19 @@ finance/
   nothing is polled unless a browser is viewing it. No futures-hours calendar
   is modelled (a closed futures market just returns a flat quote), consistent
   with the no-holiday-calendar decision in `market.rs`.
+- **2026-05-22: futures pages no longer prompt to seed; SEC job runs on boot.**
+  A future's symbol page showed the generic "no price history, run `make
+  seed`" empty state, which is wrong: a future has no daily history by design
+  (Stooq carries no `=F` data) and seeding cannot change that. The symbol page
+  now hides the daily chart and key-stats sections for any symbol without
+  daily history and shows an honest message: a short "followed with live
+  quotes only" note for a future, a plain "no daily history available" for a
+  historyless index (^RUT, ^VIX). The live quote in the header is unaffected.
+  Separately, the `sec` scheduler job is now brought forward to the first tick
+  on boot, the way the history seed is, so a deploy that introduces new
+  SEC-backed data backfills within a tick instead of waiting out the ~24h
+  interval. That is what populates the Phase 18 ETF profiles on the production
+  box right after a deploy; the job is cheap when nothing is stale.
 
 ---
 

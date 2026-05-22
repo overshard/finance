@@ -56,6 +56,10 @@
     {% endif %}
   </header>
 
+  {# Chart and key stats need daily history. A future has none by design
+     (live quotes only), and so do the historyless indexes; those fall to the
+     explanatory empty state below instead of an empty chart. #}
+  {% if stats %}
   <section class="panel chart-panel">
     <div class="chart-bar">
       <div class="range-bar">
@@ -86,7 +90,6 @@
     <div id="chart" data-ticker="{{ symbol.ticker }}"></div>
   </section>
 
-  {% if stats %}
   <h2 class="section-title">Key stats</h2>
   <section class="keystats">
 
@@ -184,7 +187,13 @@
   </section>
   {% else %}
   <section class="empty">
-    <p>No price history for {{ symbol.ticker }} yet. Run <code>make seed</code> or wait for the next history sync.</p>
+    {% if symbol.kind == 'future' %}
+    <p><strong>{{ symbol.ticker }}</strong> is a futures contract. Finance follows
+    futures with live quotes only, so there is no historical daily chart; the
+    price above updates live while the market is trading.</p>
+    {% else %}
+    <p>No daily price history is available for {{ symbol.ticker }}.</p>
+    {% endif %}
   </section>
   {% endif %}
 
