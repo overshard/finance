@@ -22,17 +22,21 @@
     <a class="page-head__link" href="/search">Browse all {{ total }} symbols</a>
   </div>
 
-  <h2 class="section-title">Indexes</h2>
+  {# The sparkline-card sections stream live, so their freshness time rides in
+     a data-field the stream client refreshes as quotes land (Phase 22). The
+     movers / standings panels below are fixed page-load snapshots, so their
+     captions are plain server-rendered text. #}
+  <h2 class="section-title">Indexes{% if index_asof %}<span class="section-title__asof">prices as of <span data-field="spark-asof">{{ index_asof|asof }}</span></span>{% endif %}</h2>
   <div class="spark-grid">
     {% for c in index_cards %}{{ spark_card(c) }}{% endfor %}
   </div>
 
-  <h2 class="section-title">Commodities</h2>
+  <h2 class="section-title">Commodities{% if commodity_asof %}<span class="section-title__asof">prices as of <span data-field="spark-asof">{{ commodity_asof|asof }}</span></span>{% endif %}</h2>
   <div class="spark-grid">
     {% for c in commodity_cards %}{{ spark_card(c) }}{% endfor %}
   </div>
 
-  <h2 class="section-title">Today&rsquo;s movers</h2>
+  <h2 class="section-title">Today&rsquo;s movers{% if movers_asof %}<span class="section-title__asof">prices as of {{ movers_asof|asof }}</span>{% endif %}</h2>
   <div class="movers">
     <section class="movers__panel">
       <h3 class="movers__title">Top gainers</h3>
@@ -52,7 +56,7 @@
     </section>
   </div>
 
-  <h2 class="section-title">Strongest &amp; weakest</h2>
+  <h2 class="section-title">Strongest &amp; weakest{% if standings_asof %}<span class="section-title__asof">fundamentals synced {{ standings_asof|ago }}</span>{% endif %}</h2>
   <p class="section-note">A broader read than the day&rsquo;s move: each curated
      stock&rsquo;s fundamentals graded and rolled up, weighted with its price and
      growth trajectory.</p>

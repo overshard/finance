@@ -17,7 +17,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::compute;
-use crate::models::{self, to_card, Card, SymbolCardRow};
+use crate::models::{self, to_card, Card};
 use crate::render::render;
 use crate::routes::symbols::valid_ticker;
 use crate::AppState;
@@ -65,12 +65,14 @@ async fn search_page(Query(sq): Query<SearchQuery>, State(state): State<AppState
     // make the ticker/name and kind filters no-ops when their input is empty.
     // Ordering puts an exact ticker hit first, then ticker prefix matches,
     // then indexes before futures before ETFs before stocks, then alphabetical.
-    let rows: Vec<SymbolCardRow> = sqlx::query_as(
+    type SearchRow = (String, String, String, Option<f64>, Option<f64>, Option<i64>);
+    let rows: Vec<SearchRow> = sqlx::query_as(
         "SELECT s.ticker, s.name, s.kind, \
            COALESCE(s.last_price, \
              (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1)), \
            COALESCE(s.prev_close, \
-             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1 OFFSET 1)) \
+             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1 OFFSET 1)), \
+           s.last_quote_at \
          FROM symbols s \
          WHERE (? = '' OR s.ticker LIKE ? ESCAPE '\\' OR s.name LIKE ? ESCAPE '\\') \
            AND (? = '' OR s.kind = ?) \
@@ -90,7 +92,13 @@ async fn search_page(Query(sq): Query<SearchQuery>, State(state): State<AppState
     .await
     .unwrap_or_default();
 
-    let mut results: Vec<Card> = rows.into_iter().map(to_card).collect();
+    // The freshest quote across the matched symbols backs the page's "prices
+    // as of ..." caption (PLAN.md Phase 22).
+    let asof: Option<i64> = rows.iter().filter_map(|r| r.5).max();
+    let mut results: Vec<Card> = rows
+        .into_iter()
+        .map(|(t, n, k, last, prev, _)| to_card((t, n, k, last, prev)))
+        .collect();
 
     // A search that pinpoints exactly one symbol jumps straight to its page,
     // rather than rendering a single card the user must then click (Phase 21).
@@ -125,6 +133,7 @@ async fn search_page(Query(sq): Query<SearchQuery>, State(state): State<AppState
         kind => kind,
         results => results,
         result_count => result_count,
+        asof => asof,
         show_add => show_add,
         add_ticker => query,
     };

@@ -472,6 +472,9 @@ main {
   @include eyebrow;
   display: flex;
   align-items: center;
+  /* wrap is a safety net: if a freshness caption cannot fit beside the rule
+     on a narrow phone it drops to its own line rather than overflowing. */
+  flex-wrap: wrap;
   gap: 12px;
   margin: 30px 0 13px;
 }
@@ -481,6 +484,20 @@ main {
   flex: 1;
   height: 1px;
   background: var(--rule);
+}
+
+/* A quiet data-freshness caption riding at the right end of a section title
+   (PLAN.md Phase 22). order:1 places it past the ::after hairline rule; the
+   eyebrow's uppercase voice is dropped for a calmer annotation. */
+.section-title__asof {
+  order: 1;
+  flex: none;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--ink-faint);
+  white-space: nowrap;
 }
 
 /* ---------- ticker grid + card ---------- */

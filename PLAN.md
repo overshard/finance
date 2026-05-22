@@ -32,17 +32,17 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-22_
 
-**Current phase: none in progress. Phase 23 + 24 (financials table — Q4
-column and readability) is complete, verified, and deployed.** Phases 0
+**Current phase: none in progress. Phase 22 (show data age everywhere) is
+complete and verified locally; not yet committed or deployed.** Phases 0
 through 12 (the MVP) plus Phase 14 (company leadership), Phase 18 (ETF
 profiles), Phase 20 (strongest & weakest home panels), Phase 21 (home &
-search refinements) and Phase 23 + 24 are complete, verified, and **live in
-production at https://finance.bythewood.me**. Phase 23 + 24 were built
-together as one financials-table pass on 2026-05-22 (see the Done list and
-the decisions log): a derived Q4 column in the quarterly table, per-cell
-period-over-period growth cues, and an em-dash missing-value glyph in place
-of the middle dot. Remaining post-MVP work: the loose-ordered Phase 13, 15,
-16, 17, 19 backlog plus Phase 22 (show data age everywhere).
+search refinements) and Phase 23 + 24 (financials table) are complete,
+verified, and **live in production at https://finance.bythewood.me**.
+Phase 22 adds a consistent, quiet data-age caption across the whole app —
+the home dashboard, search, and every symbol-page data section, not just
+`/health` — see the Done list and the decisions log; it ships on the next
+`git push server master`. Remaining post-MVP work: the loose-ordered
+Phase 13, 15, 16, 17, 19 backlog.
 
 **Roadmap (restructured 2026-05-22, see decisions log):** the home-page
 redesign and commodities are pre-ship MVP phases. Order: 9 Search +
@@ -699,16 +699,73 @@ schema, unused for now.
     line). Desktop (1280px) and phone (390px) render with no overflow and
     zero console errors; the wide quarterly table scrolls within its card.
 
+- **Phase 22 show data age everywhere.** Complete, verified locally; not yet
+  committed or deployed. A consistent, quiet data-freshness caption now rides
+  across the whole app — the home dashboard, search, and every symbol-page
+  data section — not only `/health`. Built per a small design pass (see the
+  decisions log): a section-level caption (one quiet line per section, never
+  per card), and mixed wording — a relative "N ago" for live quotes and SEC
+  syncs, an absolute clock time or date for daily and dated data.
+  - **Two new minijinja filters** (`templates.rs`): `asof` (epoch-ms -> an
+    absolute market-clock anchor — a time of day `2:14pm` when the moment is
+    today, else `May 21`, else `May 21, 2024`) and `shortdate` (a
+    `YYYY-MM-DD` string -> `May 21` / `May 21, 2024`). The existing `ago`
+    filter (relative `N ago`) is reused for sync times. `asof` formats in
+    `America/New_York`, matching `market.rs`.
+  - **Home** (`routes/home.rs`, `home.html`): each of the four sections
+    carries a caption on its `.section-title`. Indexes / Commodities show
+    "prices as of {clock}" off the freshest `last_quote_at` among the
+    section's symbols; Today's movers the same off the curated stocks;
+    Strongest & weakest "fundamentals synced {ago}" off the freshest
+    `fundamentals_synced_at`. `spark_cards_for` now returns a
+    `SparkSection { cards, asof }`; `load_stocks` carries each stock's
+    `last_quote_at` and `fundamentals_synced_at`.
+  - **Live sections stay honest.** The Indexes / Commodities cards stream
+    live, so their caption's time sits in a `data-field="spark-asof"` span
+    that `stream.js` refreshes to the current market clock whenever a
+    sparkline-card quote lands. The movers / strongest-weakest panels are
+    fixed page-load snapshots (per Phases 11 and 20), so their captions are
+    plain static text.
+  - **Search** (`routes/search.rs`, `search.html`): a "Prices as of {clock}"
+    line above the results grid, off the freshest quote among the matches.
+  - **Symbol page** (`symbol.html`; `symbols.rs` needed no change — the
+    `SymbolRow` already carries every sync timestamp). The header's quote
+    line gains the real quote age — "Live · quoted {ago}", live-refreshed to
+    "quoted just now" by the stream client on each quote; the daily-close
+    fallback reads "Last close · {shortdate}". Every data section title
+    carries a caption: Key stats "as of {close date}", Fundamentals /
+    Financials "synced from SEC {ago}" (`fundamentals_synced_at`), Leadership
+    (`leadership_synced_at`), Fund profile (`fund_synced_at`), Recent SEC
+    filings (`filings_synced_at`, falling back to `fund_synced_at` for an ETF,
+    whose filings ride along with the Phase 18 fund sweep), Top holdings
+    "holdings as of {N-PORT date}". Filing dates render through `shortdate`.
+  - **Style.** A shared `.section-title__asof` (base.scss): a quiet ink-faint
+    caption riding past the section's hairline rule (`order: 1`), the
+    eyebrow's uppercase voice dropped for a calmer annotation; `.section-title`
+    gained `flex-wrap: wrap` so a long caption drops to its own line on a
+    narrow phone rather than overflowing. A `.results-asof` line for search.
+  - Verified: cargo + bun build clean. `/` shows the four section captions —
+    Indexes / Commodities live-refreshing their clock as SSE quotes landed
+    (server-rendered "8:46am" became "3:47pm" once the intraday poll ran),
+    movers / standings static page-load snapshots. `/search` shows the
+    results caption. `/s/AAPL` header read "Live · quoted just now" and every
+    section title carried its sync / close caption; `/s/QQQ` (ETF) showed the
+    fund-profile, top-holdings (N-PORT date) and filings captions, the last
+    correctly sourced from `fund_synced_at`. Desktop (1280px) and phone
+    (360px) render with no horizontal overflow and zero console errors; a
+    too-long caption wraps cleanly to a second line at 360px.
+
 **Resuming, next action**
-**Phase 23 + 24 (financials table — Q4 column and readability) is complete,
-verified and deployed** (2026-05-22). The MVP plus Phase 14, Phase 18,
-Phase 20, Phase 21 and Phase 23 + 24 are live at
-https://finance.bythewood.me. No phase is in progress. Remaining post-MVP
-work: the loose-ordered Phase 13, 15,
-16, 17, 19 backlog plus Phase 22 (show data age everywhere); the user picks
-which to take next. There is still no GitHub repo for finance:
-the user deferred that; if one is created later, add it as `origin` and the
-`overshard/finance` slug already in taproot's `projects.conf` lines up.
+**Phase 22 (show data age everywhere) is complete and verified locally**
+(2026-05-22) but **not yet committed or deployed** — it ships on the next
+`git push server master`. The MVP plus Phase 14, Phase 18, Phase 20,
+Phase 21 and Phase 23 + 24 are live at https://finance.bythewood.me;
+Phase 22 will join them on the next push. No phase is in progress.
+Remaining post-MVP work: the loose-ordered Phase 13, 15, 16, 17, 19
+backlog; the user picks which to take next. There is still no GitHub repo
+for finance: the user deferred that; if one is created later, add it as
+`origin` and the `overshard/finance` slug already in taproot's
+`projects.conf` lines up.
 
 Note: Phase 18 added the `quick-xml` crate (N-PORT XML streaming parser) and
 migration `0005`. A fresh `make run` applies `0005`; the ETF fund profiles
@@ -1043,7 +1100,9 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   exactly one symbol, redirect straight to that symbol's page instead of
   rendering a one-card result the user must then click.
 
-- [ ] **Phase 22: Show data age everywhere.** (Captured 2026-05-22 from a
+- [x] **Phase 22: Show data age everywhere.** Complete and verified locally
+  2026-05-22; not yet committed or deployed. See the Phase 22 Done entry in
+  Status and the decisions log. (Captured 2026-05-22 from a
   vibe-coding side note.) The user considers data freshness critically
   important and wants the age of displayed data surfaced consistently across
   the whole app, the home page included — not only on `/health`. Today
@@ -1648,6 +1707,38 @@ finance/
   would be worse than the original; the em dash is now the single app-wide
   empty-value mark. Deployed to production on 2026-05-22 via
   `git push server master`.
+- **2026-05-22 — Phase 22 picked, and a design pass settled it.** Asked which
+  loose-ordered backlog phase to take next, the user chose Phase 22 (show data
+  age everywhere). The plan had flagged it as needing a design pass on the
+  wording and where the freshness rides; a Q&A settled two points. (1) On the
+  list / grid surfaces (home, search) the freshness rides as **one quiet
+  caption per section**, not one per card — a timestamp on each of the 8 + 8
+  mover rows would clutter the Paper Ledger look; a per-section line stays
+  skimmable. (2) **Mixed wording** — a relative "N ago" for live quotes and
+  SEC syncs, an absolute clock time or date for daily and dated data — since a
+  relative age on a daily close ("18h ago") reads vaguely where an absolute
+  date ("May 21") is precise, while a relative age is exactly right for a
+  quote you are watching tick.
+- **2026-05-22 — Phase 22 show data age everywhere shipped (local).** A
+  consistent, quiet data-freshness caption now rides across the whole app
+  (home dashboard, search, every symbol-page data section), not only
+  `/health`. Two new minijinja filters carry it: `asof` (epoch-ms -> an
+  absolute market-clock anchor) and `shortdate` (a `YYYY-MM-DD` string -> a
+  short date); the existing `ago` filter is reused for sync ages. Design
+  calls made during the build: (1) the home Indexes / Commodities captions
+  are the **only** ones that live-update — those sparkline cards stream, so
+  their "as of" time sits in a `data-field` the stream client refreshes as
+  quotes land; the movers and strongest / weakest panels are fixed page-load
+  snapshots (per Phases 11 and 20), so their captions are static text, and
+  the symbol header's quote age is reset to "just now" on each live quote.
+  (2) An ETF's "Recent SEC filings" caption falls back from `filings_synced_at`
+  to `fund_synced_at`: a stock's filings sweep stamps the former, but an ETF's
+  filings are stored by the Phase 18 fund-profile sweep, which stamps the
+  latter. (3) The `asof` filter renders an absolute clock time (not a relative
+  age) for the section captions precisely so they never drift stale on screen
+  while live prices tick; only genuinely relative things (a quote age, a sync
+  age) use `ago`. No schema change, no new data source, no new network calls.
+  Not yet committed or deployed; ships on the next `git push server master`.
 
 ---
 
@@ -1679,4 +1770,9 @@ finance/
 - A stock's Financials table (`/s/AAPL`, Quarterly) shows a derived Q4 column
   and per-cell up/down growth cues; a figure the company did not report shows
   an em dash (`—`), not a middle dot (Phase 23 + 24).
+- Every data surface carries a quiet freshness caption (Phase 22): each home
+  section and the search results show "prices as of ...", the symbol header
+  shows the live quote's age, and each symbol-page section title shows its
+  last SEC sync or close date. The home Indexes / Commodities captions
+  live-update as streamed quotes land; the others are page-load values.
 - No automated test suite or linter, matching the sibling projects.

@@ -1,3 +1,4 @@
+use chrono::Datelike;
 use minijinja::value::Value;
 use minijinja::{path_loader, AutoEscape, Environment, Error, Output, State};
 use serde::Serialize;
@@ -116,6 +117,8 @@ pub fn build_env(templates_dir: &Path, manifest_path: &Path) -> Environment<'sta
     env.add_filter("compact", compact_filter);
     env.add_filter("intcomma", intcomma_filter);
     env.add_filter("ago", ago_filter);
+    env.add_filter("asof", asof_filter);
+    env.add_filter("shortdate", shortdate_filter);
     env.add_filter("urlencode", urlencode_filter);
 
     env
@@ -239,6 +242,48 @@ fn ago_filter(value: Value) -> Result<String, Error> {
         format!("{}h ago", secs / 3600)
     } else {
         format!("{}d ago", secs / 86_400)
+    })
+}
+
+/// Epoch-ms -> an absolute "as of" anchor on the US market clock: a time of day
+/// when the moment falls on today's date (`2:14pm`), a month and day when it is
+/// earlier this year (`May 21`), else a full date (`May 21, 2024`). Unlike
+/// `ago` it never drifts on screen, so it suits a page-load section header.
+fn asof_filter(value: Value) -> Result<String, Error> {
+    let Some(ms) = value.as_i64() else {
+        return Ok(DASH.to_string());
+    };
+    let Some(instant) = chrono::DateTime::from_timestamp_millis(ms) else {
+        return Ok(DASH.to_string());
+    };
+    // Market data is wall-clock-anchored to the exchange (see market.rs), so a
+    // freshness time reads naturally in New York rather than UTC.
+    let et = instant.with_timezone(&chrono_tz::America::New_York);
+    let now = chrono::Utc::now().with_timezone(&chrono_tz::America::New_York);
+    Ok(if et.date_naive() == now.date_naive() {
+        // lowercase meridiem, no leading zero on the hour: "2:14pm".
+        et.format("%-I:%M%P").to_string()
+    } else if et.year() == now.year() {
+        et.format("%b %-d").to_string()
+    } else {
+        et.format("%b %-d, %Y").to_string()
+    })
+}
+
+/// A `YYYY-MM-DD` date string -> `May 21`, or `May 21, 2024` when the year is
+/// not the current one. For dated data: a last daily close, a holdings date, a
+/// filing date. A string that does not parse is passed through unchanged.
+fn shortdate_filter(value: Value) -> Result<String, Error> {
+    let Some(s) = value.as_str() else {
+        return Ok(DASH.to_string());
+    };
+    let Ok(date) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") else {
+        return Ok(s.to_string());
+    };
+    Ok(if date.year() == chrono::Utc::now().year() {
+        date.format("%b %-d").to_string()
+    } else {
+        date.format("%b %-d, %Y").to_string()
     })
 }
 

@@ -15,7 +15,7 @@ use serde::Serialize;
 
 use crate::compute::{self, Sparkline};
 use crate::market;
-use crate::models::{self, SymbolCardRow};
+use crate::models;
 use crate::render::render;
 use crate::AppState;
 
@@ -73,6 +73,17 @@ struct SparkCard {
     up: bool,
 }
 
+/// One sparkline section of the dashboard (Indexes, Commodities): its cards and
+/// the freshest quote behind them, so the section heading can carry a quiet
+/// "prices as of ..." freshness caption (PLAN.md Phase 22).
+#[derive(Serialize)]
+struct SparkSection {
+    cards: Vec<SparkCard>,
+    /// The most recent `last_quote_at` (epoch-ms) across the section's symbols;
+    /// `None` until at least one has ever been quoted.
+    asof: Option<i64>,
+}
+
 /// One row in a movers panel.
 #[derive(Serialize, Clone)]
 struct Mover {
@@ -116,6 +127,12 @@ struct StockRow {
     prev: Option<f64>,
     standing: Option<compute::Standing>,
     ret_12m: Option<f64>,
+    /// When this stock was last quoted (epoch-ms); feeds the movers panel's
+    /// freshness caption (PLAN.md Phase 22).
+    last_quote_at: Option<i64>,
+    /// When this stock's SEC fundamentals last synced (epoch-ms); feeds the
+    /// strongest / weakest panels' freshness caption.
+    fundamentals_synced_at: Option<i64>,
 }
 
 async fn home(State(state): State<AppState>) -> Response {
@@ -136,22 +153,32 @@ async fn home(State(state): State<AppState>) -> Response {
         .await
         .unwrap_or(seeded);
 
-    let (index_cards, commodity_cards) = dashboard_cards(&state).await;
+    let (index_section, commodity_section) = dashboard_cards(&state).await;
     // One scan of the curated stocks feeds both the movers and the strongest /
     // weakest panels.
     let stocks = load_stocks(&state).await;
     let (gainers, losers) = movers(&stocks);
     let (strongest, weakest) = strength_panels(&stocks);
 
+    // Section freshness (PLAN.md Phase 22): the movers panels date off the
+    // freshest stock quote, the strongest / weakest panels off the most recent
+    // SEC fundamentals sync — the data each panel actually leans on.
+    let movers_asof = stocks.iter().filter_map(|s| s.last_quote_at).max();
+    let standings_asof = stocks.iter().filter_map(|s| s.fundamentals_synced_at).max();
+
     let extra = minijinja::context! {
         title => "Markets",
         empty => false,
-        index_cards => index_cards,
-        commodity_cards => commodity_cards,
+        index_cards => index_section.cards,
+        index_asof => index_section.asof,
+        commodity_cards => commodity_section.cards,
+        commodity_asof => commodity_section.asof,
         gainers => gainers,
         losers => losers,
+        movers_asof => movers_asof,
         strongest => strongest,
         weakest => weakest,
+        standings_asof => standings_asof,
         total => total,
     };
     render(&state, "pages/home.html", "/", extra)
@@ -162,7 +189,7 @@ async fn home(State(state): State<AppState>) -> Response {
 /// Outside the regular cash session each index card resolves to its index
 /// future (see `INDEXES`): the future trades nearly around the clock, so the
 /// card stays live overnight instead of freezing on the 16:00 ET close.
-async fn dashboard_cards(state: &AppState) -> (Vec<SparkCard>, Vec<SparkCard>) {
+async fn dashboard_cards(state: &AppState) -> (SparkSection, SparkSection) {
     let regular = matches!(
         market::session_at(chrono::Utc::now()),
         market::Session::Regular
@@ -181,37 +208,44 @@ async fn dashboard_cards(state: &AppState) -> (Vec<SparkCard>, Vec<SparkCard>) {
     (indexes, commodities)
 }
 
-/// Build a sparkline card for each ticker in `tickers`, in that order: a
-/// current price, the day's change, and a sparkline of the latest session's
-/// bars. A ticker the universe does not hold is skipped.
-async fn spark_cards_for(state: &AppState, tickers: &[&str]) -> Vec<SparkCard> {
+/// Build a sparkline section for `tickers`, in that order: a card per ticker
+/// (current price, the day's change, a sparkline of the latest session's bars)
+/// plus the freshest quote across them. A ticker the universe does not hold is
+/// skipped.
+async fn spark_cards_for(state: &AppState, tickers: &[&str]) -> SparkSection {
     if tickers.is_empty() {
-        return Vec::new();
+        return SparkSection {
+            cards: Vec::new(),
+            asof: None,
+        };
     }
     // One query for the price rows. The `IN` list is built from the hardcoded
     // dashboard consts — never user input — so the placeholder count is fixed
-    // and safe.
+    // and safe. The trailing `last_quote_at` feeds the section's freshness.
+    type SparkRow = (String, String, String, Option<f64>, Option<f64>, Option<i64>);
     let placeholders = vec!["?"; tickers.len()].join(",");
     let sql = format!(
         "SELECT s.ticker, s.name, s.kind, \
            COALESCE(s.last_price, \
              (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1)), \
            COALESCE(s.prev_close, \
-             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1 OFFSET 1)) \
+             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1 OFFSET 1)), \
+           s.last_quote_at \
          FROM symbols s WHERE s.ticker IN ({placeholders})"
     );
-    let mut q = sqlx::query_as::<_, SymbolCardRow>(&sql);
+    let mut q = sqlx::query_as::<_, SparkRow>(&sql);
     for t in tickers {
         q = q.bind(*t);
     }
-    let rows: Vec<SymbolCardRow> = q.fetch_all(&state.pool).await.unwrap_or_default();
-    let mut by_ticker: HashMap<String, SymbolCardRow> =
+    let rows: Vec<SparkRow> = q.fetch_all(&state.pool).await.unwrap_or_default();
+    let asof = rows.iter().filter_map(|r| r.5).max();
+    let mut by_ticker: HashMap<String, SparkRow> =
         rows.into_iter().map(|r| (r.0.clone(), r)).collect();
 
     let mut cards = Vec::with_capacity(tickers.len());
     for &t in tickers {
         // Skip a dashboard symbol the universe somehow does not hold.
-        let Some((ticker, name, _kind, last, prev)) = by_ticker.remove(t) else {
+        let Some((ticker, name, _kind, last, prev, _quote_at)) = by_ticker.remove(t) else {
             continue;
         };
 
@@ -243,7 +277,7 @@ async fn spark_cards_for(state: &AppState, tickers: &[&str]) -> Vec<SparkCard> {
             up: change_pct.map_or(true, |p| p >= 0.0),
         });
     }
-    cards
+    SparkSection { cards, asof }
 }
 
 /// Every curated large-cap stock, each graded into a [`StockRow`].
@@ -256,14 +290,16 @@ async fn spark_cards_for(state: &AppState, tickers: &[&str]) -> Vec<SparkCard> {
 async fn load_stocks(state: &AppState) -> Vec<StockRow> {
     // 1. Price per curated stock: the live last price, else the latest daily
     //    close; plus the prior close it is changing against.
-    let price_rows: Vec<(String, String, Option<f64>, Option<f64>)> = sqlx::query_as(
-        "SELECT s.ticker, s.name, \
+    let price_rows: Vec<(String, String, Option<f64>, Option<f64>, Option<i64>, Option<i64>)> =
+        sqlx::query_as(
+            "SELECT s.ticker, s.name, \
            COALESCE(s.last_price, \
              (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1)), \
            COALESCE(s.prev_close, \
-             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1 OFFSET 1)) \
+             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1 OFFSET 1)), \
+           s.last_quote_at, s.fundamentals_synced_at \
          FROM symbols s WHERE s.is_seeded = 1 AND s.kind = 'stock'",
-    )
+        )
     .fetch_all(&state.pool)
     .await
     .unwrap_or_default();
@@ -313,7 +349,7 @@ async fn load_stocks(state: &AppState) -> Vec<StockRow> {
     // standing and is left out of the strongest / weakest ranking.
     price_rows
         .into_iter()
-        .map(|(ticker, name, last, prev)| {
+        .map(|(ticker, name, last, prev, last_quote_at, fundamentals_synced_at)| {
             let stock_closes = closes.get(&ticker).map(Vec::as_slice).unwrap_or(&[]);
             let standing = facts.get(&ticker).and_then(|f| {
                 let inputs = models::latest_annual_inputs(f, last)?;
@@ -326,6 +362,8 @@ async fn load_stocks(state: &AppState) -> Vec<StockRow> {
                 prev,
                 standing,
                 ret_12m: compute::trailing_return(stock_closes),
+                last_quote_at,
+                fundamentals_synced_at,
             }
         })
         .collect()

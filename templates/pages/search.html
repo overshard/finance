@@ -49,6 +49,7 @@
 
   {% if results %}
   {% from "includes/macros.html" import ticker_card %}
+  {% if asof %}<p class="results-asof">Prices as of {{ asof|asof }}</p>{% endif %}
   <div class="ticker-grid search-grid">
     {% for c in results %}{{ ticker_card(c) }}{% endfor %}
   </div>

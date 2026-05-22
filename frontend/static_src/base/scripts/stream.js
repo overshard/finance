@@ -44,6 +44,20 @@ function fmtPct(n) {
   );
 }
 
+// The current time as the server-side `asof` filter renders it — a market-
+// clock time of day like "3:42pm" (lowercase, no space). Used to refresh the
+// dashboard's live section freshness captions (Phase 22).
+function fmtClock(d) {
+  return d
+    .toLocaleTimeString("en-US", {
+      timeZone: "America/New_York",
+      hour: "numeric",
+      minute: "2-digit",
+    })
+    .replace(/\s/g, "")
+    .toLowerCase();
+}
+
 // Set the semantic move class (green/red/flat) from a percentage change.
 function setMove(el, pct) {
   el.classList.remove("is-up", "is-down", "is-flat");
@@ -96,6 +110,10 @@ function applyQuote(q) {
   lastPrice.set(q.ticker, q.price);
   const dir = prev === undefined ? 0 : Math.sign(q.price - prev);
 
+  // Whether this quote landed on a dashboard sparkline card — if so, the live
+  // section freshness caption is refreshed once the patches are applied.
+  let hitSparkCard = false;
+
   document.querySelectorAll(`[data-ticker="${q.ticker}"]`).forEach((root) => {
     const price = root.querySelector('[data-field="price"]');
     if (price) price.textContent = fmtMoney(q.price);
@@ -113,10 +131,17 @@ function applyQuote(q) {
       setMove(chg, q.change_pct);
     }
 
+    // The header's freshness caption (Phase 22): a fresh quote just landed,
+    // so reset its age to "just now" rather than letting it drift stale while
+    // the price ticks. Mirrors the server-side `ago` filter's < 5s branch.
+    const quoted = root.querySelector('[data-field="quoted"]');
+    if (quoted) quoted.textContent = "quoted just now";
+
     // Dashboard sparkline cards track the live quote: recolour and move the
     // line tip. (The price/change nodes above are already patched.)
-    if (root.classList.contains("spark-card") && q.change_pct != null) {
-      paintSparkline(root, q);
+    if (root.classList.contains("spark-card")) {
+      hitSparkCard = true;
+      if (q.change_pct != null) paintSparkline(root, q);
     }
 
     const isCard =
@@ -128,6 +153,16 @@ function applyQuote(q) {
       root.classList.add(dir > 0 ? "flash-up" : "flash-down");
     }
   });
+
+  // A dashboard sparkline card just took a live quote, so its section's
+  // freshness caption ("prices as of …") is now current (Phase 22). Both live
+  // sections poll together each cycle, so refreshing them as one is honest.
+  if (hitSparkCard) {
+    const now = fmtClock(new Date());
+    document
+      .querySelectorAll('[data-field="spark-asof"]')
+      .forEach((el) => (el.textContent = now));
+  }
 }
 
 // Status-pill appearance per market session. The dot color reuses the

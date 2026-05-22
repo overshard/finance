@@ -53,7 +53,7 @@
         {{ chg_abs|signed }} ({{ chg_pct|pct }})
       </span>
       {% endif %}
-      <span class="sym-head__asof">{{ quote.state_label if quote else 'last close · ' ~ stats.date }}</span>
+      <span class="sym-head__asof">{% if quote %}{{ quote.state_label }}{% if symbol.last_quote_at %} &middot; <span data-field="quoted">quoted {{ symbol.last_quote_at|ago }}</span>{% endif %}{% else %}Last close &middot; {{ stats.date|shortdate }}{% endif %}</span>
     </div>
     {% endif %}
   </header>
@@ -92,7 +92,7 @@
     <div id="chart" data-ticker="{{ symbol.ticker }}"></div>
   </section>
 
-  <h2 class="section-title">Key stats</h2>
+  <h2 class="section-title">Key stats<span class="section-title__asof">as of {{ stats.date|shortdate }}</span></h2>
   <section class="keystats">
 
     {# --- the trading day: open & close placed in the day's range --- #}
@@ -202,7 +202,7 @@
   {# --- fundamentals + financials: stocks only --- #}
   {% if symbol.kind == 'stock' %}
 
-  <h2 class="section-title">Fundamentals</h2>
+  <h2 class="section-title">Fundamentals{% if symbol.fundamentals_synced_at %}<span class="section-title__asof">synced from SEC {{ symbol.fundamentals_synced_at|ago }}</span>{% endif %}</h2>
   {% if fundamentals and fundamentals.ratios %}
   {# The rolled-up standing badge sits above the per-ratio cards (Phase 20). #}
   {% if standing %}
@@ -236,7 +236,7 @@
   {% endif %}
 
   {% if fundamentals and (fundamentals.has_annual or fundamentals.has_quarterly) %}
-  <h2 class="section-title">Financials</h2>
+  <h2 class="section-title">Financials{% if symbol.fundamentals_synced_at %}<span class="section-title__asof">synced from SEC {{ symbol.fundamentals_synced_at|ago }}</span>{% endif %}</h2>
   <section class="panel fin">
     <div class="fin__toggle" role="tablist" aria-label="Reporting period">
       <button type="button" class="fin__tab is-active" data-period="annual" aria-selected="true">Annual</button>
@@ -248,7 +248,7 @@
   {% endif %}
 
   {# --- leadership: officers, board & recent changes (Phase 14) --- #}
-  <h2 class="section-title">Leadership</h2>
+  <h2 class="section-title">Leadership{% if symbol.leadership_synced_at %}<span class="section-title__asof">synced from SEC {{ symbol.leadership_synced_at|ago }}</span>{% endif %}</h2>
   {% if leadership and leadership.roster %}
   <section class="panel leadership">
     <ul class="roster">
@@ -269,7 +269,7 @@
           <a class="lead-change__link" href="{{ c.url }}" target="_blank" rel="noopener noreferrer">
             <span class="lead-change__body">
               <span class="lead-change__desc">Officer or director change</span>
-              <span class="lead-change__meta">Reported in an 8-K filed {{ c.filed_at }}</span>
+              <span class="lead-change__meta">Reported in an 8-K filed {{ c.filed_at|shortdate }}</span>
             </span>
             <svg class="filing__ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M14 5h5v5M19 5l-9 9M11 5H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5"/>
@@ -294,7 +294,7 @@
 
   {# --- fund profile: ETFs only (Phase 18) --- #}
   {% if symbol.kind == 'etf' %}
-  <h2 class="section-title">Fund profile</h2>
+  <h2 class="section-title">Fund profile{% if symbol.fund_synced_at %}<span class="section-title__asof">synced from SEC {{ symbol.fund_synced_at|ago }}</span>{% endif %}</h2>
   {% if fund %}
   <section class="panel fund">
     <dl class="fund__stats">
@@ -337,7 +337,7 @@
   </section>
 
   {% if fund.holdings %}
-  <h2 class="section-title">Top holdings</h2>
+  <h2 class="section-title">Top holdings{% if fund.report_date %}<span class="section-title__asof">holdings as of {{ fund.report_date|shortdate }}</span>{% endif %}</h2>
   <section class="panel holdings">
     <ol class="hold-list">
       {% for h in fund.holdings %}
@@ -362,7 +362,10 @@
 
   {# --- SEC filings: stocks and ETFs --- #}
   {% if filings %}
-  <h2 class="section-title">Recent SEC filings</h2>
+  {# A stock's filings sync stamps `filings_synced_at`; an ETF's ride along
+     with the Phase 18 fund-profile sweep, which stamps `fund_synced_at`. #}
+  {% set filings_synced = symbol.filings_synced_at if symbol.filings_synced_at else symbol.fund_synced_at %}
+  <h2 class="section-title">Recent SEC filings{% if filings_synced %}<span class="section-title__asof">synced from SEC {{ filings_synced|ago }}</span>{% endif %}</h2>
   <section class="panel filings">
     <ul class="filing-list">
       {% for f in filings %}
@@ -371,7 +374,7 @@
           <span class="filing__form num">{{ f.form }}</span>
           <span class="filing__body">
             <span class="filing__desc">{{ f.title }}</span>
-            <span class="filing__meta">Filed {{ f.filed_at }}{% if f.period_of_report %} &middot; period {{ f.period_of_report }}{% endif %}</span>
+            <span class="filing__meta">Filed {{ f.filed_at|shortdate }}{% if f.period_of_report %} &middot; period {{ f.period_of_report|shortdate }}{% endif %}</span>
           </span>
           <svg class="filing__ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M14 5h5v5M19 5l-9 9M11 5H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5"/>
