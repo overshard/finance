@@ -1439,6 +1439,19 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         None
     };
 
+    // Phase 15: slugs for the sector / industry header tags' links. Computed
+    // here so the template stays declarative.
+    let sector_slug = symbol
+        .sector
+        .as_deref()
+        .map(crate::routes::industries::slug)
+        .unwrap_or_default();
+    let industry_slug = symbol
+        .industry
+        .as_deref()
+        .map(crate::routes::industries::slug)
+        .unwrap_or_default();
+
     let extra = minijinja::context! {
         title => ticker,
         symbol => symbol,
@@ -1455,6 +1468,8 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         anomalies => anomalies,
         earnings => earnings,
         filings => filings,
+        sector_slug => sector_slug,
+        industry_slug => industry_slug,
     };
     render(&state, "pages/symbol.html", &format!("/s/{ticker}"), extra)
 }

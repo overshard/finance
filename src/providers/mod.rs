@@ -308,6 +308,19 @@ pub struct FundMetadata {
     pub strategy_summary: Option<String>,
 }
 
+/// One stock's Yahoo `assetProfile` classification (Phase 15). Both fields
+/// are optional: small-cap and foreign tickers occasionally carry only one,
+/// and a request that returned an `assetProfile` module Yahoo populated only
+/// partially leaves the other side `None` rather than rejecting the row.
+#[derive(Debug, Clone, Default)]
+pub struct AssetProfile {
+    /// GICS-style sector ("Technology"). From `assetProfile.sector`.
+    pub sector: Option<String>,
+    /// GICS-style industry ("Consumer Electronics"). From
+    /// `assetProfile.industry`.
+    pub industry: Option<String>,
+}
+
 /// An upstream rejected a request with an explicit rate-limit signal (HTTP 429
 /// or 503). A provider returns this as the source of its `anyhow::Error` so the
 /// `EndpointGuard` (see `src/guard.rs`) can recognise it by downcast and trip

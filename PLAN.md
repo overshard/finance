@@ -32,7 +32,29 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-23_
 
-**Current phase: Phase 25 (earnings dates) complete, verified
+**Current phase: Phase 15 (industry trends) complete and verified
+locally 2026-05-23.** Yahoo `quoteSummary.assetProfile` is the source
+(clean GICS-style names); migration `0012` adds
+`symbols.asset_profile_synced_at` (the long-existing-but-unpopulated
+`symbols.sector` / `symbols.industry` columns are now written by a
+new `asset_profile` scheduler section on the `yahoo` `EndpointGuard`).
+Four surfaces — `/industries` sector index, `/industries/{sector}`
+and `/industries/{sector}/{industry}` detail pages (composite chart +
+seasonality + members), a sector · industry tag on the symbol page
+header, and a "Today's industries" panel on the home page between
+Top picks and Stock health. Top nav and bottom nav gained an
+Industries entry. Pure aggregation on render (in-memory over the
+classified universe), mirroring Phase 20 strongest / weakest. Health
+page lists the new `asset_profile` job between `fund_metadata` and
+`earnings_calendar`. Verified locally: cargo + bun build clean, three
+new compute unit tests pass; on a fresh DB seeded mid-test `/` and
+`/industries` and `/s/AAPL` and `/health` all 200; the asset_profile
+job is correctly bring-forwarded on boot and the `/industries` empty
+state renders as designed until the first sweep lands.
+**Phase 13 (market heat map) dropped from the roadmap on 2026-05-23
+at the user's request.**
+
+**Phase 25 (earnings dates) complete, verified
 and deployed to production 2026-05-23 (commit `aac84ae`).** A new Earnings section on the stock
 symbol page between Key stats and Stock health, plus small ink-dot
 pips on the candlestick chart at each past earnings date. Two surfaces:
@@ -145,6 +167,30 @@ backlog as Phase 19. The `watchlists` / `watchlist_items` tables stay in the
 schema, unused for now.
 
 **Done**
+- **Phase 15 industry trends.** Complete and verified locally 2026-05-23.
+  New `asset_profile` Yahoo scheduler section populates each stock's
+  `symbols.sector` and `symbols.industry` (existing columns since
+  `0001_initial.sql` but never written before) from
+  `quoteSummary.assetProfile`, monthly cadence on the existing `yahoo`
+  guard; migration `0012` adds the `asset_profile_synced_at` staleness
+  column. `routes/industries.rs` carries the sector index, sector
+  detail and industry detail pages plus a composite-history JSON
+  endpoint; the equal-weight composite, trailing returns (1d / 5d /
+  1m / 3m / 1y), and 12-month seasonality are pure `compute.rs`
+  helpers. The symbol page header carries a sector · industry tag pair
+  linking to the relevant `/industries/{sector}/{industry}`. The home
+  page gained a "Today's industries" panel between Top picks and Stock
+  health: top-3 and bottom-3 sectors by today's equal-weight composite
+  move. Top nav + bottom nav gained an Industries entry. Anti-spam:
+  ~512 stocks × monthly refresh = ~17 requests/day on the 1000/hr
+  `yahoo` guard. Verified locally: `cargo build` clean, `bun run
+  build` clean, three new Phase 15 compute unit tests pass alongside
+  the existing 10; on a fresh dev DB the boot seed populated 547
+  symbols and `/`, `/industries`, `/s/AAPL`, `/health`, `/api/health`
+  all returned 200. `/industries` renders the empty state cleanly
+  until the first asset_profile sweep lands (Yahoo rate-limits the
+  WSL2 dev IP, so verification stops at "renders" until production
+  picks it up). Not yet deployed.
 - **Phase 25 earnings dates.** Complete, verified, and deployed to
   production 2026-05-23 (commit `aac84ae`). On-deploy state: the new
   `earnings_calendar` job populates `next_earnings_at` on its first
@@ -1323,8 +1369,11 @@ vibe-coding side note mid-Phase-28; see the decisions log.
 Phase 30 (top picks + backtest) is complete, verified, and deployed to
 production 2026-05-23 (commit `8ea9048`). Phase 25 (earnings dates) is
 complete, verified, and deployed to production 2026-05-23 (commit
-`aac84ae`). Remaining
-post-MVP work is the loose-ordered Phase 13, 15, 19, 27, 29 backlog. Phase 26 (dividend payouts)
+`aac84ae`). Phase 13 (market heat map) was **dropped from the roadmap**
+on 2026-05-23 at the user's request. Phase 15 (industry trends) was
+picked as the next phase the same day and is **in progress** — see its
+Phases-list entry for the settled scope. Remaining post-MVP work after
+Phase 15 ships is the loose-ordered Phase 19, 27, 29 backlog. Phase 26 (dividend payouts)
 is complete and deployed (commit `7608b06`); the MVP plus Phase 14,
 Phase 18, Phase 20, Phase 21, Phase 23 + 24, Phase 22 and Phase 26 are all
 live at https://finance.bythewood.me. There is still no GitHub repo for
@@ -1563,11 +1612,9 @@ Phases 13 through 19 are the post-MVP backlog: ideas captured during planning,
 to be built after the Phase 12 ship. Order among them is loose, and several
 depend on Phase 5 (live quotes) and Phase 7 (SEC data).
 
-- [ ] **Phase 13: Market heat map.** A home-dashboard market-cap heat map: one
-  tile per symbol, sized by market cap, colored green or red by the day's move
-  (a treemap). Market cap is shares outstanding (from SEC, Phase 7) times the
-  latest price. (The movers list and index sparklines once bundled here moved
-  into the Phase 11 home redesign when it was promoted.)
+- [~] **Phase 13: Market heat map. Dropped 2026-05-23 (see decisions log).** The
+  user removed the heat map from the roadmap. Phase number kept as a placeholder
+  so later phases keep their numbering and the decisions log entry has a target.
 - [x] **Phase 14: Company leadership.** Complete, verified and deployed
   2026-05-22; see the Phase 14 entry in Status and the decisions log.
   (Picked as the next backlog phase and scoped 2026-05-22.) Two things on the
@@ -1586,11 +1633,89 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   the SEC source already shipped; the ownership-XML sweep is network-heavier
   than Phase 7 (one request per filing) but paced and budgeted by the existing
   `sec` `EndpointGuard`.
-- [ ] **Phase 15: Industry trends.** Treat industries as first-class:
-  aggregate symbols by industry (sector and industry come from SEC in Phase
-  7), show industry-level performance, seasonality (the months an industry
-  tends to do well or poorly, computed from `daily_prices`), and how the
-  industry is trending currently.
+- [ ] **Phase 15: Industry trends.** (Picked as the next backlog phase and
+  scoped 2026-05-23 — see decisions log. In progress.) Treat industries as
+  first-class: classify every stock by sector + industry, surface
+  industry-level performance, seasonality, and current trend.
+
+  **Data source.** Yahoo `quoteSummary.assetProfile` carries the clean,
+  GICS-style `sector` ("Technology") and `industry` ("Consumer Electronics")
+  fields the page deserves; SEC `submissions.sicDescription` is the rougher
+  ALLCAPS SIC taxonomy and was rejected. `symbols.sector` and
+  `symbols.industry` columns already exist (since `0001_initial.sql`) but
+  were never populated by any prior phase; this phase fills them. The Phase
+  28 `quoteSummary` plumbing on `YahooProvider` is the foundation — a new
+  inherent method targets only the `assetProfile` module so the request is
+  Yahoo's smallest on that endpoint (mirrors Phase 25's `earnings_calendar`
+  shape).
+
+  **Schema.** Migration `0012` adds `symbols.asset_profile_synced_at`
+  (epoch-ms). No new table — industry-level stats are computed on each
+  render the same way the home strongest / weakest panels already work
+  (Phase 20); the in-memory aggregation is cheap over ~500 stocks.
+
+  **Scheduler.** A new `asset_profile` section on the existing `yahoo`
+  `EndpointGuard`, stocks only, monthly staleness on
+  `asset_profile_synced_at`. Brought forward to the first tick on boot the
+  same way `sec` / `fund_metadata` / `earnings_calendar` are — so a deploy
+  backfills the universe within hours rather than a daily interval.
+  `backfill_symbol` pulls the assetProfile inside the add-symbol request,
+  mirroring Phase 21's intent. Health page lists the new job between
+  `fund_metadata` and `earnings_calendar`.
+
+  **Compute.** Two pure helpers:
+  - `industry_aggregate(member_closes)` — equal-weight per-day composite
+    over each member's daily closes, returns trailing 1d / 5d / 21d / 63d /
+    252d returns alongside the YTD return. (Cap-weighted is rejected for
+    v1: we do not store shares-outstanding.)
+  - `seasonality(closes, dates)` — twelve calendar-month averages of that
+    month's average daily return across all years of history. Returns
+    `[(Jan, +0.4%), (Feb, -0.1%), ...]`.
+
+  **Routes.** New `routes/industries.rs`:
+  - `GET /industries` — sector index. Lists the ~11 sectors rolled up from
+    member industries, each row showing day / 1m / 1y composite return + a
+    trend badge + member count. Each sector links to its detail page.
+  - `GET /industries/{sector-slug}` — sector page: composite price chart
+    (lightweight-charts, 5-year cap so the payload stays modest),
+    server-rendered seasonality SVG (similar in spirit to the home
+    sparkline), the breakdown of industries inside the sector, and the
+    member list with day move + standing badge.
+  - `GET /industries/{sector-slug}/{industry-slug}` — industry page: same
+    layout, narrower membership.
+  - `GET /api/industries/{sector}/{industry?}/history` — composite price
+    series (daily closes, equal-weight from each member's `daily_prices`),
+    capped to 5 years, plus `^SPX` benchmark scaled to the same anchor.
+
+  **Symbol page.** A new sector · industry caption joins the EQUITY /
+  exchange / currency tag row in the symbol header, each part linking to
+  the corresponding industries page. Stocks only; ETFs / indexes / futures
+  carry no caption (no `assetProfile` data).
+
+  **Home page.** A new "Today's industries" panel between Top picks and
+  Strongest & weakest. Two columns mirroring strongest / weakest layout:
+  top 3 and bottom 3 sectors by today's composite move, each row a
+  magnitude tint + sector name + composite % change + member count. Sectors
+  only (the panel stays a quick at-a-glance read; industry-level moves are
+  noisier and live on `/industries`).
+
+  **Top nav.** Adds "Industries" between Markets and Search in both the
+  topnav and the bottom nav.
+
+  **Slug helper.** A small lower-kebab-case function with a tiny overrides
+  map for the well-known sector names ("Real Estate" → "real-estate",
+  "Basic Materials" → "basic-materials"); a member resolver does the
+  inverse.
+
+  **Anti-spam.** ~512 stocks × monthly refresh = ~17 requests/day average
+  on the existing `yahoo` 1000/hr guard. No new endpoint guard, no new
+  budget. Two stretch fields (`fullTimeEmployees`, `numberOfAnalystOpinions`)
+  the assetProfile module also carries are not parsed by v1; the column
+  list stays minimal.
+
+  Stocks only (ETFs carry the Phase 28 fund category instead; indexes and
+  futures have no sector). Pure-render on the four pages, plus one new
+  scheduler section.
 - [x] **Phase 16: Per-ticker anomaly feed.** Complete, verified, and
   deployed to production 2026-05-23 (commit `a839737`). See the Phase 16
   Done entry in Status and the decisions log. (Picked as the next backlog phase and
@@ -3218,6 +3343,31 @@ finance/
   (commit `8a16b14`); the live `finance.bythewood.me/` renders the
   Healthiest / Most concerning panel pair and `/s/AAPL` the new Stock
   health panel.
+- **2026-05-23 — Phase 13 (market heat map) dropped from the roadmap.** The
+  user removed it: with the home page already carrying movers, strongest /
+  weakest, healthiest / concerning, and top picks panels, a cap-weighted
+  treemap was judged redundant on the at-a-glance reading the home page is
+  meant to provide. The Phase 13 entry stays as a one-line tombstone so the
+  later phases keep their numbering and this decision has a target. Shares
+  outstanding from SEC stay unstored — nothing else in the app needs cap-
+  weighting today.
+- **2026-05-23 — Phase 15 picked next; scope settled in three Q&A.** Source:
+  Yahoo `quoteSummary.assetProfile` (clean GICS-style names "Technology" /
+  "Consumer Electronics") over SEC `submissions.sicDescription` (rougher
+  ALLCAPS SIC taxonomy needing a hand-coded 400-row mapping). Surfaces: all
+  four — `/industries` sector index, per-industry detail page, symbol-page
+  sector · industry tag, and a "Today's industries" home panel. Granularity:
+  sector + industry drill-down. Symbol-page columns `sector` / `industry`
+  already exist (since `0001_initial.sql`) but were never populated by any
+  prior phase — a small artefact carried since the original schema; this
+  phase finally fills them. Aggregation lives on each render (in-memory over
+  ~500 stocks) rather than in a snapshot table, mirroring how Phase 20
+  strongest / weakest works today; cheap enough to skip the cache. The home
+  panel shows sectors only (industry-level moves are noisier; they belong on
+  `/industries`). Equal-weight composite over cap-weighted, since the app
+  does not store shares-outstanding (and the Phase 13 drop above means no
+  reason to start). Anti-spam: ~512 stocks × monthly refresh = ~17/day on
+  the existing `yahoo` 1000/hr guard, no new endpoint.
 
 ---
 

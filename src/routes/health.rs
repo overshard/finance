@@ -255,6 +255,11 @@ fn job_meta(job: &str) -> (&str, &str) {
              expected earnings date. Refreshed monthly and whenever the \
              stored date passes.",
         ),
+        "asset_profile" => (
+            "Stock sector & industry",
+            "Yahoo quoteSummary `assetProfile` for each stock — sector and \
+             industry classification. Refreshed monthly.",
+        ),
         other => (other, ""),
     }
 }
@@ -266,11 +271,12 @@ fn job_rank(job: &str) -> u8 {
         "history" => 1,
         "sec" => 2,
         "fund_metadata" => 3,
-        "earnings_calendar" => 4,
-        "dividends" => 5,
-        "intraday" => 6,
-        "daily_close" => 7,
-        _ => 9,
+        "asset_profile" => 4,
+        "earnings_calendar" => 5,
+        "dividends" => 6,
+        "intraday" => 7,
+        "daily_close" => 8,
+        _ => 10,
     }
 }
 

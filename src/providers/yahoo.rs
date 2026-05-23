@@ -17,7 +17,8 @@ use reqwest::{header::RETRY_AFTER, StatusCode};
 use serde::Deserialize;
 
 use crate::providers::{
-    DividendEvent, FundMetadata, IntradayBar, Quote, QuoteData, QuoteProvider, RateLimited,
+    AssetProfile, DividendEvent, FundMetadata, IntradayBar, Quote, QuoteData, QuoteProvider,
+    RateLimited,
 };
 
 /// Near-real-time quotes from Yahoo Finance.
@@ -412,6 +413,66 @@ impl YahooProvider {
         Ok(next_secs.map(|s| s * 1000))
     }
 
+    /// Fetch a stock's sector and industry classification from Yahoo's
+    /// `quoteSummary.assetProfile` module (Phase 15). One request to the same
+    /// v10 endpoint that serves `fund_metadata` and `earnings_calendar`,
+    /// asking only for the `assetProfile` module — Yahoo's smallest reply
+    /// for this concern.
+    ///
+    /// Returns `Ok(Some(profile))` with whichever of `sector` / `industry`
+    /// Yahoo carries (a small cap with a partial profile leaves the absent
+    /// field `None`); `Ok(None)` when Yahoo cleanly does not know the
+    /// symbol (404 or `quoteSummary.error`); gating responses (429 / 503 /
+    /// 401 / 403) surface as the typed [`RateLimited`] so the endpoint
+    /// guard trips at once.
+    pub async fn asset_profile(&self, ticker: &str) -> Result<Option<AssetProfile>> {
+        let sym = urlencoding::encode(&yahoo_symbol(ticker)).into_owned();
+        let url = format!(
+            "https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}\
+             ?modules=assetProfile"
+        );
+        let resp = self.client.get(&url).send().await?;
+        let status = resp.status();
+        if matches!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS
+                | StatusCode::SERVICE_UNAVAILABLE
+                | StatusCode::UNAUTHORIZED
+                | StatusCode::FORBIDDEN
+        ) {
+            let retry_after_secs = resp
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<i64>().ok());
+            return Err(anyhow::Error::new(RateLimited {
+                status: status.as_u16(),
+                retry_after_secs,
+            }));
+        }
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let resp = resp.error_for_status()?;
+        let env: QuoteSummaryEnvelope = resp.json().await?;
+        if env.quote_summary.error.is_some() {
+            return Ok(None);
+        }
+        let Some(result) = env
+            .quote_summary
+            .result
+            .and_then(|mut r| if r.is_empty() { None } else { Some(r.remove(0)) })
+        else {
+            return Ok(None);
+        };
+        let ap = result.asset_profile.unwrap_or_default();
+        let trim = |s: Option<String>| s.map(|x| x.trim().to_string()).filter(|x| !x.is_empty());
+        Ok(Some(AssetProfile {
+            sector: trim(ap.sector),
+            industry: trim(ap.industry),
+        }))
+    }
+
     /// Identify a symbol: validate it exists on Yahoo and return its name,
     /// kind, exchange and currency, alongside the quote the same request
     /// carried. Used by the Phase 9 add-symbol flow.
@@ -526,6 +587,11 @@ struct PriceModule {
 #[serde(rename_all = "camelCase", default)]
 struct AssetProfileModule {
     long_business_summary: Option<String>,
+    /// GICS-style sector ("Technology"). Stocks only; Yahoo leaves this
+    /// blank or omits the module entirely on ETFs / indexes / funds.
+    sector: Option<String>,
+    /// GICS-style industry ("Consumer Electronics"). See `sector`.
+    industry: Option<String>,
 }
 
 /// Yahoo's `{ "raw": ..., "fmt": "..." }` numeric carrier. Deserialises from

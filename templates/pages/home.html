@@ -70,6 +70,48 @@
     {% for slate in pick_slates %}{{ picks_column(slate) }}{% endfor %}
   </div>
 
+  <h2 class="section-title">Today&rsquo;s industries{% if industries_asof %}<span class="section-title__asof">classifications synced {{ industries_asof|ago }}</span>{% endif %}<span class="section-title__asof"><a href="/industries">All industries &rarr;</a></span></h2>
+  <p class="section-note">Equal-weight day move of the curated stocks inside
+     each sector. The classification comes from Yahoo&rsquo;s
+     <code>assetProfile</code> and lands in the background; a sector waits
+     for at least one of its members to sync.</p>
+  <div class="movers">
+    <section class="movers__panel">
+      <h3 class="movers__title">Sectors moving up</h3>
+      {% if top_industries %}
+      <div class="movers__list">
+        {% for r in top_industries %}
+        <a class="industry-row {{ 'industry-row--up' if r.up else 'industry-row--down' }}"
+           href="/industries/{{ r.slug }}" style="--bar: {{ r.bar }}%">
+          <span class="industry-row__name">{{ r.name }}</span>
+          <span class="industry-row__count">{{ r.members }} stocks</span>
+          <span class="industry-row__chg num {{ 'is-up' if r.up else 'is-down' }}">{{ r.change_pct|pct }}</span>
+        </a>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="movers__empty">No sector classifications synced yet.</p>
+      {% endif %}
+    </section>
+    <section class="movers__panel">
+      <h3 class="movers__title">Sectors moving down</h3>
+      {% if bottom_industries %}
+      <div class="movers__list">
+        {% for r in bottom_industries %}
+        <a class="industry-row {{ 'industry-row--up' if r.up else 'industry-row--down' }}"
+           href="/industries/{{ r.slug }}" style="--bar: {{ r.bar }}%">
+          <span class="industry-row__name">{{ r.name }}</span>
+          <span class="industry-row__count">{{ r.members }} stocks</span>
+          <span class="industry-row__chg num {{ 'is-up' if r.up else 'is-down' }}">{{ r.change_pct|pct }}</span>
+        </a>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="movers__empty">No sector classifications synced yet.</p>
+      {% endif %}
+    </section>
+  </div>
+
   <h2 class="section-title">Stock health{% if health_asof %}<span class="section-title__asof">last sync {{ health_asof|ago }}</span>{% endif %}</h2>
   <p class="section-note">Fundamentals + recent price and growth trajectory +
      leadership stability, rolled into one read per stock. Industry context

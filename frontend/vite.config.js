@@ -19,6 +19,7 @@ export default defineConfig({
         health: resolve(__dirname, "static_src/health/index.js"),
         search: resolve(__dirname, "static_src/search/index.js"),
         backtest: resolve(__dirname, "static_src/backtest/index.js"),
+        industries: resolve(__dirname, "static_src/industries/index.js"),
       },
     },
   },

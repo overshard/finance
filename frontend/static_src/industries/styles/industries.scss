@@ -1,0 +1,272 @@
+@use "../../base/styles/_variables" as *;
+@use "../../base/styles/_mixins" as *;
+
+/* ============================================================================
+   Industries (Phase 15)
+
+   Three surfaces share this stylesheet:
+   - `/industries` sector index (a sortable table + a blurb)
+   - `/industries/{sector}` and `/industries/{sector}/{industry}` detail
+     pages (stat row + composite chart + seasonality + members + breakdown)
+   - The home page also reuses these tokens for its `.industry-row`, but
+     that lives in home.scss to stay co-located with the panel layout.
+   ========================================================================== */
+
+.ind-blurb {
+  margin: 0 0 16px;
+  max-width: 78ch;
+  color: var(--ink-dim);
+  font-size: 0.86rem;
+}
+
+.ind-empty {
+  padding: 60px 0;
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 0.9rem;
+}
+
+.ind-crumbs {
+  margin: -6px 0 14px;
+  color: var(--ink-faint);
+  font-size: 0.78rem;
+
+  a {
+    color: var(--ink-dim);
+    text-decoration: none;
+  }
+  a:hover {
+    color: var(--ink);
+  }
+}
+
+/* shared sector index / industry-inside-sector table */
+.ind-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 24px;
+
+  th,
+  td {
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--rule);
+    text-align: right;
+    font-size: 0.86rem;
+  }
+
+  thead th {
+    @include eyebrow;
+    color: var(--ink-faint);
+    text-align: right;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+
+  th.ind-table__sec,
+  td.ind-table__sec {
+    text-align: left;
+  }
+
+  td.num {
+    @include mono;
+  }
+
+  tbody th.ind-table__sec {
+    font-weight: 500;
+  }
+
+  a {
+    color: var(--ink);
+    text-decoration: none;
+  }
+  a:hover {
+    color: var(--accent, var(--ink));
+    text-decoration: underline;
+  }
+}
+
+/* stat row on the detail pages */
+.ind-stats {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0 24px;
+}
+
+@media (max-width: 720px) {
+  .ind-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.ind-stat {
+  @include card;
+  padding: 10px 12px;
+}
+
+.ind-stat__label {
+  @include eyebrow;
+  color: var(--ink-faint);
+  margin-bottom: 4px;
+}
+
+.ind-stat__val {
+  @include mono;
+  font-size: 1.05rem;
+}
+
+/* composite chart */
+.ind-chart-panel {
+  padding: 14px;
+  margin-bottom: 22px;
+}
+
+#ind-chart {
+  height: 320px;
+  width: 100%;
+}
+
+.ind-chart__empty {
+  padding: 60px 0;
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 0.88rem;
+}
+
+/* seasonality bar grid: one column per calendar month */
+.ind-season {
+  padding: 14px 14px 18px;
+  margin-bottom: 24px;
+}
+
+.season-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 6px;
+  align-items: end;
+  height: 160px;
+}
+
+.season-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  height: 100%;
+  position: relative;
+}
+
+.season-cell__bar {
+  width: 100%;
+  min-height: 1px;
+  background: var(--ink-faint);
+  border-radius: 2px 2px 0 0;
+}
+
+.season-cell--up .season-cell__bar {
+  background: var(--up, #2f7d4f);
+}
+
+.season-cell--down .season-cell__bar {
+  background: var(--down, #b3402b);
+}
+
+.season-cell--empty .season-cell__bar {
+  background: transparent;
+  border-bottom: 1px dashed var(--rule);
+}
+
+.season-cell__lbl {
+  @include eyebrow;
+  text-align: center;
+  margin-top: 6px;
+  color: var(--ink-faint);
+}
+
+.season-cell__val {
+  @include mono;
+  font-size: 0.62rem;
+  text-align: center;
+  color: var(--ink-faint);
+  margin-top: 2px;
+}
+
+@media (max-width: 520px) {
+  // Phone: the 12-month grid stays one row but the value lines wrap-out, so
+  // hide them and lean on the bar height + month label only.
+  .season-cell__val {
+    display: none;
+  }
+}
+
+/* members list */
+.ind-members {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 6px;
+}
+
+.ind-member {
+  display: grid;
+  grid-template-columns: 64px 1fr auto auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 9px 12px;
+  text-decoration: none;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  position: relative;
+  overflow: hidden;
+
+  // Magnitude tint behind the row.
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: var(--bar, 0%);
+    background: var(--ink-faint);
+    opacity: 0.06;
+  }
+}
+
+.ind-member--up::before {
+  background: var(--up, #2f7d4f);
+  opacity: 0.09;
+}
+
+.ind-member--down::before {
+  background: var(--down, #b3402b);
+  opacity: 0.09;
+}
+
+.ind-member__sym {
+  @include mono;
+  font-weight: 600;
+}
+
+.ind-member__name {
+  color: var(--ink-dim);
+  font-size: 0.86rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ind-member__industry {
+  @include eyebrow;
+  color: var(--ink-faint);
+  font-size: 0.6rem;
+}
+
+.ind-member__price {
+  @include mono;
+  font-size: 0.86rem;
+}
+
+.ind-member__chg {
+  @include mono;
+  font-size: 0.86rem;
+  text-align: right;
+  min-width: 60px;
+}

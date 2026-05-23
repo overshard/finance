@@ -594,3 +594,69 @@
     display: none;
   }
 }
+
+/* ---------- Today's industries panel (Phase 15) ---------- */
+
+/* Each row is one sector: name on the left, member count, and the day
+   composite %. Same magnitude-tint pattern as `.mover` and `.standing`. */
+.industry-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 6px;
+  color: var(--ink);
+  border-bottom: 1px solid var(--rule);
+  text-decoration: none;
+
+  &:last-child {
+    border-bottom: 0;
+  }
+
+  &::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: var(--bar, 0%);
+    border-radius: var(--radius-sm);
+  }
+
+  > * {
+    position: relative;
+  }
+
+  &:hover {
+    background: var(--well);
+  }
+}
+
+.industry-row--up::before {
+  background: var(--up-soft);
+}
+
+.industry-row--down::before {
+  background: var(--down-soft);
+}
+
+.industry-row__name {
+  font-size: 0.92rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.industry-row__count {
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+}
+
+.industry-row__chg {
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-align: right;
+  min-width: 5.5ch;
+}

@@ -38,6 +38,8 @@
       <h1 class="sym-head__ticker">{{ symbol.ticker }}</h1>
       <span class="sym-head__tag">{{ symbol.kind }}</span>
       {% if symbol.exchange %}<span class="sym-head__tag">{{ symbol.exchange }}</span>{% endif %}
+      {% if symbol.sector %}<a class="sym-head__tag sym-head__tag--link" href="/industries/{{ sector_slug }}">{{ symbol.sector }}</a>{% endif %}
+      {% if symbol.industry %}<a class="sym-head__tag sym-head__tag--link" href="/industries/{{ sector_slug }}/{{ industry_slug }}">{{ symbol.industry }}</a>{% endif %}
     </div>
     <div class="sym-head__name">{{ symbol.name }}</div>
     {# Prefer the live quote; fall back to the most recent daily close. The

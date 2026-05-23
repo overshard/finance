@@ -27,6 +27,20 @@
   border-radius: 4px;
 }
 
+// Phase 15: sector / industry tag, linked to its /industries page. Same shape
+// as a plain `.sym-head__tag`, with the link colour subdued so it does not
+// shout among the kind / exchange tags beside it.
+.sym-head__tag--link {
+  color: var(--ink-dim);
+  text-decoration: none;
+  transition: color 0.1s, border-color 0.1s;
+
+  &:hover {
+    color: var(--ink);
+    border-color: var(--ink);
+  }
+}
+
 .sym-head__name {
   color: var(--ink-dim);
   margin-top: 4px;

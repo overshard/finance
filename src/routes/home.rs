@@ -157,7 +157,28 @@ struct StockRow {
     /// When this stock's SEC leadership roster last synced (epoch-ms); feeds
     /// the health panels' freshness caption.
     leadership_synced_at: Option<i64>,
+    /// Yahoo `assetProfile` sector (Phase 15). `None` until the asset_profile
+    /// sweep has reached this stock; the sector panels drop those rows.
+    sector: Option<String>,
+    /// When the asset_profile sweep last touched this stock (Phase 15).
+    asset_profile_synced_at: Option<i64>,
 }
+
+/// One row in the home page's "Today's industries" panel: a sector with its
+/// composite day move, member count, and the magnitude tint sized against
+/// the largest absolute composite shown across the top / bottom rows.
+#[derive(Serialize, Clone)]
+struct IndustryRow {
+    name: String,
+    slug: String,
+    members: usize,
+    change_pct: f64,
+    bar: f64,
+    up: bool,
+}
+
+/// How many sectors to show in each of the top / bottom industry panels.
+const INDUSTRY_LIMIT: usize = 3;
 
 async fn home(State(state): State<AppState>) -> Response {
     let seeded: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM symbols WHERE is_seeded = 1")
@@ -184,6 +205,11 @@ async fn home(State(state): State<AppState>) -> Response {
     let (gainers, losers) = movers(&stocks);
     let (strongest, weakest) = strength_panels(&stocks);
     let (healthiest, concerning) = health_panels(&stocks);
+    let (top_industries, bottom_industries) = industry_panels(&stocks);
+    let industries_asof = stocks
+        .iter()
+        .filter_map(|s| s.asset_profile_synced_at)
+        .max();
 
     // Top picks (Phase 30): computed live every render, so the panel works on
     // day 1 before the snapshot job has run. A separate scan (LOOKBACK_DAYS is
@@ -229,6 +255,9 @@ async fn home(State(state): State<AppState>) -> Response {
         concerning => concerning,
         health_asof => health_asof,
         pick_slates => pick_slates,
+        top_industries => top_industries,
+        bottom_industries => bottom_industries,
+        industries_asof => industries_asof,
         total => total,
     };
     render(&state, "pages/home.html", "/", extra)
@@ -341,7 +370,8 @@ async fn load_stocks(state: &AppState) -> Vec<StockRow> {
     // 1. Price per curated stock: the live last price, else the latest daily
     //    close; plus the prior close it is changing against. Also pulls each
     //    stock's fundamentals and leadership sync times (for the panels'
-    //    freshness captions, Phase 22 + Phase 17).
+    //    freshness captions, Phase 22 + Phase 17) and the Phase 15 sector +
+    //    asset-profile sync time (for the Today's industries panel).
     type PriceRow = (
         String,
         String,
@@ -350,6 +380,8 @@ async fn load_stocks(state: &AppState) -> Vec<StockRow> {
         Option<i64>,
         Option<i64>,
         Option<i64>,
+        Option<String>,
+        Option<i64>,
     );
     let price_rows: Vec<PriceRow> = sqlx::query_as(
         "SELECT s.ticker, s.name, \
@@ -357,7 +389,8 @@ async fn load_stocks(state: &AppState) -> Vec<StockRow> {
              (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1)), \
            COALESCE(s.prev_close, \
              (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1 OFFSET 1)), \
-           s.last_quote_at, s.fundamentals_synced_at, s.leadership_synced_at \
+           s.last_quote_at, s.fundamentals_synced_at, s.leadership_synced_at, \
+           s.sector, s.asset_profile_synced_at \
          FROM symbols s WHERE s.is_seeded = 1 AND s.kind = 'stock'",
     )
     .fetch_all(&state.pool)
@@ -443,6 +476,8 @@ async fn load_stocks(state: &AppState) -> Vec<StockRow> {
                 last_quote_at,
                 fundamentals_synced_at,
                 leadership_synced_at,
+                sector,
+                asset_profile_synced_at,
             )| {
                 let stock_closes = closes.get(&ticker).map(Vec::as_slice).unwrap_or(&[]);
                 let ratios = facts.get(&ticker).and_then(|f| {
@@ -471,10 +506,79 @@ async fn load_stocks(state: &AppState) -> Vec<StockRow> {
                     last_quote_at,
                     fundamentals_synced_at,
                     leadership_synced_at,
+                    sector: sector.filter(|s| !s.is_empty()),
+                    asset_profile_synced_at,
                 }
             },
         )
         .collect()
+}
+
+/// Today's biggest sector composites (top / bottom equal-weight day moves)
+/// for the home page. Curated `is_seeded` stocks only — same universe as
+/// movers / strongest — so a small user-added stock's noise does not crowd
+/// out a recognised sector. Sectors only (industry-level moves are noisier
+/// and live on `/industries`).
+fn industry_panels(stocks: &[StockRow]) -> (Vec<IndustryRow>, Vec<IndustryRow>) {
+    // Bucket each stock's day move by sector. Drop a stock without both a
+    // sector classification and a computable change.
+    let mut by_sector: HashMap<String, Vec<f64>> = HashMap::new();
+    for s in stocks {
+        let Some(sector) = s.sector.as_deref() else {
+            continue;
+        };
+        let (Some(last), Some(prev)) = (s.last, s.prev) else {
+            continue;
+        };
+        if prev <= 0.0 {
+            continue;
+        }
+        by_sector
+            .entry(sector.to_string())
+            .or_default()
+            .push((last - prev) / prev * 100.0);
+    }
+    if by_sector.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut rows: Vec<IndustryRow> = by_sector
+        .into_iter()
+        .map(|(name, pcts)| {
+            let avg = pcts.iter().sum::<f64>() / pcts.len() as f64;
+            IndustryRow {
+                slug: crate::routes::industries::slug(&name),
+                name,
+                members: pcts.len(),
+                change_pct: avg,
+                bar: 0.0,
+                up: avg >= 0.0,
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.change_pct
+            .partial_cmp(&a.change_pct)
+            .unwrap_or(Ordering::Equal)
+    });
+    let mut top: Vec<IndustryRow> = rows.iter().take(INDUSTRY_LIMIT).cloned().collect();
+    let mut bottom: Vec<IndustryRow> = rows.iter().rev().take(INDUSTRY_LIMIT).cloned().collect();
+
+    // Scale every magnitude tint to the largest absolute move shown across
+    // both panels (mirrors movers / strongest / health).
+    let max_abs = top
+        .iter()
+        .chain(bottom.iter())
+        .map(|r| r.change_pct.abs())
+        .fold(0.0_f64, f64::max);
+    for r in top.iter_mut().chain(bottom.iter_mut()) {
+        r.bar = if max_abs > 0.0 {
+            (r.change_pct.abs() / max_abs * 100.0).clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
+    }
+    (top, bottom)
 }
 
 /// The day's biggest gainers and losers among the curated large-cap stocks.

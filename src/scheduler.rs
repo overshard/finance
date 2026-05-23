@@ -116,6 +116,15 @@ const FUND_METADATA_STALE_SECS: i64 = 30 * 24 * 3600;
 const EARNINGS_INTERVAL_SECS: i64 = 24 * 3600;
 const EARNINGS_STALE_SECS: i64 = 30 * 24 * 3600;
 
+/// Asset-profile refresh (Phase 15). A company's sector and industry
+/// classification changes only on a structural shift (a reverse-merger or a
+/// reclassification by the index provider), so a monthly cadence is plenty.
+/// Daily due-check; one request per stock through the shared `yahoo`
+/// `EndpointGuard`. ~512 stocks × monthly = ~17 requests/day in steady
+/// state, well below the 1000/hr budget.
+const ASSET_PROFILE_INTERVAL_SECS: i64 = 24 * 3600;
+const ASSET_PROFILE_STALE_SECS: i64 = 30 * 24 * 3600;
+
 /// Spawn the scheduler. The returned handle is normally dropped: dropping it
 /// detaches the task, which then runs for the lifetime of the process.
 pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle<()> {
@@ -177,6 +186,14 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
         // is free.
         if let Err(e) = schedule_next(&pool, "earnings_calendar", now_ms()).await {
             tracing::warn!("[scheduler] bring earnings_calendar job forward: {e}");
+        }
+
+        // Asset profile job (Phase 15): same bring-forward pattern. A fresh
+        // deploy populates each curated stock's sector and industry within
+        // hours rather than the daily interval; resumable, the no-stale fast
+        // path is free.
+        if let Err(e) = schedule_next(&pool, "asset_profile", now_ms()).await {
+            tracing::warn!("[scheduler] bring asset_profile job forward: {e}");
         }
 
         // Prune's last-run time is loop-local: a restart simply re-prunes once,
@@ -266,6 +283,19 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
                 }
                 Ok(false) => {}
                 Err(e) => tracing::warn!("[scheduler] earnings_calendar due-check: {e}"),
+            }
+
+            // Asset profile (Phase 15): sweep stocks whose sector / industry
+            // classification has gone stale (monthly). Same Yahoo guard; one
+            // request per stock per month in steady state.
+            match is_due(&pool, "asset_profile", now_ms()).await {
+                Ok(true) => {
+                    if let Err(e) = run_asset_profile(&pool, &config, &hub).await {
+                        tracing::warn!("[scheduler] asset_profile: {e:#}");
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!("[scheduler] asset_profile due-check: {e}"),
             }
 
             // Intraday quotes: demand-driven (only symbols a browser is
@@ -1549,6 +1579,156 @@ pub(crate) async fn store_earnings_next(
     Ok(())
 }
 
+// ────────────── stock asset profile sweep (Phase 15) ──────────────────────
+
+/// Sweep stocks whose Yahoo `quoteSummary.assetProfile` snapshot has gone
+/// stale (monthly), refreshing each stock's sector and industry. One request
+/// per stock through the shared `yahoo` `EndpointGuard`; mirrors the
+/// `earnings_calendar` shape — guard-paced, resumable, broadcast-to-/health.
+///
+/// A stock Yahoo cleanly knows but has no `assetProfile` module for (uneven
+/// coverage on small caps) is still stamped synced, so the sweep does not
+/// re-fetch the same empty answer every cycle.
+async fn run_asset_profile(
+    pool: &SqlitePool,
+    config: &Config,
+    hub: &Hub,
+) -> anyhow::Result<()> {
+    let started = now_ms();
+    let next = started + ASSET_PROFILE_INTERVAL_SECS * 1000;
+    let cutoff = started - ASSET_PROFILE_STALE_SECS * 1000;
+    let stale: Vec<String> = sqlx::query_scalar(
+        "SELECT ticker FROM symbols \
+         WHERE kind = 'stock' \
+           AND (asset_profile_synced_at IS NULL OR asset_profile_synced_at < ?) \
+         ORDER BY ticker",
+    )
+    .bind(cutoff)
+    .fetch_all(pool)
+    .await?;
+
+    if stale.is_empty() {
+        mark_ok(pool, "asset_profile", Some(next)).await?;
+        return Ok(());
+    }
+
+    mark_fetching(pool, "asset_profile").await?;
+    notify_health(hub);
+    tracing::info!(
+        "[scheduler] asset_profile: refreshing {} stocks",
+        stale.len()
+    );
+
+    let yahoo = YahooProvider::new(providers::http::build_client(config));
+    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    let t0 = Instant::now();
+    let mut ok = 0i64;
+    let mut empty = 0i64;
+    let mut errors = 0i64;
+    let mut stopped: Option<String> = None;
+
+    for ticker in &stale {
+        match guard.acquire().await? {
+            Permit::Granted => {}
+            Permit::Denied(why) => {
+                stopped = Some(why);
+                break;
+            }
+        }
+        match yahoo.asset_profile(ticker).await {
+            Ok(Some(profile)) => {
+                guard.record_success().await?;
+                if let Err(e) = store_asset_profile(pool, ticker, &profile).await {
+                    tracing::warn!("[scheduler] asset_profile store {ticker}: {e:#}");
+                    errors += 1;
+                    continue;
+                }
+                ok += 1;
+            }
+            // Yahoo answered cleanly but had no profile for this stock —
+            // stamp it checked so the next sweep does not re-fetch the
+            // same empty answer.
+            Ok(None) => {
+                guard.record_success().await?;
+                let _ = mark_asset_profile_synced(pool, ticker).await;
+                empty += 1;
+            }
+            Err(e) => {
+                guard.record_failure(&e).await?;
+                errors += 1;
+                tracing::warn!("[scheduler] asset_profile {ticker}: {e:#}");
+            }
+        }
+    }
+
+    let dur = t0.elapsed().as_millis() as i64;
+    let detail = format!(
+        "{ok}/{} stocks ({empty} empty, {errors} errors)",
+        stale.len()
+    );
+    match stopped {
+        Some(why) => {
+            let full = format!("stopped early ({why}); {detail}");
+            tracing::warn!("[scheduler] asset_profile: {full}");
+            log_fetch(
+                pool, "asset_profile", "yahoo", "skipped",
+                Some(&full), Some(ok), dur, started,
+            ).await?;
+        }
+        None => {
+            tracing::info!("[scheduler] asset_profile: {detail}");
+            log_fetch(
+                pool, "asset_profile", "yahoo", "ok",
+                Some(&detail), Some(ok), dur, started,
+            ).await?;
+        }
+    }
+    mark_ok(pool, "asset_profile", Some(next)).await?;
+    notify_health(hub);
+    Ok(())
+}
+
+/// Write one stock's sector / industry classification and stamp it freshly
+/// synced. Either field may be `None` when Yahoo's coverage is partial; an
+/// empty / whitespace value is dropped at parse time, not stored. `pub(crate)`:
+/// the add-symbol backfill reuses it.
+pub(crate) async fn store_asset_profile(
+    pool: &SqlitePool,
+    ticker: &str,
+    profile: &crate::providers::AssetProfile,
+) -> sqlx::Result<()> {
+    let now = now_ms();
+    sqlx::query(
+        "UPDATE symbols SET sector = ?, industry = ?, \
+                            asset_profile_synced_at = ?, updated_at = ? \
+         WHERE ticker = ?",
+    )
+    .bind(&profile.sector)
+    .bind(&profile.industry)
+    .bind(now)
+    .bind(now)
+    .bind(ticker)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Stamp a stock as freshly asset-profile-synced without overwriting its
+/// stored sector / industry (used on a clean-empty Yahoo response so the
+/// sweep does not re-fetch).
+async fn mark_asset_profile_synced(pool: &SqlitePool, ticker: &str) -> sqlx::Result<()> {
+    let now = now_ms();
+    sqlx::query(
+        "UPDATE symbols SET asset_profile_synced_at = ?, updated_at = ? WHERE ticker = ?",
+    )
+    .bind(now)
+    .bind(now)
+    .bind(ticker)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Fill in `symbols.cik` for any stock found in the bulk SEC ticker map.
 /// Returns how many were newly resolved.
 async fn resolve_ciks(pool: &SqlitePool, map: &HashMap<String, String>) -> sqlx::Result<i64> {
@@ -1957,6 +2137,13 @@ pub(crate) async fn backfill_symbol(pool: &SqlitePool, config: &Config, ticker: 
     if kind == "stock" {
         backfill_earnings_calendar(pool, config, ticker).await;
     }
+    // Phase 15: stocks get their Yahoo assetProfile pulled too — so a
+    // user-added stock immediately shows up under its sector and industry
+    // on /industries and carries the symbol-page header tag, rather than
+    // waiting on the next monthly scheduler sweep.
+    if kind == "stock" {
+        backfill_asset_profile(pool, config, ticker).await;
+    }
 
     // SEC data covers stocks and ETFs; indexes and futures do not file. The
     // whole SEC step is skipped with no contact email configured, as `run_sec`
@@ -1993,6 +2180,33 @@ async fn backfill_fund_metadata(pool: &SqlitePool, config: &Config, ticker: &str
             let _ = mark_fund_metadata_synced(pool, ticker).await;
         }
         Some(Err(e)) => tracing::warn!("[backfill] fund_metadata {ticker}: {e:#}"),
+        None => {}
+    }
+}
+
+/// Pull and store a freshly-added stock's sector / industry classification
+/// (Phase 15). Mirrors `backfill_earnings_calendar`: same `yahoo` guard,
+/// best-effort, no failure propagated to the add-symbol response.
+async fn backfill_asset_profile(pool: &SqlitePool, config: &Config, ticker: &str) {
+    let yahoo = YahooProvider::new(providers::http::build_client(config));
+    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    match guarded(&guard, yahoo.asset_profile(ticker)).await {
+        Some(Ok(Some(profile))) => match store_asset_profile(pool, ticker, &profile).await {
+            Ok(()) => {
+                tracing::info!(
+                    "[backfill] {ticker} <- asset_profile ({} / {})",
+                    profile.sector.as_deref().unwrap_or("—"),
+                    profile.industry.as_deref().unwrap_or("—"),
+                );
+            }
+            Err(e) => tracing::warn!("[backfill] store asset_profile {ticker}: {e:#}"),
+        },
+        // Yahoo answered cleanly but had no profile for this stock — stamp
+        // it so the next sweep does not re-fetch the same empty.
+        Some(Ok(None)) => {
+            let _ = mark_asset_profile_synced(pool, ticker).await;
+        }
+        Some(Err(e)) => tracing::warn!("[backfill] asset_profile {ticker}: {e:#}"),
         None => {}
     }
 }

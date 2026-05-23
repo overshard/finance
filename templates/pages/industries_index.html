@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Industries{% endblock %}
+{% block description %}Stocks aggregated by sector and industry: day, month, and year-trailing composite moves at a glance.{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ vite_asset('static_src/industries/index.js', 'css') }}">{% endblock %}
+
+{% block main %}
+<div class="wrap">
+  <div class="page-head">
+    <h1>Industries</h1>
+    <a class="page-head__link" href="/">Back to home</a>
+  </div>
+
+  {% if empty %}
+  <p class="ind-empty">No stocks have been classified yet. The Yahoo
+     <code>assetProfile</code> sweep runs in the background and fills in over
+     time &mdash; check the <a href="/health">data health page</a> to follow
+     its progress.</p>
+  {% else %}
+
+  <p class="ind-blurb">{{ total }} curated stocks across {{ sectors|length }} sectors and {{ total_industries }} industries.
+     Each row&rsquo;s composite is an equal-weight average of its members&rsquo; returns.
+     Click a sector for a deeper read, the seasonality, and the members.</p>
+
+  <table class="ind-table">
+    <thead>
+      <tr>
+        <th scope="col" class="ind-table__sec">Sector</th>
+        <th scope="col" class="num">Today</th>
+        <th scope="col" class="num">5d</th>
+        <th scope="col" class="num">1m</th>
+        <th scope="col" class="num">3m</th>
+        <th scope="col" class="num">1y</th>
+        <th scope="col" class="num">Members</th>
+        <th scope="col" class="num">Industries</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in sectors %}
+      <tr>
+        <th scope="row" class="ind-table__sec">
+          <a href="/industries/{{ s.slug }}">{{ s.name }}</a>
+        </th>
+        {% set r = s.returns %}
+        <td class="num{% if r.d1 is not none and r.d1 >= 0 %} is-up{% elif r.d1 is not none %} is-down{% endif %}">{{ r.d1|pct }}</td>
+        <td class="num{% if r.d5 is not none and r.d5 >= 0 %} is-up{% elif r.d5 is not none %} is-down{% endif %}">{{ r.d5|pct }}</td>
+        <td class="num{% if r.d21 is not none and r.d21 >= 0 %} is-up{% elif r.d21 is not none %} is-down{% endif %}">{{ r.d21|pct }}</td>
+        <td class="num{% if r.d63 is not none and r.d63 >= 0 %} is-up{% elif r.d63 is not none %} is-down{% endif %}">{{ r.d63|pct }}</td>
+        <td class="num{% if r.d252 is not none and r.d252 >= 0 %} is-up{% elif r.d252 is not none %} is-down{% endif %}">{{ r.d252|pct }}</td>
+        <td class="num">{{ s.members }}</td>
+        <td class="num">{{ s.industries }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endblock %}
