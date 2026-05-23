@@ -1120,6 +1120,7 @@ async fn build_anomalies(
             events.push(AnomalyRow {
                 date: filed_at,
                 glyph: "leader",
+                polarity: "neutral",
                 headline: "Officer or director change reported in an 8-K".to_string(),
                 url: Some(url),
                 // Hand-picked: above a typical 5-8% one-day move so a leadership

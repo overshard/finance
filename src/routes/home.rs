@@ -27,22 +27,26 @@ pub fn router() -> Router<AppState> {
 /// The dashboard's index cards: each cash index paired with its index future.
 /// Outside the regular cash session the future is shown in the card's place
 /// (it trades nearly around the clock, while the cash index sits frozen on its
-/// last close; see PLAN.md Phase 21). The Nasdaq Composite (`^NDQ`) and the
-/// volatility index (`^VIX`) have no clean tradable future, so they always
-/// show the cash index. Hardcoded on purpose: the home page is a fixed,
-/// opinionated view, not a user-built watchlist.
+/// last close; see PLAN.md Phase 21). The Nasdaq Composite (`^NDQ`) has no
+/// clean tradable future, so it always shows the cash index. Hardcoded on
+/// purpose: the home page is a fixed, opinionated view, not a user-built
+/// watchlist. Five cards = one clean desktop row.
 const INDEXES: &[(&str, Option<&str>)] = &[
     ("^SPX", Some("ES=F")),
     ("^DJI", Some("YM=F")),
     ("^NDX", Some("NQ=F")),
     ("^RUT", Some("RTY=F")),
     ("^NDQ", None),
-    ("^VIX", None),
 ];
 
-/// The dashboard's commodity cards: WTI crude, gold, natural gas. Shown as the
-/// futures themselves, since there is no cash instrument to swap to.
-const COMMODITIES: &[&str] = &["CL=F", "GC=F", "NG=F"];
+/// The dashboard's risk + commodity cards: the volatility gauge first, then
+/// WTI crude, gold, and natural gas. Shown as the futures themselves for the
+/// three commodities (no cash instrument to swap to) and as the cash index
+/// for `^VIX` (no tradable future for it on Yahoo). VIX leads here rather
+/// than living in the Indexes row because it is a derived sentiment gauge,
+/// not a price index — putting it first turns the section into a quick
+/// "what is the market worried about today" panel.
+const COMMODITIES: &[&str] = &["^VIX", "CL=F", "GC=F", "NG=F"];
 
 /// How many gainers and how many losers each movers panel lists.
 const MOVERS_LIMIT: usize = 8;

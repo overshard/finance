@@ -33,7 +33,7 @@
 
 {% block main %}
 <div class="wrap">
-  <header class="sym-head">
+  <header class="sym-head{% if health %} sym-head--has-health{% endif %}">
     <div class="sym-head__id">
       <h1 class="sym-head__ticker">{{ symbol.ticker }}</h1>
       <span class="sym-head__tag">{{ symbol.kind }}</span>
@@ -56,6 +56,55 @@
       </span>
       {% endif %}
       <span class="sym-head__asof">{% if quote %}{{ quote.state_label }}{% if symbol.last_quote_at %} &middot; <span data-field="quoted">quoted {{ symbol.last_quote_at|ago }}</span>{% endif %}{% else %}Last close &middot; {{ stats.date|shortdate }}{% endif %}</span>
+    </div>
+    {% endif %}
+
+    {# Stock health badge (Phase 17, redesigned): a circular % donut anchors
+       the top-right of the header. Hovering or focusing reveals the three
+       sub-readings (fundamentals / trajectory / leadership) — the previous
+       full Stock-health section is gone in favour of this glanceable badge. #}
+    {% if health %}
+    <div class="sym-head__health">
+      <button type="button" class="health-badge health-badge--{{ health.overall }}"
+              aria-label="Stock health: {{ health.verdict }}, {{ health.percent }}%"
+              aria-describedby="health-pop">
+        {# r = 50/π ≈ 15.9155 makes the circle's circumference exactly 100,
+           so stroke-dasharray "N, 100" fills N% of the ring with no maths
+           in the template. #}
+        <svg class="health-badge__ring" viewBox="0 0 36 36" aria-hidden="true">
+          <circle class="health-badge__track" cx="18" cy="18" r="15.9155" fill="none"/>
+          <circle class="health-badge__fill"  cx="18" cy="18" r="15.9155" fill="none"
+                  stroke-dasharray="{{ health.percent }}, 100"/>
+        </svg>
+        <span class="health-badge__num num">
+          <span class="health-badge__pct">{{ health.percent }}</span><span class="health-badge__unit">%</span>
+        </span>
+        <span class="health-badge__caption">{{ health.verdict }}</span>
+      </button>
+      <div class="health-pop" id="health-pop" role="tooltip">
+        <p class="health-pop__head">Overall <strong class="health-pop__verdict health-pop__verdict--{{ health.overall }}">{{ health.verdict }}</strong> &middot; <span class="num">{{ health.percent }}%</span></p>
+        <ul class="health-pop__rows">
+          <li class="health-pop__row health-pop__row--{{ health.strength }}">
+            <span class="health-pop__label">Fundamentals</span>
+            <span class="health-pop__value">{{ health.strength_label }}</span>
+          </li>
+          <li class="health-pop__row health-pop__row--{{ health.trajectory }}">
+            <span class="health-pop__label">Trajectory</span>
+            <span class="health-pop__value">{{ health.trajectory_label }}</span>
+          </li>
+          <li class="health-pop__row health-pop__row--{{ health.stability }}">
+            <span class="health-pop__label">Leadership</span>
+            <span class="health-pop__value">
+              {%- if health.stability == 'unknown' -%}
+                &mdash;
+              {%- else -%}
+                {{ health.stability_label }}
+              {%- endif -%}
+            </span>
+          </li>
+        </ul>
+        <p class="health-pop__src">A read across fundamentals, recent price &amp; growth trajectory, and leadership stability. For fun and reading at a glance, not investment advice.</p>
+      </div>
     </div>
     {% endif %}
   </header>
@@ -258,49 +307,6 @@
   </section>
   {% endif %}
 
-  {# --- stock health read (Phase 17): a single non-advice synthesis of the
-         three signals below (fundamentals + price/growth trajectory +
-         leadership stability), so the headline reads in one glance before
-         the per-component sections. Hidden until ratios have synced. --- #}
-  {% if health %}
-  <h2 class="section-title">Stock health</h2>
-  <p class="section-note">A read across the data this app already carries:
-     fundamentals, recent price and growth trajectory, and leadership stability.
-     Industry context is not yet folded in.</p>
-  <p class="disclaimer">For fun and reading at a glance. Not investment advice
-     and not a buy or sell signal.</p>
-  <section class="panel health">
-    <div class="health__overall">
-      {{ verdict_badge({"grade": health.overall, "verdict": health.verdict}) }}
-      <p class="health__overall-text">Overall, {{ symbol.ticker }} reads as
-        <strong>{{ health.verdict|lower }}</strong>.</p>
-    </div>
-    <ul class="health__breakdown">
-      <li class="health-row health-row--{{ health.strength }}">
-        <span class="health-row__label">Fundamentals</span>
-        <span class="health-row__value">{{ health.strength_label }}</span>
-        <span class="health-row__note">across the nine graded ratios</span>
-      </li>
-      <li class="health-row health-row--{{ health.trajectory }}">
-        <span class="health-row__label">Trajectory</span>
-        <span class="health-row__value">{{ health.trajectory_label }}</span>
-        <span class="health-row__note">trailing-year price trend + revenue / earnings growth</span>
-      </li>
-      <li class="health-row health-row--{{ health.stability }}">
-        <span class="health-row__label">Leadership</span>
-        <span class="health-row__value">{{ health.stability_label }}</span>
-        <span class="health-row__note">
-          {%- if health.stability == 'unknown' -%}
-            leadership sync has not reached this stock yet
-          {%- else -%}
-            {{ health.recent_changes }} reported officer or director change{% if health.recent_changes != 1 %}s{% endif %} in the last 2 years
-          {%- endif -%}
-        </span>
-      </li>
-    </ul>
-  </section>
-  {% endif %}
-
   <h2 class="section-title">Fundamentals{% if symbol.fundamentals_synced_at %}<span class="section-title__asof">synced from SEC {{ symbol.fundamentals_synced_at|ago }}</span>{% endif %}</h2>
   {% if fundamentals and fundamentals.ratios %}
   {# The rolled-up standing badge sits above the per-ratio cards (Phase 20). #}
@@ -398,16 +404,18 @@
   <section class="panel anomalies">
     <ul class="anomaly-list">
       {% for e in anomalies.events %}
-      <li class="anomaly anomaly--{{ e.glyph }}">
+      <li class="anomaly anomaly--{{ e.glyph }} anomaly--{{ e.polarity }}">
         {% if e.url %}<a class="anomaly__link" href="{{ e.url }}" target="_blank" rel="noopener noreferrer">{% else %}<span class="anomaly__link">{% endif %}
           <span class="anomaly__date num">{{ e.date|shortdate }}</span>
           <span class="anomaly__glyph anomaly__glyph--{{ e.glyph }}" aria-hidden="true">{% if e.glyph == 'up' %}&uarr;{% elif e.glyph == 'down' %}&darr;{% elif e.glyph == 'drawdown' %}&#x21A1;{% elif e.glyph == 'fund-up' %}&plus;{% elif e.glyph == 'fund-down' %}&minus;{% else %}&#x2756;{% endif %}</span>
           <span class="anomaly__body">{{ e.headline }}</span>
-          {% if e.url %}
-          <svg class="filing__ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M14 5h5v5M19 5l-9 9M11 5H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5"/>
-          </svg>
-          {% endif %}
+          <span class="anomaly__ext" aria-hidden="true">
+            {% if e.url %}
+            <svg class="filing__ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 5h5v5M19 5l-9 9M11 5H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5"/>
+            </svg>
+            {% endif %}
+          </span>
         {% if e.url %}</a>{% else %}</span>{% endif %}
       </li>
       {% endfor %}

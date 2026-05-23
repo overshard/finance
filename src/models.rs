@@ -186,14 +186,15 @@ pub fn fundamentals_anomalies(facts: &[FundFact]) -> Vec<compute::AnomalyEvent> 
             "net_income" => "net income",
             _ => metric,
         };
-        let (glyph, sign) = if pct >= 0.0 {
-            ("fund-up", "+")
+        let (glyph, polarity, sign) = if pct >= 0.0 {
+            ("fund-up", "good", "+")
         } else {
-            ("fund-down", "\u{2212}")
+            ("fund-down", "bad", "\u{2212}")
         };
         out.push(compute::AnomalyEvent {
             date: period_end.to_string(),
             glyph,
+            polarity,
             headline: format!("FY{year} {label} {sign}{:.0}% YoY", pct.abs()),
             url: None,
             severity: pct.abs(),

@@ -2,19 +2,30 @@
 @use "../../base/styles/mixins" as *;
 
 /* ---------- header ----------
-   At desktop the header splits into a 2-column grid: the identity
-   (ticker + name + tag chips) on the left, the live quote block on the
-   right. At phone they stack. The double-rule under the header echoes
+   Identity (ticker + tag chips), name, and live quote stack as three
+   rows. When a stock has a synthesised health read, a circular % badge
+   anchors the top-right and spans those three rows so id / name / quote
+   read as one column on the left and the badge sits alone on the right
+   at desktop. On phone it slides under the quote so the ticker keeps
+   the full width of the screen. The double-rule under the header echoes
    the new .section-title ledger underline so the page reads as a single
    accounting register. */
 .sym-head {
   display: grid;
-  grid-template-columns: 1fr;
-  gap: var(--sp-3) var(--sp-6);
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-3) var(--sp-5);
   margin: var(--sp-1) 0 var(--sp-5);
   padding-bottom: var(--sp-4);
   border-bottom: 1px solid var(--rule-strong);
   box-shadow: 0 3px 0 -2px var(--rule);
+}
+
+/* With a health badge, the header becomes a 2-column grid at every width:
+   left column flexes, right column is auto-sized to the badge. Stacking
+   on phone is handled inside .sym-head__health (it justifies left and
+   the badge shrinks). */
+.sym-head--has-health {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .sym-head__id {
@@ -23,6 +34,7 @@
   gap: var(--sp-3);
   flex-wrap: wrap;
   min-width: 0;
+  grid-column: 1;
 }
 
 .sym-head__ticker {
@@ -55,6 +67,9 @@
   }
 }
 
+/* Name + quote span the full header width by default; the desktop rule
+   below pulls them back to column 1 when the health badge is present
+   (the badge then anchors the right column across all three rows). */
 .sym-head__name {
   grid-column: 1 / -1;
   color: var(--ink-dim);
@@ -93,6 +108,185 @@
   padding-left: var(--sp-3);
   border-left: 1px solid var(--rule);
   margin-left: 2px;
+}
+
+/* ---------- header health badge (Phase 17 redesign) ----------
+   A circular % donut anchors the header's top-right. The previous
+   full-width Stock health section is gone; the three sub-readings
+   (fundamentals / trajectory / leadership) live in a popover that
+   shows on hover and on keyboard / touch focus.
+
+   The donut uses the well-known stroke-dasharray trick: r = 50/π so the
+   circle's circumference is exactly 100, and "stroke-dasharray: N, 100"
+   then fills exactly N% of the ring with no maths in the template. */
+.sym-head__health {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+  justify-self: end;
+  position: relative;
+}
+
+.health-badge {
+  appearance: none;
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 0 var(--sp-3);
+  padding: 6px 14px 6px 6px;
+  background: var(--paper);
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  color: var(--ink);
+  cursor: help;
+  font: inherit;
+  text-align: left;
+  transition: border-color 0.12s, box-shadow 0.12s, transform 0.12s;
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--ink);
+    box-shadow: 0 1px 0 0 var(--rule);
+  }
+}
+
+.health-badge__ring {
+  grid-row: 1 / span 2;
+  width: 52px;
+  height: 52px;
+  display: block;
+  /* rotate -90deg so the 0% mark sits at the top */
+  transform: rotate(-90deg);
+}
+
+.health-badge__track {
+  stroke: var(--rule);
+  stroke-width: 3.2;
+}
+
+.health-badge__fill {
+  stroke-width: 3.2;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.4s ease;
+}
+
+.health-badge--good .health-badge__fill { stroke: var(--up); }
+.health-badge--ok   .health-badge__fill { stroke: var(--warn); }
+.health-badge--bad  .health-badge__fill { stroke: var(--down); }
+.health-badge--unknown .health-badge__fill { stroke: var(--ink-faint); }
+
+.health-badge__num {
+  @include mono;
+  font-weight: 700;
+  font-size: var(--fs-lg);
+  line-height: 1;
+}
+
+.health-badge--good .health-badge__num { color: var(--up); }
+.health-badge--ok   .health-badge__num { color: var(--warn); }
+.health-badge--bad  .health-badge__num { color: var(--down); }
+
+.health-badge__unit {
+  font-size: 0.65em;
+  margin-left: 1px;
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+
+.health-badge__caption {
+  @include eyebrow;
+  font-size: var(--eye-chip);
+  color: var(--ink-dim);
+  letter-spacing: 0.06em;
+}
+
+/* Hover / focus popover. Pure CSS — opens on the badge's :hover, on
+   keyboard focus (:focus-visible bubbles through :focus-within), and
+   stays open while the pointer is on the popover itself so a user
+   moving the cursor in to read it does not flicker the popover shut. */
+.health-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  width: min(320px, calc(100vw - 32px));
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
+  background: var(--paper);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px -8px rgba(33, 31, 26, 0.18);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 0.12s, transform 0.12s;
+}
+
+.sym-head__health:hover .health-pop,
+.sym-head__health:focus-within .health-pop {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.health-pop__head {
+  margin: 0 0 var(--sp-2);
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--rule);
+  font-size: var(--fs-sm);
+  color: var(--ink-dim);
+}
+
+.health-pop__verdict--good { color: var(--up); }
+.health-pop__verdict--ok   { color: var(--warn); }
+.health-pop__verdict--bad  { color: var(--down); }
+.health-pop__verdict--unknown { color: var(--ink-faint); }
+
+.health-pop__rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+}
+
+.health-pop__row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: var(--sp-3);
+  padding: 6px var(--sp-2);
+  border-left: 3px solid var(--rule);
+  background: var(--well);
+  border-radius: var(--radius-sm);
+}
+
+.health-pop__row--good { border-left-color: var(--up); }
+.health-pop__row--ok   { border-left-color: var(--warn); }
+.health-pop__row--bad  { border-left-color: var(--down); }
+.health-pop__row--unknown { border-left-color: var(--ink-faint); }
+
+.health-pop__label {
+  @include eyebrow;
+  color: var(--ink);
+}
+
+.health-pop__value {
+  @include mono;
+  font-weight: 700;
+  font-size: var(--fs-sm);
+}
+
+.health-pop__row--good .health-pop__value { color: var(--up); }
+.health-pop__row--ok   .health-pop__value { color: var(--warn); }
+.health-pop__row--bad  .health-pop__value { color: var(--down); }
+.health-pop__row--unknown .health-pop__value { color: var(--ink-faint); }
+
+.health-pop__src {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-2xs);
+  color: var(--ink-faint);
+  line-height: 1.45;
+  font-style: italic;
 }
 
 /* ---------- chart panel ---------- */
@@ -422,88 +616,6 @@
 
 .legend__dot--down {
   background: var(--down);
-}
-
-/* ---------- stock health read (Phase 17) ---------- */
-/* A synthesis panel above the per-component data sections: an overall
-   Healthy / Mixed / Concerning verdict, then the three sub-readings
-   (fundamentals / trajectory / leadership). Each sub-row carries the
-   semantic colour through a left border and a coloured value, keeping
-   the panel readable at a glance without overwhelming the page. */
-.health {
-  padding: var(--sp-3) var(--sp-4) var(--sp-4);
-}
-
-.health__overall {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding-bottom: var(--sp-3);
-  margin-bottom: var(--sp-3);
-  border-bottom: 1px solid var(--rule);
-}
-
-/* the overall verdict reads larger than the inline app-wide pill */
-.health__overall .vbadge {
-  font-size: var(--eye-lbl);
-  padding: 7px 14px;
-}
-
-.health__overall-text {
-  max-width: 70ch;
-  color: var(--ink-dim);
-  font-size: var(--fs-md);
-}
-
-.health__breakdown {
-  display: grid;
-  gap: var(--sp-2);
-}
-
-/* Phase 31: the three health sub-rows now stack as fluid two-column rows:
-   `label | value` on a single line, with the note on a second line. That
-   was the phone fallback before — the desktop "label | value | note"
-   layout fell apart for the longer notes ("X reported officer or director
-   changes in the last 2 years") which wrapped into a tight third column
-   and clipped on the right. The two-line shape is the same at every
-   width; the left border and coloured value carry the semantic read. */
-.health-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: baseline;
-  gap: 2px var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  border-left: 3px solid var(--rule);
-  background: var(--well);
-  border-radius: var(--radius-sm);
-}
-
-.health-row--good     { border-left-color: var(--up); }
-.health-row--ok       { border-left-color: var(--warn); }
-.health-row--bad      { border-left-color: var(--down); }
-.health-row--unknown  { border-left-color: var(--ink-faint); }
-
-.health-row__label {
-  @include eyebrow;
-  color: var(--ink);
-}
-
-.health-row__value {
-  @include mono;
-  font-weight: 700;
-  font-size: var(--fs-md);
-}
-
-.health-row--good .health-row__value     { color: var(--up); }
-.health-row--ok .health-row__value       { color: var(--warn); }
-.health-row--bad .health-row__value      { color: var(--down); }
-.health-row--unknown .health-row__value  { color: var(--ink-faint); }
-
-.health-row__note {
-  grid-column: 1 / -1;
-  font-size: var(--fs-xs);
-  color: var(--ink-faint);
-  line-height: 1.45;
 }
 
 /* ---------- fundamentals: graded ratio cards ---------- */
@@ -940,30 +1052,57 @@
   transform: translate(2px, -2px);
 }
 
-/* ---------- per-ticker anomaly feed (Phase 16) ---------- */
+/* ---------- per-ticker anomaly feed (Phase 16, redesigned) ----------
+   Every row uses the same 4-column grid so the date, the glyph, the
+   headline body, and the external-link icon land in the same x at
+   every row. The previous flex layout let each column flow to its
+   content width, which made dates of different widths (e.g. May 1 vs
+   May 14) push the glyph and body around — defeating the "scan
+   straight down" purpose of the feed.
+
+   A faint background tint on each row carries the event's polarity
+   (good / bad / neutral) so a quick scan reveals the recent trend
+   without reading any words. */
 .anomalies {
-  padding: var(--sp-3) var(--sp-4);
+  padding: var(--sp-2) var(--sp-3);
 }
 
 .anomaly-list {
   margin: 0;
   padding: 0;
   list-style: none;
+  display: grid;
+  gap: 2px;
 }
 
 .anomaly {
-  border-top: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid transparent;
 }
 
-.anomaly:first-child {
-  border-top: none;
+.anomaly--good {
+  background: color-mix(in oklab, var(--up) 8%, transparent);
+  border-left-color: color-mix(in oklab, var(--up) 65%, transparent);
+}
+.anomaly--bad {
+  background: color-mix(in oklab, var(--down) 9%, transparent);
+  border-left-color: color-mix(in oklab, var(--down) 65%, transparent);
+}
+.anomaly--neutral {
+  background: var(--well);
+  border-left-color: var(--rule-strong);
 }
 
 .anomaly__link {
-  display: flex;
+  display: grid;
+  /* date | glyph | body | ext-icon — all fixed widths except body,
+     so every row's glyph and body line up exactly under each other. */
+  /* date col fits "Jul 25, 2025" (the shortdate filter adds the year for
+     prior calendar years), glyph col fixed, body flexes, ext-icon fixed. */
+  grid-template-columns: 6.25rem 1.5rem minmax(0, 1fr) 1.25rem;
   align-items: center;
   gap: var(--sp-3);
-  padding: var(--sp-2) 0;
+  padding: 9px var(--sp-3);
   color: var(--ink);
   text-decoration: none;
   transition: color 0.1s;
@@ -975,19 +1114,17 @@ a.anomaly__link:hover .anomaly__body {
 
 .anomaly__date {
   @include mono;
-  flex: none;
-  min-width: 7ch;
   font-size: var(--fs-xs);
   color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
 }
 
 .anomaly__glyph {
-  flex: none;
-  width: 1.4em;
   text-align: center;
   font-weight: 700;
   font-size: var(--fs-md);
   color: var(--ink-faint);
+  line-height: 1;
 }
 
 .anomaly__glyph--up        { color: var(--up); }
@@ -998,10 +1135,22 @@ a.anomaly__link:hover .anomaly__body {
 .anomaly__glyph--leader    { color: var(--ink-dim); }
 
 .anomaly__body {
-  flex: 1;
   min-width: 0;
   font-size: var(--fs-sm);
   line-height: 1.4;
+}
+
+/* ext icon slot is always rendered so the body column stays the same
+   width whether or not a row has an outbound link. Empty span is fine. */
+.anomaly__ext {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-faint);
+}
+.anomaly__ext .filing__ext {
+  width: 14px;
+  height: 14px;
 }
 
 .anomaly-list__src {
@@ -1510,6 +1659,20 @@ a.anomaly__link:hover .anomaly__body {
 
   .sym-head__price {
     font-size: 2.2rem;
+  }
+
+  /* Desktop: the badge spans all three header rows so name + quote pull
+     back to column 1; the badge then sits as a clean anchor on the right
+     edge instead of crowding the ticker row. */
+  .sym-head--has-health {
+    .sym-head__name,
+    .sym-head__quote {
+      grid-column: 1;
+    }
+    .sym-head__health {
+      grid-row: 1 / span 3;
+      align-self: start;
+    }
   }
 
   .range-btn,

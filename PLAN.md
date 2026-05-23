@@ -32,6 +32,13 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-23_
 
+**In-flight polish (not yet deployed, 2026-05-23):** stock health moved
+from its dedicated section to a circular % donut badge in the symbol-page
+header (popover carries the three sub-readings); Notable-recent-events
+list rebuilt on a 4-col grid with polarity-tinted rows; `^VIX` moved off
+the Indexes row into a renamed "Risk & commodities" section so Indexes
+is a clean 5-up. See the Decisions log entry for the full breakdown.
+
 **Current phase: Phase 31 (full UI polish pass) complete, verified,
 and deployed to production 2026-05-23 (commit `d53651e`).** Driven by
 the user's "really do a full pass" steer. The Paper Ledger look is
@@ -2499,6 +2506,33 @@ finance/
 ---
 
 ## Decisions log
+
+- **2026-05-23 — Stock health moved to a header badge; `^VIX` moved off
+  the Indexes row.** Three small polish tweaks driven by user feedback
+  on the symbol and home pages. Not yet deployed.
+  - *Header health badge.* The Phase 17 "Stock health" panel was visually
+    heavy and lived deep below the chart. Replaced with a circular % donut
+    in the symbol-page header top-right; the three sub-readings
+    (fundamentals / trajectory / leadership) live in a hover/focus popover
+    on the badge, and the dedicated section is gone. `HealthRead` gained
+    a `percent: u8` field — a linear map of the `[-1, 1]` composite to
+    `[0, 100]`. The new SCSS uses the standard stroke-dasharray-on-a-
+    circle trick (r = 50/π so circumference = 100) so the template just
+    writes `stroke-dasharray="N, 100"` with no maths. The badge spans the
+    header's three rows at desktop and sits beside the ticker on phone.
+  - *Notable recent events redesign.* Anomaly rows were flex-laid-out, so
+    a wider date pushed the glyph and body right and made vertical
+    comparison hard. Rebuilt as a 4-column CSS grid (date | glyph | body |
+    ext-icon) with a fixed 6.25rem date column (wide enough for
+    "Jul 25, 2025"). Each row also picks up a faint polarity tint —
+    green for `up` / `fund-up`, red for `down` / `drawdown` / `fund-down`,
+    neutral well for `leader` — so a scan reveals whether recent events
+    skew positive or negative without reading any words. `AnomalyEvent`
+    gained a `polarity: &'static str` field set at every creation site.
+  - *`^VIX` off the Indexes row.* It was leaving Indexes with 6 cards (5
+    wide row + 1 lonely card on a second row). Removed from the `INDEXES`
+    list and prepended to `COMMODITIES`; the section heading is now
+    "Risk & commodities". Indexes is back to a clean single-row 5-up.
 
 - **2026-05-21 — Stooq history endpoint hit an apikey gate.** Stooq's free
   per-ticker CSV now returns "Get your apikey:" and its bulk database download

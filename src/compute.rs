@@ -939,6 +939,9 @@ pub struct HealthRead {
     pub verdict: &'static str,
     /// Composite score in [-1, 1]; home panels sort by it.
     pub score: f64,
+    /// `score` mapped linearly to a 0-100 percentage for the header badge:
+    /// `-1.0` reads 0%, `0.0` reads 50%, `+1.0` reads 100%.
+    pub percent: u8,
     pub strength: Grade,
     pub strength_label: &'static str,
     pub trajectory: Grade,
@@ -1033,6 +1036,9 @@ pub fn health_read(
     }
     let score = weighted / total;
     let overall = score_grade(score);
+    // Linear map [-1, 1] → [0, 100] for the header badge. Clamped because a
+    // small floating-point drift past ±1 should not blow past 0% / 100%.
+    let percent = (((score + 1.0) / 2.0 * 100.0).round() as i32).clamp(0, 100) as u8;
 
     let strength = score_grade(strength_raw);
     let trajectory = trajectory_raw.map(score_grade).unwrap_or(Grade::Unknown);
@@ -1042,6 +1048,7 @@ pub fn health_read(
         overall,
         verdict: health_verdict(overall),
         score,
+        percent,
         strength,
         strength_label: strength.verdict(),
         trajectory,
@@ -1474,6 +1481,12 @@ pub struct AnomalyEvent {
     /// Glyph key the template maps to an icon — one of `up`, `down`,
     /// `drawdown`, `fund-up`, `fund-down`, `leader`.
     pub glyph: &'static str,
+    /// `good` | `bad` | `neutral` — drives the row's background tint in the
+    /// feed so a one-glance scan reveals whether recent events skew positive
+    /// or negative. Up / fund-up are good, down / drawdown / fund-down are
+    /// bad, leadership changes are neutral (an officer change is not itself
+    /// good or bad news).
+    pub polarity: &'static str,
     /// Human one-line headline, e.g. `+8.2% one-day move`.
     pub headline: String,
     /// Outbound link (set on leadership events; the row becomes an anchor).
@@ -1538,10 +1551,15 @@ pub fn price_anomalies(closes: &[f64], dates: &[&str]) -> Vec<AnomalyEvent> {
         let sigma = var.sqrt();
         if r.abs() >= PRICE_MIN_MOVE && r.abs() >= PRICE_SIGMA_MULT * sigma {
             let pct = r * 100.0;
-            let (glyph, sign) = if pct >= 0.0 { ("up", "+") } else { ("down", "\u{2212}") };
+            let (glyph, polarity, sign) = if pct >= 0.0 {
+                ("up", "good", "+")
+            } else {
+                ("down", "bad", "\u{2212}")
+            };
             out.push(AnomalyEvent {
                 date: dates[i].to_string(),
                 glyph,
+                polarity,
                 headline: format!("{sign}{:.1}% one-day move", pct.abs()),
                 url: None,
                 severity: pct.abs(),
@@ -1587,6 +1605,7 @@ pub fn drawdown_anomalies(closes: &[f64], dates: &[&str]) -> Vec<AnomalyEvent> {
             out.push(AnomalyEvent {
                 date: dates[i].to_string(),
                 glyph: "drawdown",
+                polarity: "bad",
                 headline: format!("New 6-month low ({:.0}% off peak)", drop),
                 url: None,
                 severity: drop.abs(),

@@ -31,7 +31,7 @@
     {% for c in index_cards %}{{ spark_card(c) }}{% endfor %}
   </div>
 
-  <h2 class="section-title">Commodities{% if commodity_asof %}<span class="section-title__asof">prices as of <span data-field="spark-asof">{{ commodity_asof|asof }}</span></span>{% endif %}</h2>
+  <h2 class="section-title">Risk &amp; commodities{% if commodity_asof %}<span class="section-title__asof">prices as of <span data-field="spark-asof">{{ commodity_asof|asof }}</span></span>{% endif %}</h2>
   <div class="spark-grid">
     {% for c in commodity_cards %}{{ spark_card(c) }}{% endfor %}
   </div>
