@@ -390,10 +390,14 @@
   border-bottom: 0;
 }
 
+/* Each card carries its own grid, but pinning rank / sym / badge / score to
+   fixed track widths makes the four horizon cards visually line up cell-for-
+   cell across the page (the eye scans pick-1 → pick-1 → pick-1 cleanly
+   instead of zig-zagging through auto-sized tracks). The name column flexes
+   to fill what's left. */
 .pick__row {
   display: grid;
-  /* rank, sym, name, badge, score */
-  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  grid-template-columns: 1.5ch 5ch minmax(0, 1fr) 4.4em 5.6ch;
   align-items: center;
   gap: 8px;
   padding: 7px 2px;
@@ -406,7 +410,6 @@
 }
 
 .pick__rank {
-  width: 1.5ch;
   text-align: right;
   font-size: 0.72rem;
   color: var(--ink-faint);
@@ -426,25 +429,43 @@
   text-overflow: ellipsis;
 }
 
+/* center the verdict pill in its fixed-width slot so Strong / Fair / Weak
+   all sit at the same x-axis across cards */
 .pick__badge {
   display: flex;
+  justify-content: center;
 }
 
 .pick__score {
   font-size: 0.78rem;
   font-weight: 600;
   text-align: right;
-  min-width: 4.4ch;
 }
 
-/* on a narrow phone the name yields so rank/sym/badge/score keep their
-   shape — the name is implied by the ticker. */
+/* The name column only earns its width on the 2-up tablet layout, where
+   each card is wide enough to show a useful slice of it. On the 4-up
+   desktop layout cards are too narrow (a single-character "I…" reads as
+   noise), and on phones we drop name to keep room for the figures. */
+@media (min-width: $bp-md) {
+  .pick__name {
+    display: none;
+  }
+  .pick__row {
+    grid-template-columns: 1.5ch 5ch 1fr 4.4em 5.6ch;
+  }
+}
+
+/* Mobile: name is hidden but the card itself is too narrow for fixed
+   tracks to fit. Fall back to auto sizing so the score never gets clipped;
+   cross-card alignment matters less here because the eye scans one card
+   at a time. */
 @media (max-width: $bp-sm) {
   .pick__name {
     display: none;
   }
   .pick__row {
-    grid-template-columns: auto auto auto 1fr auto;
+    grid-template-columns: 1.5ch auto 1fr auto auto;
+    gap: 6px;
   }
 }
 
