@@ -346,12 +346,23 @@
   gap: 12px;
 }
 
+/* Each card is a subgrid of the picks-grid, spanning three shared row
+   tracks (title, desc, list). That makes the desc row tall enough to fit
+   whichever horizon's description wraps deepest, so the list itself starts
+   at the same Y across all cards in the row. Without this the per-card
+   intrinsic heights drift and the rank-1 rows wouldn't line up. */
 .picks-col {
   @include card;
   padding: 10px 12px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  display: grid;
+  /* columns subgrid so the card's single inner column matches its 1fr of
+     the parent grid (without it, the inner column auto-sized to the desc's
+     max-content and overflowed the card). Rows subgrid so the title, desc,
+     and list rows all line up across the four cards. */
+  grid-template-columns: subgrid;
+  grid-template-rows: subgrid;
+  grid-row: span 3;
+  row-gap: 4px;
   min-width: 0;
 }
 
@@ -366,8 +377,6 @@
   font-size: 0.7rem;
   color: var(--ink-faint);
   line-height: 1.35;
-  /* clamp to two lines on a phone so the column heights stay close */
-  min-height: 2.6em;
 }
 
 .picks-col__list {
