@@ -2670,6 +2670,33 @@ finance/
   endpoint guards, coverage and graceful degradation on unsupported
   issuers, scheduler placement, and `/health` surfacing). Depends on
   Phase 28 to overlay onto.
+- **2026-05-23 — Stock universe expanded to the full S&P 500.** The
+  hand-curated ~110-stock list in `universe/starter.csv` was replaced
+  with all 503 current S&P 500 constituents (dual-class names like
+  GOOGL/GOOG and BRK.B counted separately). Indexes (6), ETFs (28) and
+  futures (10) are unchanged, so the file now holds 547 symbols. The
+  list was scraped from Wikipedia's `List_of_S%26P_500_companies`
+  constituents table on 2026-05-23; it is a dated snapshot, not an
+  auto-refreshing feed (membership churns a few times a year, refresh
+  manually when noticed — auto-refresh job left as a follow-up). The
+  `exchange` column is empty for the new rows (Wikipedia does not
+  carry it); the existing `Option<String>` schema and downstream code
+  already tolerate that. `benchmark` stays empty for stocks per the
+  existing convention. Side effects: the home page's strongest/weakest
+  panels and the Phase 30 top-picks selector both draw from
+  `is_seeded = 1 AND kind = 'stock'`, so their candidate pool widens
+  from ~110 to 503 — which is the point, the user picked the S&P 500
+  as "most of the large US companies most people care about". Cold-
+  start cost: Stooq history backfill for the ~390 new tickers takes
+  ~2 hours of guard budget (200/hour) and resumes across scheduler
+  cycles; SEC EDGAR fundamentals and Yahoo dividends backfill the
+  same way over their own daily cadences. No new endpoints, no new
+  burst risk: every call still routes through `EndpointGuard`. Phase
+  1's "144 symbols" note and the Phase 3 decisions-log line about the
+  200/hour budget sitting "comfortably above one full universe
+  refresh (~144 calls)" are now historical — a full refresh today
+  spans multiple hours by design; the seed and incremental jobs are
+  built to stop and resume against the guard.
 
 ---
 
