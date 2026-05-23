@@ -32,8 +32,8 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-23_
 
-**Current phase: Phase 17 (stock health read) complete and verified
-locally 2026-05-23 — not yet deployed.** A single non-advice "health" read
+**Current phase: Phase 17 (stock health read) complete, verified,
+and deployed to production 2026-05-23 (commit `8a16b14`).** A single non-advice "health" read
 per stock layered over the Phase 20 strength + trajectory composite: it
 folds in a leadership-stability signal read off the recent 8-K item-5.02
 change count (Phase 14). Industry context (Phase 15) was intentionally
@@ -126,8 +126,8 @@ backlog as Phase 19. The `watchlists` / `watchlist_items` tables stay in the
 schema, unused for now.
 
 **Done**
-- **Phase 17 stock health read.** Complete and verified locally
-  2026-05-23 — not yet deployed. A non-advice synthesis of the data this
+- **Phase 17 stock health read.** Complete, verified, and deployed to
+  production 2026-05-23 (commit `8a16b14`). A non-advice synthesis of the data this
   app already carries (fundamentals + price/growth trajectory + leadership
   stability), surfaced two ways: a "Stock health" panel on the stock
   symbol page and a "Healthiest / Most concerning" pair on the home
@@ -1516,9 +1516,9 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   reads consistently. Section hides cleanly on an empty feed.
   Pure derivation: no schema change, no new network calls, no new
   `EndpointGuard` row.
-- [x] **Phase 17: Stock health read.** Complete and verified locally
-  2026-05-23 (not yet deployed) — see the Phase 17 Done entry in Status
-  and the decisions log. Synthesizes fundamentals + price/growth
+- [x] **Phase 17: Stock health read.** Complete, verified and deployed
+  to production 2026-05-23 (commit `8a16b14`) — see the Phase 17 Done
+  entry in Status and the decisions log. Synthesizes fundamentals + price/growth
   trajectory + leadership stability into a single non-advice "health"
   read, on the stock symbol page and as a Healthiest / Most concerning
   pair on the home dashboard. Industry context (Phase 15) was
@@ -3042,7 +3042,10 @@ finance/
   changes), `/s/SPY` and `/s/^SPX` hide the panel cleanly; `/` renders
   the Healthiest panel with GOOGL / GOOG / MU leading; desktop and
   390px phone both render with no horizontal overflow and zero console
-  errors. Not yet deployed.
+  errors. Deployed to production 2026-05-23 via `git push server master`
+  (commit `8a16b14`); the live `finance.bythewood.me/` renders the
+  Healthiest / Most concerning panel pair and `/s/AAPL` the new Stock
+  health panel.
 
 ---
 
