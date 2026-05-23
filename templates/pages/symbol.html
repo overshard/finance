@@ -294,6 +294,31 @@
 
   {% endif %}
 
+  {# --- per-ticker anomaly feed (Phase 16): hidden when there are no
+         qualifying events in the past year --- #}
+  {% if anomalies %}
+  <h2 class="section-title">Notable recent events<span class="section-title__asof">past year</span></h2>
+  <section class="panel anomalies">
+    <ul class="anomaly-list">
+      {% for e in anomalies.events %}
+      <li class="anomaly anomaly--{{ e.glyph }}">
+        {% if e.url %}<a class="anomaly__link" href="{{ e.url }}" target="_blank" rel="noopener noreferrer">{% else %}<span class="anomaly__link">{% endif %}
+          <span class="anomaly__date num">{{ e.date|shortdate }}</span>
+          <span class="anomaly__glyph anomaly__glyph--{{ e.glyph }}" aria-hidden="true">{% if e.glyph == 'up' %}&uarr;{% elif e.glyph == 'down' %}&darr;{% elif e.glyph == 'drawdown' %}&#x21A1;{% elif e.glyph == 'fund-up' %}&plus;{% elif e.glyph == 'fund-down' %}&minus;{% else %}&#x2756;{% endif %}</span>
+          <span class="anomaly__body">{{ e.headline }}</span>
+          {% if e.url %}
+          <svg class="filing__ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 5h5v5M19 5l-9 9M11 5H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5"/>
+          </svg>
+          {% endif %}
+        {% if e.url %}</a>{% else %}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    <p class="anomaly-list__src">Large daily moves, new 6-month lows, year-over-year fundamentals swings, and reported leadership changes &mdash; pulled from the data this app already holds, never investment advice.</p>
+  </section>
+  {% endif %}
+
   {# --- ETFs only: Phase 18 (fund profile) + Phase 28 (about / sector / --- #}
   {# --- geography / trailing returns / growth of $10k / benchmark) --- #}
   {% if symbol.kind == 'etf' %}

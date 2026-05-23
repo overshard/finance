@@ -135,6 +135,61 @@ pub fn latest_annual_inputs_as_of(
     })
 }
 
+/// YoY change threshold (25%) on annual revenue or net-income above which a
+/// fundamentals anomaly event is emitted.
+const FUND_YOY_THRESHOLD: f64 = 0.25;
+
+/// Walk a company's stored facts and emit one anomaly event per (metric,
+/// fiscal year) whose YoY change exceeds ±25%. Only annual `revenue` and
+/// `net_income` are surfaced — the two top-line figures whose moves are
+/// readable without further context. The event's date is the fiscal year's
+/// `period_end` (the year that ended), so the feed reads as "FY2024
+/// revenue ‒32% YoY" on the day that fiscal year closed.
+pub fn fundamentals_anomalies(facts: &[FundFact]) -> Vec<compute::AnomalyEvent> {
+    let mut annual: HashMap<(&str, i64), (f64, &str)> = HashMap::new();
+    for f in facts {
+        if f.fiscal_qtr.is_none() && (f.metric == "revenue" || f.metric == "net_income") {
+            annual.insert(
+                (f.metric.as_str(), f.fiscal_year),
+                (f.value, f.period_end.as_str()),
+            );
+        }
+    }
+    let mut out: Vec<compute::AnomalyEvent> = Vec::new();
+    for ((metric, year), (val, period_end)) in &annual {
+        let prev = match annual.get(&(metric, year - 1)) {
+            Some((v, _)) => *v,
+            None => continue,
+        };
+        if prev.abs() < 1e-9 {
+            continue;
+        }
+        let change = (val - prev) / prev.abs();
+        if change.abs() < FUND_YOY_THRESHOLD {
+            continue;
+        }
+        let pct = change * 100.0;
+        let label = match *metric {
+            "revenue" => "revenue",
+            "net_income" => "net income",
+            _ => metric,
+        };
+        let (glyph, sign) = if pct >= 0.0 {
+            ("fund-up", "+")
+        } else {
+            ("fund-down", "\u{2212}")
+        };
+        out.push(compute::AnomalyEvent {
+            date: period_end.to_string(),
+            glyph,
+            headline: format!("FY{year} {label} {sign}{:.0}% YoY", pct.abs()),
+            url: None,
+            severity: pct.abs(),
+        });
+    }
+    out
+}
+
 fn latest_annual_inputs_filtered(
     facts: &[FundFact],
     price: Option<f64>,

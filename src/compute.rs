@@ -1316,6 +1316,141 @@ pub fn pick_quarter(i: &PickInput<'_>) -> Option<f64> {
     Some(ret_q)
 }
 
+// ── Phase 16: per-ticker anomaly feed ─────────────────────────────────────
+
+/// One row in the symbol-page anomaly feed. Built either here (price events,
+/// drawdowns) or in `models.rs` (fundamentals events) or directly in the
+/// symbol route (leadership events, reused from Phase 14's filings SELECT).
+#[derive(Debug, Clone, Serialize)]
+pub struct AnomalyEvent {
+    /// `YYYY-MM-DD`.
+    pub date: String,
+    /// Glyph key the template maps to an icon — one of `up`, `down`,
+    /// `drawdown`, `fund-up`, `fund-down`, `leader`.
+    pub glyph: &'static str,
+    /// Human one-line headline, e.g. `+8.2% one-day move`.
+    pub headline: String,
+    /// Outbound link (set on leadership events; the row becomes an anchor).
+    pub url: Option<String>,
+    /// Sort tiebreaker; larger = more notable. Not displayed, just used to
+    /// keep the top N when the merged feed overflows the display cap.
+    pub severity: f64,
+}
+
+/// Trailing-volatility window for the price-move detector (~6 months trading days).
+const PRICE_VOL_WINDOW: usize = 90;
+/// Daily-return magnitude threshold below which we never flag, even for a
+/// very low-vol stock where 2σ would come in tiny.
+const PRICE_MIN_MOVE: f64 = 0.05;
+/// Standard-deviation multiplier — a move must clear both this and PRICE_MIN_MOVE.
+const PRICE_SIGMA_MULT: f64 = 2.0;
+/// Drawdown lookback (~6 months trading days).
+const DRAWDOWN_WINDOW: usize = 126;
+/// Min gap (trading days) between drawdown events so a long slide doesn't
+/// emit every bar.
+const DRAWDOWN_DEDUPE_BARS: usize = 30;
+
+/// Walk `closes` (oldest-first, aligned to `dates`) and emit one event for
+/// every bar whose close-to-close return is both `> 5%` in magnitude and
+/// `> 2σ` of the trailing 90-day daily returns. The pair of thresholds
+/// keeps a low-vol stock's modest move from qualifying just because its
+/// σ is tiny, and a high-vol name's daily wobble from qualifying just
+/// because 5% is its normal range.
+pub fn price_anomalies(closes: &[f64], dates: &[&str]) -> Vec<AnomalyEvent> {
+    debug_assert_eq!(closes.len(), dates.len());
+    let n = closes.len();
+    if n <= PRICE_VOL_WINDOW + 1 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for i in (PRICE_VOL_WINDOW + 1)..n {
+        let prev = closes[i - 1];
+        let cur = closes[i];
+        if prev <= 0.0 {
+            continue;
+        }
+        let r = (cur - prev) / prev;
+        // Trailing daily returns over the prior PRICE_VOL_WINDOW bars
+        // (returns r_j for j in start..i, anchored to closes[j-1]).
+        let start = i - PRICE_VOL_WINDOW;
+        let (mut sum, mut sum2, mut n_ret) = (0.0_f64, 0.0_f64, 0usize);
+        for j in start..i {
+            let p = closes[j - 1];
+            if p <= 0.0 {
+                continue;
+            }
+            let rr = (closes[j] - p) / p;
+            sum += rr;
+            sum2 += rr * rr;
+            n_ret += 1;
+        }
+        if n_ret < PRICE_VOL_WINDOW / 2 {
+            continue;
+        }
+        let mean = sum / n_ret as f64;
+        let var = (sum2 / n_ret as f64 - mean * mean).max(0.0);
+        let sigma = var.sqrt();
+        if r.abs() >= PRICE_MIN_MOVE && r.abs() >= PRICE_SIGMA_MULT * sigma {
+            let pct = r * 100.0;
+            let (glyph, sign) = if pct >= 0.0 { ("up", "+") } else { ("down", "\u{2212}") };
+            out.push(AnomalyEvent {
+                date: dates[i].to_string(),
+                glyph,
+                headline: format!("{sign}{:.1}% one-day move", pct.abs()),
+                url: None,
+                severity: pct.abs(),
+            });
+        }
+    }
+    out
+}
+
+/// Emit one event each time `close` prints a fresh 6-month low — a strict
+/// minimum below the prior 126 bars' range. A long slide that keeps
+/// printing lower lows is collapsed to one event per
+/// `DRAWDOWN_DEDUPE_BARS`-bar window so the feed does not stream daily.
+/// Headline carries the drop from the trailing window's peak as the
+/// magnitude.
+pub fn drawdown_anomalies(closes: &[f64], dates: &[&str]) -> Vec<AnomalyEvent> {
+    debug_assert_eq!(closes.len(), dates.len());
+    let n = closes.len();
+    if n <= DRAWDOWN_WINDOW {
+        return Vec::new();
+    }
+    let mut out: Vec<AnomalyEvent> = Vec::new();
+    let mut last_emit_i: Option<usize> = None;
+    for i in DRAWDOWN_WINDOW..n {
+        let cur = closes[i];
+        if cur <= 0.0 {
+            continue;
+        }
+        let start = i - DRAWDOWN_WINDOW;
+        let prior_min = closes[start..i].iter().copied().fold(f64::INFINITY, f64::min);
+        let prior_max = closes[start..i].iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        if cur < prior_min {
+            if let Some(j) = last_emit_i {
+                if i - j < DRAWDOWN_DEDUPE_BARS {
+                    continue;
+                }
+            }
+            let drop = if prior_max > 0.0 {
+                (cur - prior_max) / prior_max * 100.0
+            } else {
+                0.0
+            };
+            out.push(AnomalyEvent {
+                date: dates[i].to_string(),
+                glyph: "drawdown",
+                headline: format!("New 6-month low ({:.0}% off peak)", drop),
+                url: None,
+                severity: drop.abs(),
+            });
+            last_emit_i = Some(i);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod phase28_tests {
     use super::*;
@@ -1379,5 +1514,68 @@ mod phase28_tests {
         assert!(premium_discount_pct(101.0, Some(100.0)).unwrap().abs() - 1.0 < 1e-9);
         assert!(premium_discount_pct(100.0, None).is_none());
         assert!(premium_discount_pct(100.0, Some(0.0)).is_none());
+    }
+
+    // ── Phase 16 anomaly-feed tests ────────────────────────────────────────
+
+    fn flat_series(n: usize, value: f64) -> (Vec<f64>, Vec<String>) {
+        let dates: Vec<String> = (0..n)
+            .map(|i| {
+                let d = chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
+                    + chrono::Duration::days(i as i64);
+                d.format("%Y-%m-%d").to_string()
+            })
+            .collect();
+        (vec![value; n], dates)
+    }
+
+    #[test]
+    fn price_anomaly_flags_a_big_spike_against_flat_history() {
+        let (mut closes, dates) = flat_series(120, 100.0);
+        // Inject 5 tiny wobbles so σ is not exactly zero — a 7% jump still
+        // qualifies on σ. (A literally-flat history makes σ=0, in which case
+        // any nonzero move trivially exceeds 2σ; the 5%-floor still gates it.)
+        closes[60] = 100.5;
+        closes[80] = 99.5;
+        closes[119] = 107.0;
+        let date_refs: Vec<&str> = dates.iter().map(|s| s.as_str()).collect();
+        let evs = price_anomalies(&closes, &date_refs);
+        assert!(evs.iter().any(|e| e.date == dates[119]
+            && e.glyph == "up"
+            && e.headline.contains("7.0")));
+    }
+
+    #[test]
+    fn price_anomaly_ignores_a_tiny_move_even_when_above_2_sigma() {
+        let (mut closes, dates) = flat_series(120, 100.0);
+        // 1% bump against a literally-flat history would trip 2σ but not the
+        // 5% floor — the feed should stay empty.
+        closes[119] = 101.0;
+        let date_refs: Vec<&str> = dates.iter().map(|s| s.as_str()).collect();
+        let evs = price_anomalies(&closes, &date_refs);
+        assert!(evs.is_empty());
+    }
+
+    #[test]
+    fn drawdown_anomaly_flags_a_fresh_six_month_low() {
+        // 150 flat bars, then one bar prints a strict new low.
+        let (mut closes, dates) = flat_series(150, 100.0);
+        closes[140] = 80.0;
+        let date_refs: Vec<&str> = dates.iter().map(|s| s.as_str()).collect();
+        let evs = drawdown_anomalies(&closes, &date_refs);
+        assert!(evs.iter().any(|e| e.date == dates[140] && e.glyph == "drawdown"));
+    }
+
+    #[test]
+    fn drawdown_anomaly_dedupes_a_long_slide() {
+        let (mut closes, dates) = flat_series(180, 100.0);
+        // Each later bar prints a lower low; without dedupe we'd emit every
+        // single bar. With a 30-bar cooldown we emit a handful, not 30+.
+        for i in 130..180 {
+            closes[i] = 100.0 - (i - 129) as f64;
+        }
+        let date_refs: Vec<&str> = dates.iter().map(|s| s.as_str()).collect();
+        let evs = drawdown_anomalies(&closes, &date_refs);
+        assert!(evs.len() <= 5, "expected dedupe to keep events sparse, got {}", evs.len());
     }
 }

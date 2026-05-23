@@ -32,9 +32,21 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-23_
 
-**Current phase: Phase 30 (top picks + backtest) complete, verified, and
+**Current phase: Phase 16 (per-ticker anomaly feed) complete and verified
+locally 2026-05-23; not yet deployed.** A new symbol-page section between
+Leadership and Recent SEC filings, surfacing notable recent events: large
+daily price moves, drawdowns (new 6-month lows), large YoY fundamentals
+changes, and 8-K item-5.02 leadership changes (reused from Phase 14). One
+line per event — date, glyph, headline — newest first, capped to ~20 over
+the past year. All instruments: stocks get all four event types; ETFs and
+indexes and futures get price-only events. Selective thresholds (>5% AND
+>2σ on price; ±25% YoY on fundamentals; new 6-month low on drawdown) so the
+feed stays signal-dense. Pure derivation from data already stored — no new
+network calls, no schema change, no new endpoint guard.
+
+**Phase 30 (top picks + backtest) is complete, verified, and
 deployed to production 2026-05-23 (commit `8ea9048`); a follow-up rework
-shipped same day (see the decisions log).** Home page now carries a
+shipped same day (see the decisions log) — not yet deployed.** Home page now carries a
 "Top picks" panel — four columns (Day / Week / Month / Quarter), 5 ranked
 stocks each, every row a verdict badge over a headline figure. A new
 `/backtest` page replays the picker over historical prices and shows
@@ -647,6 +659,68 @@ schema, unused for now.
     Leadership section. Desktop (1280px) and phone (390px) render with no
     overflow and zero console errors. The sweep is paced and guarded — it
     backfills the universe over several daily `sec` cycles.
+
+- **Phase 16 per-ticker anomaly feed.** Complete and verified locally
+  2026-05-23; not yet deployed. A new "Notable recent events" section on
+  the symbol page between Leadership and Recent SEC filings, surfacing four
+  kinds of dated events in one merged list — one line per event, date ·
+  glyph · headline, newest first, capped at 20 over the past year. Pure
+  derivation from data already stored: no new network calls, no migration,
+  no new `EndpointGuard` row.
+  - **Compute** added two new pure helpers in `compute.rs`. `price_anomalies(closes, dates)`
+    walks the trailing year and emits an event for every bar whose
+    close-to-close return is both `>5%` in magnitude AND `>2σ` against
+    the prior 90-day daily-return σ — the dual threshold keeps a low-vol
+    name's modest move and a high-vol name's normal daily wobble out of
+    the feed. `drawdown_anomalies(closes, dates)` emits one event each
+    time the close prints a fresh 6-month low, with a 30-bar cooldown so
+    a long slide does not stream daily; the headline carries the drop
+    from the trailing window's peak. Both share a new `AnomalyEvent`
+    struct (date, glyph, headline, optional url, severity).
+  - **Models** added `fundamentals_anomalies(facts)` in `models.rs`,
+    matching the existing `latest_annual_inputs` pattern (this helper
+    walks `FundFact` directly so it lives in models, not compute).
+    Emits one event per (annual fiscal year, metric ∈ {revenue,
+    net_income}) whose YoY change exceeds ±25%, dated at the fiscal
+    year's `period_end`. Headlines read "FY2026 revenue +65% YoY".
+  - **Symbol route** hoists the stock `fundamentals` SELECT one level
+    so both the Fundamentals section and the new `build_anomalies`
+    aggregator share the same fact slice. The aggregator merges the
+    price + drawdown + fundamentals streams, plus a small 8-K item-5.02
+    SELECT (reused from Phase 14's leadership feed but constrained to
+    the past 365 days), trims to the past-year window, sorts newest
+    first with severity as the tiebreaker, and caps at 20. Returns
+    `None` when no events qualify so the template hides the section.
+  - **Template** in `symbol.html` renders one panel between Leadership
+    and the ETF block (which sits before Filings on a stock page);
+    `{% if anomalies %}` gates the whole section. Each row is a date,
+    a glyph mapped per `e.glyph` (↑ ↓ for price moves, ↡ for drawdown,
+    + − for fundamentals, ❖ for leadership), and a headline; a
+    leadership row links to its EDGAR url. A quiet italic provenance
+    line below the list says where the events come from and labels the
+    section as not investment advice.
+  - **SCSS** added a small `.anomalies` block matching the
+    `.lead-change` row style — semantic-only colour on the glyph
+    (using the existing `--up`/`--down` tokens), monospace date in
+    `--ink-faint`, headline in `--ink`.
+  - Coverage: all four event types for stocks; ETFs and indexes get
+    price + drawdown only (no SEC fundamentals/leadership data to
+    derive from). Futures (with no `daily_prices`) and historyless
+    indexes like `^VIX` (also no `daily_prices`) get no events at all
+    and the section hides for them.
+  - Verified: cargo + bun build clean; the four new compute unit
+    tests pass (spike-triggers-on-5%-AND-2σ, ignore-1%-even-at-2σ,
+    fresh-6mo-low-flags, slide-dedupes-to-≤5). `/s/NVDA` renders 10
+    events in the past year (a balanced mix: +5.8%/+5.6%/+7.9%/+5.8%
+    one-day moves, a -5.5% downside move, a -19% new 6-month low,
+    and FY2026 revenue + net income +65% YoY). `/s/AAPL` shows 5
+    leadership-change rows and no price/drawdown/fundamentals events
+    (a fair read: AAPL has been calm, single-digit growth). `/s/SPY`
+    (ETF) shows 1 drawdown; `/s/^SPX` (index) shows 1 drawdown;
+    `/s/GC=F` (future, no `daily_prices`) hides the section entirely.
+    Order on `/s/NVDA` is Leadership → Anomalies → Filings (verified
+    via DOM offsets). Desktop (1280px) and phone (390px) both render
+    with no horizontal overflow and zero console errors.
 
 - **Phase 21 home & search refinements.** Complete, verified, deployed to production.
   - Three independent refinements to already-shipped features.
@@ -1324,10 +1398,36 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   7), show industry-level performance, seasonality (the months an industry
   tends to do well or poorly, computed from `daily_prices`), and how the
   industry is trending currently.
-- [ ] **Phase 16: Per-ticker anomaly feed.** On the symbol page, a feed of
-  notable recent events for that one ticker: large changes in its
+- [x] **Phase 16: Per-ticker anomaly feed.** Complete and verified
+  locally 2026-05-23; not yet deployed. See the Phase 16 Done entry in
+  Status and the decisions log. (Picked as the next backlog phase and
+  scoped 2026-05-23 — see decisions log.) On the symbol page, a
+  feed of notable recent events for that one ticker: large changes in its
   fundamentals, leadership changes, and unusually large price moves or
   drawdowns. Builds on Phases 7 and 14.
+  Pieces:
+  (1) **Three compute helpers in `compute.rs`**, each pure over data
+  already stored. `price_anomalies(closes, dates)` walks the trailing 1y
+  bars, computes a trailing 90-day rolling standard deviation of daily
+  returns, and emits an event when `|move| > 5%` and `|move| > 2σ`.
+  `drawdown_events(closes, dates)` flags each day a stock prints a new
+  6-month low (no event while still in drawdown, to avoid a daily stream
+  in a long slide). `fundamentals_events(facts)` walks the latest two
+  annual figures for revenue and net income and emits an event when the
+  YoY change exceeds ±25%.
+  (2) **Leadership events** ride the 8-K item-5.02 SELECT Phase 14 already
+  runs in `build_leadership` — `routes/symbols.rs` reads them once,
+  reshapes each as an `AnomalyEvent` with the existing EDGAR url + a "8-K
+  item 5.02 leadership change" headline. No new SQL.
+  (3) **`AnomalyView` aggregator** in `routes/symbols.rs`: merge the four
+  feeds, sort newest-first, cap at ~20 over the past 1y. Stocks get all
+  four; ETFs / indexes / futures get only piece (1) + (2-price-side).
+  (4) **Template section in `templates/pages/symbol.html`** between
+  Leadership and Recent SEC filings. One row per event: date glyph
+  headline. Match the Phase 14 lead-changes feed visually so the page
+  reads consistently. Section hides cleanly on an empty feed.
+  Pure derivation: no schema change, no new network calls, no new
+  `EndpointGuard` row.
 - [ ] **Phase 17: Stock health read.** Synthesize fundamentals, price
   trajectory, leadership, and industry context into a single non-advice
   "health" read: is this a healthy company (capable leadership familiar with
@@ -2757,6 +2857,51 @@ finance/
     2022 period and the backtest honestly recording the -19.8%
     exit). Home page renders all four columns including "Next
     quarter" with the new description text. No deploy yet.
+- **2026-05-23 — Phase 16 picked next; design Q&A settled four points.**
+  Asked which of the remaining backlog phases (13, 15, 16, 17, 19, 25, 27,
+  29) to build next; the user picked Phase 16 (per-ticker anomaly feed).
+  Four design questions then resolved the scope:
+  - **Event types** (multi-select, all chosen): large daily price moves;
+    drawdowns / new multi-month lows; large YoY fundamentals changes;
+    leadership changes from 8-K item 5.02 (already filtered in
+    `filings.items` by Phase 14).
+  - **Coverage**: all instruments. Stocks get all four event types; ETFs
+    and indexes and futures get price-only events (the chart's own move is
+    still legible, but a dated bullet list of "−7.2% on 2024-08-05"
+    captions stand-alone reading). Fundamentals + leadership events stay
+    stocks-only by construction.
+  - **Placement**: between Leadership and Recent SEC filings — sits with
+    the other event-shaped sections.
+  - **Item style**: one line per event — date · glyph · headline, newest
+    first, capped to ~20 over the past year. Matches the Phase 14
+    leadership-changes feed.
+  Two follow-ups settled with sensible defaults (user picked the
+  recommended option on both): window is past 1 year; thresholds are
+  selective (price |move| > 2σ vs trailing 90-day vol AND > 5%;
+  fundamentals ±25% YoY on revenue or net income; drawdown is a new
+  6-month low). Pure derivation from data already stored (`daily_prices`,
+  `fundamentals`, `filings.items`): no new network calls, no schema
+  change, no new `EndpointGuard` row. The section hides itself when a
+  symbol has no qualifying events (the same way the leadership section
+  hides on an unsynced stock).
+- **2026-05-23 — Phase 16 per-ticker anomaly feed shipped (local).** Two
+  pure-compute helpers (`price_anomalies`, `drawdown_anomalies`) plus a
+  `models::fundamentals_anomalies` walker plus a small leadership-filings
+  SELECT, merged in `routes::symbols::build_anomalies` into one feed
+  capped at 20 over the past year. A new section between Leadership and
+  the ETF block (which precedes Filings on a stock page) renders the feed
+  in a one-line-per-event Paper-Ledger row, with a leadership row
+  linking to EDGAR. The two new compute helpers carry four unit tests
+  (spike-on-5%-AND-2σ, ignore-1%-at-2σ, fresh-6mo-low-flags,
+  slide-dedupes-to-≤5). Verified against the dev DB: `/s/NVDA` rendered
+  10 events in a balanced mix (+5.8%/+5.6%/+7.9%/+5.8% one-day moves,
+  -5.5% downside move, -19% new 6-month low, FY2026 revenue + net
+  income +65% YoY); `/s/AAPL` rendered 5 leadership-change rows only
+  (a fair read for a low-vol single-digit-growth name); `/s/SPY` (ETF)
+  + `/s/^SPX` (index) each rendered 1 drawdown event; `/s/GC=F` (future,
+  no `daily_prices`) hid the section entirely. Desktop (1280px) and
+  phone (390px) both rendered with no horizontal overflow and zero
+  console errors. No deploy yet.
 
 ---
 

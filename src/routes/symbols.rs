@@ -930,6 +930,98 @@ async fn build_leadership(pool: &sqlx::SqlitePool, ticker: &str, synced: bool) -
     }
 }
 
+// ── per-ticker anomaly feed (Phase 16) ────────────────────────────────────
+
+/// One row in the anomaly feed, as shaped for the template. Wraps
+/// `compute::AnomalyEvent` with no extra fields — re-exposed so the template
+/// can iterate a single concrete type regardless of which compute helper
+/// (or the leadership-filings SELECT below) produced the row.
+type AnomalyRow = compute::AnomalyEvent;
+
+#[derive(Serialize)]
+struct AnomalyView {
+    events: Vec<AnomalyRow>,
+}
+
+/// Display cap on the merged feed. Severity-rank-then-newest the four
+/// streams together, then trim to this many before rendering.
+const ANOMALY_MAX_EVENTS: usize = 20;
+/// How far back the feed reaches.
+const ANOMALY_WINDOW_DAYS: i64 = 365;
+
+/// Build the symbol-page anomaly feed: large price moves and new 6-month
+/// lows for every symbol with a daily history; YoY fundamentals jumps and
+/// 8-K item-5.02 leadership changes additionally for stocks. The feed is
+/// trimmed to the past year and capped at [`ANOMALY_MAX_EVENTS`]. Returns
+/// `None` when no events qualify, so the template hides the section.
+async fn build_anomalies(
+    pool: &sqlx::SqlitePool,
+    ticker: &str,
+    kind: &str,
+    bars_newest_first: &[(String, f64, f64, f64, f64, i64)],
+    facts: &[models::FundFact],
+) -> Option<AnomalyView> {
+    let today = chrono::Utc::now().date_naive();
+    let cutoff_date = today - chrono::Duration::days(ANOMALY_WINDOW_DAYS);
+    let cutoff = cutoff_date.format("%Y-%m-%d").to_string();
+
+    // Price + drawdown events want oldest-first closes paired with dates.
+    let oldest_first: Vec<(String, f64)> = bars_newest_first
+        .iter()
+        .rev()
+        .map(|(d, _, _, _, c, _)| (d.clone(), *c))
+        .collect();
+    let closes: Vec<f64> = oldest_first.iter().map(|(_, c)| *c).collect();
+    let dates_refs: Vec<&str> = oldest_first.iter().map(|(d, _)| d.as_str()).collect();
+
+    let mut events: Vec<AnomalyRow> = Vec::new();
+    events.extend(compute::price_anomalies(&closes, &dates_refs));
+    events.extend(compute::drawdown_anomalies(&closes, &dates_refs));
+
+    // Fundamentals events and leadership events are stocks-only.
+    if kind == "stock" {
+        events.extend(models::fundamentals_anomalies(facts));
+        let lead_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT filed_at, url FROM filings \
+             WHERE ticker = ? AND form LIKE '8-K%' AND items LIKE '%5.02%' \
+               AND filed_at >= ? \
+             ORDER BY filed_at DESC, accession DESC",
+        )
+        .bind(ticker)
+        .bind(&cutoff)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        for (filed_at, url) in lead_rows {
+            events.push(AnomalyRow {
+                date: filed_at,
+                glyph: "leader",
+                headline: "Officer or director change reported in an 8-K".to_string(),
+                url: Some(url),
+                // Hand-picked: above a typical 5-8% one-day move so a leadership
+                // change is not crowded off the list, below a major drawdown.
+                severity: 7.5,
+            });
+        }
+    }
+
+    // Trim to the past year window.
+    events.retain(|e| e.date.as_str() >= cutoff.as_str());
+    if events.is_empty() {
+        return None;
+    }
+    // Newest first; ties broken by severity so the bigger event of the same
+    // day reads first. Then cap.
+    events.sort_by(|a, b| {
+        b.date
+            .cmp(&a.date)
+            .then_with(|| b.severity.partial_cmp(&a.severity).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    events.truncate(ANOMALY_MAX_EVENTS);
+
+    Some(AnomalyView { events })
+}
+
 async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) -> Response {
     let ticker = ticker.to_uppercase();
 
@@ -1018,15 +1110,22 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         .map(|q| q.price)
         .or_else(|| stats.as_ref().map(|s| s.close));
 
-    let fundamentals = if is_stock {
-        let facts: Vec<models::FundFact> = sqlx::query_as(
+    // Stock fundamentals are loaded once and shared by the ratio cards
+    // (`build_fundamentals`) and the anomaly feed's YoY detector
+    // (`build_anomalies` via `models::fundamentals_anomalies`).
+    let facts: Vec<models::FundFact> = if is_stock {
+        sqlx::query_as(
             "SELECT metric, period, fiscal_year, fiscal_qtr, value, period_end \
              FROM fundamentals WHERE ticker = ?",
         )
         .bind(&ticker)
         .fetch_all(&state.pool)
         .await
-        .unwrap_or_default();
+        .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let fundamentals = if is_stock {
         build_fundamentals(&facts, price)
     } else {
         None
@@ -1159,6 +1258,13 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         None
     };
 
+    // Per-ticker anomaly feed (Phase 16). All instruments get price-based
+    // events (large daily moves, new 6-month lows); stocks additionally get
+    // YoY fundamentals jumps and 8-K item-5.02 leadership changes. Returns
+    // `None` when the symbol has no qualifying events in the past year so
+    // the template hides the section.
+    let anomalies = build_anomalies(&state.pool, &ticker, &symbol.kind, &bars, &facts).await;
+
     let extra = minijinja::context! {
         title => ticker,
         symbol => symbol,
@@ -1171,6 +1277,7 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         returns => returns,
         leadership => leadership,
         dividends => dividends,
+        anomalies => anomalies,
         filings => filings,
     };
     render(&state, "pages/symbol.html", &format!("/s/{ticker}"), extra)

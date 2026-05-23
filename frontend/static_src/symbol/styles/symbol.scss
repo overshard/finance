@@ -812,6 +812,74 @@
   color: var(--ink-faint);
 }
 
+/* ---------- per-ticker anomaly feed (Phase 16) ---------- */
+.anomalies {
+  padding: 14px 16px;
+}
+
+.anomaly-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.anomaly {
+  border-top: 1px solid var(--rule);
+}
+
+.anomaly:first-child {
+  border-top: none;
+}
+
+.anomaly__link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+a.anomaly__link:hover .anomaly__body {
+  color: var(--ink-dim);
+}
+
+.anomaly__date {
+  flex: none;
+  min-width: 7ch;
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+}
+
+.anomaly__glyph {
+  flex: none;
+  width: 1.4em;
+  text-align: center;
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--ink-faint);
+}
+
+.anomaly__glyph--up        { color: var(--up); }
+.anomaly__glyph--down      { color: var(--down); }
+.anomaly__glyph--drawdown  { color: var(--down); }
+.anomaly__glyph--fund-up   { color: var(--up); }
+.anomaly__glyph--fund-down { color: var(--down); }
+.anomaly__glyph--leader    { color: var(--ink-dim); }
+
+.anomaly__body {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.88rem;
+}
+
+.anomaly-list__src {
+  margin: 12px 0 0;
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
 /* ---------- ETF fund profile ---------- */
 .fund {
   padding: 16px 18px;
