@@ -32,12 +32,13 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-23_
 
-**In-flight polish (not yet deployed, 2026-05-23):** stock health moved
-from its dedicated section to a circular % donut badge in the symbol-page
-header (popover carries the three sub-readings); Notable-recent-events
-list rebuilt on a 4-col grid with polarity-tinted rows; `^VIX` moved off
-the Indexes row into a renamed "Risk & commodities" section so Indexes
-is a clean 5-up. See the Decisions log entry for the full breakdown.
+**Polish pass deployed 2026-05-23 (commit `cd4c3e7`):** stock health
+moved from its dedicated section to a circular % donut badge in the
+symbol-page header (popover carries the three sub-readings);
+Notable-recent-events list rebuilt on a 4-col grid with polarity-tinted
+rows; `^VIX` moved off the Indexes row into a renamed
+"Risk & commodities" section so Indexes is a clean 5-up. See the
+Decisions log entry for the full breakdown.
 
 **Current phase: Phase 31 (full UI polish pass) complete, verified,
 and deployed to production 2026-05-23 (commit `d53651e`).** Driven by
