@@ -33,7 +33,7 @@ and resume cleanly from this file alone, keeping token use low.
 _Last updated: 2026-05-23_
 
 **Current phase: Phase 25 (earnings dates) complete, verified
-locally — not yet deployed.** A new Earnings section on the stock
+and deployed to production 2026-05-23 (commit `aac84ae`).** A new Earnings section on the stock
 symbol page between Key stats and Stock health, plus small ink-dot
 pips on the candlestick chart at each past earnings date. Two surfaces:
 (1) the page section carries Most recent + Next expected as a paired
@@ -145,8 +145,15 @@ backlog as Phase 19. The `watchlists` / `watchlist_items` tables stay in the
 schema, unused for now.
 
 **Done**
-- **Phase 25 earnings dates.** Complete, verified locally — not yet
-  deployed. Past earnings dates come for free from the 8-K item-2.02
+- **Phase 25 earnings dates.** Complete, verified, and deployed to
+  production 2026-05-23 (commit `aac84ae`). On-deploy state: the new
+  `earnings_calendar` job populates `next_earnings_at` on its first
+  Yahoo sweep (one request per stock, monthly). Past dates depend on
+  the Phase 14 `items` column being populated on each stock's
+  `filings` rows — Phase 14 only deployed 2026-05-22, so the items
+  backfill rolls in week-by-week as each stock hits its 7-day SEC
+  staleness window. The symbol page hides the Earnings section
+  cleanly until both pieces have landed for a stock. Past earnings dates come for free from the 8-K item-2.02
   filings Phase 14 already stores in `filings.items`; the next-expected
   date is fetched fresh from Yahoo's `quoteSummary.calendarEvents`
   module with a cadence-estimate fallback when Yahoo carries nothing.
@@ -1315,7 +1322,8 @@ vibe-coding side note mid-Phase-28; see the decisions log.
 
 Phase 30 (top picks + backtest) is complete, verified, and deployed to
 production 2026-05-23 (commit `8ea9048`). Phase 25 (earnings dates) is
-complete and verified locally 2026-05-23 — not yet deployed. Remaining
+complete, verified, and deployed to production 2026-05-23 (commit
+`aac84ae`). Remaining
 post-MVP work is the loose-ordered Phase 13, 15, 19, 27, 29 backlog. Phase 26 (dividend payouts)
 is complete and deployed (commit `7608b06`); the MVP plus Phase 14,
 Phase 18, Phase 20, Phase 21, Phase 23 + 24, Phase 22 and Phase 26 are all
@@ -3183,7 +3191,8 @@ finance/
   their window. The cadence-estimate path was exercised on the local
   dev box (Yahoo blanket-429s the WSL2 IP), and the page rendered
   exactly as expected; Yahoo's calendar will land on the production
-  alpine box on the next sweep after deploy. Not yet deployed.
+  alpine box on the next sweep after deploy. Deployed to production
+  2026-05-23 via `git push server master` (commit `aac84ae`).
 - **2026-05-23 — Phase 17 stock health read shipped (local).** Pure
   derivation on top of data the app already carries, no schema change
   and no new network calls. The composite is fundamentals 0.55 +
