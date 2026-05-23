@@ -32,8 +32,8 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-23_
 
-**Current phase: Phase 30 (top picks + backtest) complete and verified
-locally 2026-05-23; not yet deployed.** Home page now carries a
+**Current phase: Phase 30 (top picks + backtest) complete, verified, and
+deployed to production 2026-05-23 (commit `8ea9048`).** Home page now carries a
 "Top picks" panel — four columns (Day / Week / Month / Year), 5 ranked
 stocks each, every row a verdict badge over a headline figure. A new
 `/backtest` page replays the picker over historical prices and shows
@@ -873,8 +873,8 @@ schema, unused for now.
     history: 10y +320.6% / +15.45%/yr, since-inception (from the
     Feb 2005 first stored bar) +692.8% / +10.24%/yr.
 
-- **Phase 30 top picks + backtest.** Complete and verified locally
-  2026-05-23 — not yet deployed. A home-page "Top picks" panel of 5
+- **Phase 30 top picks + backtest.** Complete, verified, and deployed
+  to production 2026-05-23 (commit `8ea9048`). A home-page "Top picks" panel of 5
   forecast-horizon picks per horizon (Day / Week / Month / Year), and a
   new `/backtest` page that replays the picker over historical prices.
   Stocks-only across all four horizons per the user's design call; one
@@ -1040,10 +1040,9 @@ distributions ride the same code path. Phase 29 (issuer-direct ETF data
 feeds: iShares/BlackRock, Vanguard, ...) was captured 2026-05-22 from a
 vibe-coding side note mid-Phase-28; see the decisions log.
 
-Phase 30 (top picks + backtest) is complete and verified locally
-2026-05-23 — not yet deployed; ships on the next `git push server master`.
-After Phase 30 deploys, remaining post-MVP work is the loose-ordered
-Phase 13, 15, 16, 17, 19, 25, 27, 29 backlog. Phase 26 (dividend payouts)
+Phase 30 (top picks + backtest) is complete, verified, and deployed to
+production 2026-05-23 (commit `8ea9048`). Remaining post-MVP work is
+the loose-ordered Phase 13, 15, 16, 17, 19, 25, 27, 29 backlog. Phase 26 (dividend payouts)
 is complete and deployed (commit `7608b06`); the MVP plus Phase 14,
 Phase 18, Phase 20, Phase 21, Phase 23 + 24, Phase 22 and Phase 26 are all
 live at https://finance.bythewood.me. There is still no GitHub repo for
