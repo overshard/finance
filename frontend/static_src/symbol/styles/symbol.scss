@@ -1,92 +1,122 @@
 @use "../../base/styles/variables" as *;
 @use "../../base/styles/mixins" as *;
 
-/* ---------- header ---------- */
+/* ---------- header ----------
+   At desktop the header splits into a 2-column grid: the identity
+   (ticker + name + tag chips) on the left, the live quote block on the
+   right. At phone they stack. The double-rule under the header echoes
+   the new .section-title ledger underline so the page reads as a single
+   accounting register. */
 .sym-head {
-  margin: 6px 0 20px;
-  padding-bottom: 16px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--sp-3) var(--sp-6);
+  margin: var(--sp-1) 0 var(--sp-5);
+  padding-bottom: var(--sp-4);
   border-bottom: 1px solid var(--rule-strong);
+  box-shadow: 0 3px 0 -2px var(--rule);
 }
 
 .sym-head__id {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .sym-head__ticker {
-  font-size: 1.85rem;
+  @include mono;
+  font-weight: 700;
+  font-size: var(--fs-2xl);
+  letter-spacing: -0.02em;
 }
 
 .sym-head__tag {
   @include eyebrow;
-  font-size: 0.58rem;
+  font-size: var(--eye-chip);
+  color: var(--ink-dim);
   padding: 3px 8px;
   border: 1px solid var(--rule-strong);
   border-radius: 4px;
 }
 
 // Phase 15: sector / industry tag, linked to its /industries page. Same shape
-// as a plain `.sym-head__tag`, with the link colour subdued so it does not
-// shout among the kind / exchange tags beside it.
+// as a plain `.sym-head__tag`, with a hover ramp that lifts to ink.
 .sym-head__tag--link {
   color: var(--ink-dim);
   text-decoration: none;
-  transition: color 0.1s, border-color 0.1s;
+  transition: color 0.1s, border-color 0.1s, background 0.1s;
 
   &:hover {
     color: var(--ink);
     border-color: var(--ink);
+    background: var(--well);
   }
 }
 
 .sym-head__name {
+  grid-column: 1 / -1;
   color: var(--ink-dim);
-  margin-top: 4px;
+  font-size: var(--fs-md);
+  margin-top: -2px;
 }
 
 .sym-head__quote {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: 6px 14px;
-  margin-top: 14px;
+  gap: 4px var(--sp-3);
+  grid-column: 1 / -1;
 }
 
 .sym-head__price {
-  font-size: 1.9rem;
+  @include mono;
+  font-size: var(--fs-2xl);
   font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 .sym-head__chg {
-  font-size: 1rem;
-  font-weight: 600;
+  @include mono;
+  font-size: var(--fs-md);
+  font-weight: 700;
 }
 
 .sym-head__asof {
-  @include eyebrow;
-  font-size: 0.62rem;
+  font-size: var(--fs-xs);
+  color: var(--ink-faint);
+  letter-spacing: 0;
+  text-transform: none;
+  /* a hairline divider before the asof so the "At close · quoted Nov 14"
+     reads as a separate annotation, not part of the % change figure */
+  padding-left: var(--sp-3);
+  border-left: 1px solid var(--rule);
+  margin-left: 2px;
 }
 
 /* ---------- chart panel ---------- */
 .chart-panel {
-  padding: 14px;
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
 }
 
-/* range buttons on the left, the range-change chip pushed to the right */
+/* Phase 31: a stricter two-row toolbar. Row 1 is the time-range bar with
+   the range-summary chip on the right; row 2 is the indicator toggle row
+   on a quieter hairline. Splitting them stops the crammed-into-one-row
+   look that earlier crowded the chart-bar at narrow widths. */
 .chart-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 16px;
-  margin-bottom: 10px;
+  justify-content: space-between;
+  gap: var(--sp-2) var(--sp-4);
+  margin-bottom: var(--sp-2);
 }
 
 .range-bar {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--sp-1);
 }
 
 /* the range-change chip: % and absolute move over the whole visible range */
@@ -401,62 +431,57 @@
    semantic colour through a left border and a coloured value, keeping
    the panel readable at a glance without overwhelming the page. */
 .health {
-  padding: 14px 16px;
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
 }
 
 .health__overall {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding-bottom: 12px;
-  margin-bottom: 10px;
+  gap: var(--sp-3);
+  padding-bottom: var(--sp-3);
+  margin-bottom: var(--sp-3);
   border-bottom: 1px solid var(--rule);
 }
 
 /* the overall verdict reads larger than the inline app-wide pill */
 .health__overall .vbadge {
-  font-size: 0.74rem;
+  font-size: var(--eye-lbl);
   padding: 7px 14px;
 }
 
 .health__overall-text {
   max-width: 70ch;
   color: var(--ink-dim);
-  font-size: 0.92rem;
+  font-size: var(--fs-md);
 }
 
 .health__breakdown {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  display: grid;
+  gap: var(--sp-2);
 }
 
+/* Phase 31: the three health sub-rows now stack as fluid two-column rows:
+   `label | value` on a single line, with the note on a second line. That
+   was the phone fallback before — the desktop "label | value | note"
+   layout fell apart for the longer notes ("X reported officer or director
+   changes in the last 2 years") which wrapped into a tight third column
+   and clipped on the right. The two-line shape is the same at every
+   width; the left border and coloured value carry the semantic read. */
 .health-row {
   display: grid;
-  grid-template-columns: 7.5rem auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: baseline;
-  gap: 14px;
-  padding: 8px 12px;
+  gap: 2px var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
   border-left: 3px solid var(--rule);
   background: var(--well);
   border-radius: var(--radius-sm);
 }
 
-.health-row--good {
-  border-left-color: var(--up);
-}
-
-.health-row--ok {
-  border-left-color: var(--warn);
-}
-
-.health-row--bad {
-  border-left-color: var(--down);
-}
-
-.health-row--unknown {
-  border-left-color: var(--ink-faint);
-}
+.health-row--good     { border-left-color: var(--up); }
+.health-row--ok       { border-left-color: var(--warn); }
+.health-row--bad      { border-left-color: var(--down); }
+.health-row--unknown  { border-left-color: var(--ink-faint); }
 
 .health-row__label {
   @include eyebrow;
@@ -464,40 +489,21 @@
 }
 
 .health-row__value {
+  @include mono;
   font-weight: 700;
-  font-size: 0.95rem;
+  font-size: var(--fs-md);
 }
 
-.health-row--good .health-row__value {
-  color: var(--up);
-}
-
-.health-row--ok .health-row__value {
-  color: var(--warn);
-}
-
-.health-row--bad .health-row__value {
-  color: var(--down);
-}
-
-.health-row--unknown .health-row__value {
-  color: var(--ink-faint);
-}
+.health-row--good .health-row__value     { color: var(--up); }
+.health-row--ok .health-row__value       { color: var(--warn); }
+.health-row--bad .health-row__value      { color: var(--down); }
+.health-row--unknown .health-row__value  { color: var(--ink-faint); }
 
 .health-row__note {
-  font-size: 0.8rem;
+  grid-column: 1 / -1;
+  font-size: var(--fs-xs);
   color: var(--ink-faint);
-}
-
-@media (max-width: 480px) {
-  .health-row {
-    grid-template-columns: 1fr auto;
-    row-gap: 4px;
-  }
-
-  .health-row__note {
-    grid-column: 1 / -1;
-  }
+  line-height: 1.45;
 }
 
 /* ---------- fundamentals: graded ratio cards ---------- */
@@ -530,22 +536,22 @@
 
 .ratios {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(258px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(248px, 1fr));
+  gap: var(--sp-3);
 }
 
 .ratio {
   @include card;
   display: flex;
   flex-direction: column;
-  padding: 14px 16px;
+  padding: var(--sp-3) var(--sp-4) var(--sp-3);
 }
 
 .ratio__head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--sp-2);
 }
 
 .ratio__label {
@@ -557,66 +563,48 @@
 .ratio__badge {
   @include eyebrow;
   flex: none;
-  padding: 3px 8px;
+  padding: 2px 8px;
   border-radius: 999px;
-  font-size: 0.54rem;
+  font-size: var(--eye-chip);
 }
 
-.ratio__badge--good {
-  color: var(--up);
-  background: var(--up-soft);
-}
-
-.ratio__badge--ok {
-  color: var(--warn);
-  background: var(--warn-soft);
-}
-
-.ratio__badge--bad {
-  color: var(--down);
-  background: var(--down-soft);
-}
-
-.ratio__badge--unknown {
-  color: var(--ink-faint);
-  background: var(--well);
-}
+.ratio__badge--good     { color: var(--up);        background: var(--up-soft); }
+.ratio__badge--ok       { color: var(--warn);      background: var(--warn-soft); }
+.ratio__badge--bad      { color: var(--down);      background: var(--down-soft); }
+.ratio__badge--unknown  { color: var(--ink-faint); background: var(--well); }
 
 /* the figure itself, colored to match the grade */
 .ratio__value {
-  font-size: 1.7rem;
+  @include mono;
+  font-size: var(--fs-xl);
   font-weight: 700;
-  margin: 9px 0 3px;
+  letter-spacing: -0.02em;
+  margin: var(--sp-2) 0 2px;
+  line-height: 1.05;
 }
 
-.ratio--good .ratio__value {
-  color: var(--up);
-}
-
-.ratio--ok .ratio__value {
-  color: var(--warn);
-}
-
-.ratio--bad .ratio__value {
-  color: var(--down);
-}
-
-.ratio--unknown .ratio__value {
-  color: var(--ink-faint);
-}
+.ratio--good .ratio__value     { color: var(--up); }
+.ratio--ok .ratio__value       { color: var(--warn); }
+.ratio--bad .ratio__value      { color: var(--down); }
+.ratio--unknown .ratio__value  { color: var(--ink-faint); }
 
 .ratio__reading {
-  font-size: 0.83rem;
+  font-size: var(--fs-xs);
   color: var(--ink-dim);
+  line-height: 1.45;
 }
 
-/* the static "how to read it" note, set off below a hairline */
+/* the static "how to read it" note, set off below a hairline. Phase 31
+   muted it further (smaller + tighter) — 9 ratios × the old explainer
+   block dominated the page; the value + verdict + reading carry the
+   primary signal and the explainer reads as a footnote. */
 .ratio__explain {
-  margin-top: 9px;
-  padding-top: 9px;
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-2);
   border-top: 1px solid var(--rule);
-  font-size: 0.74rem;
+  font-size: var(--fs-2xs);
   color: var(--ink-faint);
+  line-height: 1.4;
 }
 
 /* shown while the SEC sweep has not yet reached this symbol */
@@ -759,9 +747,13 @@
   content: "\25BE";
 }
 
-/* ---------- recent SEC filings ---------- */
+/* ---------- recent SEC filings ----------
+   The .filing / .lead-change / .anomaly rows all share the shape
+   "left-anchored tag · body · meta · external icon". The styles here
+   are the canonical version; .lead-change and .anomaly only override
+   what differs from a filing row. */
 .filings {
-  padding: 2px 16px;
+  padding: 2px var(--sp-4);
 }
 
 .filing-list {
@@ -781,24 +773,28 @@
 .filing__link {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 11px 0;
+  gap: var(--sp-3);
+  padding: 10px 0;
   color: var(--ink);
+  transition: color 0.1s;
 }
 
 .filing__link:hover {
-  color: var(--ink);
+  color: var(--ink-dim);
 }
 
 .filing__form {
+  @include mono;
   flex: none;
   min-width: 7ch;
   text-align: center;
-  padding: 5px 7px;
+  padding: 4px 7px;
   border: 1px solid var(--rule-strong);
   border-radius: 4px;
-  font-size: 0.71rem;
+  font-size: var(--fs-2xs);
   font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ink);
 }
 
 .filing__body {
@@ -810,29 +806,31 @@
 }
 
 .filing__desc {
-  font-size: 0.88rem;
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 
-.filing__link:hover .filing__desc {
-  color: var(--ink-dim);
-}
-
 .filing__meta {
-  font-size: 0.74rem;
+  font-size: var(--fs-xs);
   color: var(--ink-faint);
 }
 
 .filing__ext {
   flex: none;
-  width: 15px;
-  height: 15px;
+  width: 14px;
+  height: 14px;
   color: var(--ink-faint);
+  transition: color 0.1s, transform 0.1s;
+}
+
+.filing__link:hover .filing__ext {
+  color: var(--ink-dim);
+  transform: translate(2px, -2px);
 }
 
 /* ---------- leadership: roster + change feed ---------- */
 .leadership {
-  padding: 14px 16px;
+  padding: var(--sp-3) var(--sp-4);
 }
 
 .roster {
@@ -846,8 +844,8 @@
   flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
-  gap: 2px 16px;
-  padding: 9px 0;
+  gap: 2px var(--sp-4);
+  padding: var(--sp-2) 0;
   border-top: 1px solid var(--rule);
 }
 
@@ -856,36 +854,40 @@
 }
 
 .roster__name {
-  font-size: 0.9rem;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 
 .roster__role {
-  font-size: 0.8rem;
+  font-size: var(--fs-xs);
   color: var(--ink-dim);
   text-align: right;
 }
 
 /* the provenance note, set off below a hairline like .ratio__explain */
 .roster__src {
-  margin-top: 12px;
-  padding-top: 11px;
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
   border-top: 1px solid var(--rule);
-  font-size: 0.74rem;
+  font-size: var(--fs-xs);
   color: var(--ink-faint);
+  line-height: 1.45;
 }
 
 /* recent officer/director changes, from 8-K item 5.02 */
 .lead-changes {
-  margin-top: 16px;
-  padding-top: 14px;
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-3);
   border-top: 1px solid var(--rule-strong);
 }
 
 .lead-changes__title {
-  @include eyebrow;
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: var(--fs-md);
+  letter-spacing: -0.01em;
   color: var(--ink);
-  margin-bottom: 2px;
+  margin-bottom: var(--sp-1);
 }
 
 .lead-changes__list {
@@ -905,9 +907,14 @@
 .lead-change__link {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 11px 0;
+  gap: var(--sp-3);
+  padding: 10px 0;
   color: var(--ink);
+  transition: color 0.1s;
+}
+
+.lead-change__link:hover {
+  color: var(--ink-dim);
 }
 
 .lead-change__body {
@@ -919,22 +926,23 @@
 }
 
 .lead-change__desc {
-  font-size: 0.88rem;
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 
-.lead-change__link:hover .lead-change__desc {
-  color: var(--ink-dim);
+.lead-change__meta {
+  font-size: var(--fs-xs);
+  color: var(--ink-faint);
 }
 
-.lead-change__meta {
-  font-size: 0.74rem;
-  color: var(--ink-faint);
+.lead-change__link:hover .filing__ext {
+  color: var(--ink-dim);
+  transform: translate(2px, -2px);
 }
 
 /* ---------- per-ticker anomaly feed (Phase 16) ---------- */
 .anomalies {
-  padding: 14px 16px;
+  padding: var(--sp-3) var(--sp-4);
 }
 
 .anomaly-list {
@@ -954,10 +962,11 @@
 .anomaly__link {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 9px 0;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
   color: var(--ink);
   text-decoration: none;
+  transition: color 0.1s;
 }
 
 a.anomaly__link:hover .anomaly__body {
@@ -965,9 +974,10 @@ a.anomaly__link:hover .anomaly__body {
 }
 
 .anomaly__date {
+  @include mono;
   flex: none;
   min-width: 7ch;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   color: var(--ink-faint);
 }
 
@@ -976,7 +986,7 @@ a.anomaly__link:hover .anomaly__body {
   width: 1.4em;
   text-align: center;
   font-weight: 700;
-  font-size: 0.95rem;
+  font-size: var(--fs-md);
   color: var(--ink-faint);
 }
 
@@ -990,14 +1000,18 @@ a.anomaly__link:hover .anomaly__body {
 .anomaly__body {
   flex: 1;
   min-width: 0;
-  font-size: 0.88rem;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
 }
 
 .anomaly-list__src {
-  margin: 12px 0 0;
-  font-size: 0.74rem;
+  margin: var(--sp-3) 0 0;
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--rule);
+  font-size: var(--fs-xs);
   color: var(--ink-faint);
   font-style: italic;
+  line-height: 1.45;
 }
 
 /* ---------- ETF fund profile ---------- */
@@ -1130,13 +1144,25 @@ a.anomaly__link:hover .anomaly__body {
 
 /* ---------- top holdings ---------- */
 .holdings {
-  padding: 2px 16px;
+  padding: 2px var(--sp-4);
 }
 
+/* Phase 31: 2-up on desktop so a 25-row holdings list doesn't reach off
+   the page when the panel has the width to spare. The CSS columns layout
+   keeps the existing single-list markup intact (no template change) and
+   preserves reading order down-then-across. The break-inside avoids a
+   row splitting across a column boundary. */
 .hold-list {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+@media (min-width: $bp-md) {
+  .hold-list {
+    columns: 2;
+    column-gap: var(--sp-6);
+  }
 }
 
 /* each row carries a faint left-anchored fill sized to the holding's weight,
@@ -1146,13 +1172,22 @@ a.anomaly__link:hover .anomaly__body {
   display: grid;
   grid-template-columns: 2.6ch 1fr auto auto;
   align-items: baseline;
-  gap: 2px 12px;
-  padding: 10px 7px;
+  gap: 2px var(--sp-3);
+  padding: 9px 7px;
   border-top: 1px solid var(--rule);
+  break-inside: avoid;
 }
 
 .hold:first-child {
   border-top: none;
+}
+
+/* with the 2-column layout the visual "first child" rule needs to apply
+   to whichever row starts each column — easiest via CSS column-rule */
+@media (min-width: $bp-md) {
+  .hold-list {
+    column-rule: 1px solid var(--rule);
+  }
 }
 
 .hold__fill {
@@ -1243,9 +1278,9 @@ a.anomaly__link:hover .anomaly__body {
   background: var(--well);
   color: var(--ink-dim);
 
-  &--good { color: var(--ok); background: rgba(47, 125, 79, 0.10); }
-  &--ok   { color: var(--warn); background: rgba(178, 121, 50, 0.12); }
-  &--bad  { color: var(--bad); background: rgba(178, 59, 50, 0.10); }
+  &--good { color: var(--up); background: var(--up-soft); }
+  &--ok   { color: var(--warn); background: var(--warn-soft); }
+  &--bad  { color: var(--down); background: var(--down-soft); }
 }
 
 .fund-about__summary {
@@ -1302,8 +1337,8 @@ a.anomaly__link:hover .anomaly__body {
   border-bottom: 1px solid var(--rule-strong);
 }
 
-.ret-cell--up   { color: var(--ok); }
-.ret-cell--down { color: var(--bad); }
+.ret-cell--up   { color: var(--up); }
+.ret-cell--down { color: var(--down); }
 .ret-cell--ann  { color: var(--ink-dim); font-weight: 500; }
 
 .ret-panel__src {

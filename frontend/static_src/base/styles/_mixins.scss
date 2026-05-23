@@ -34,7 +34,64 @@
 @mixin eyebrow {
   text-transform: uppercase;
   letter-spacing: 0.13em;
-  font-size: 0.66rem;
+  font-size: var(--eye-cap);
   font-weight: 600;
   color: var(--ink-faint);
+}
+
+// Shared ranked-row chrome (Phase 31). Used by `.mover`, `.standing`,
+// `.hrow`, `.industry-row`, and `.pick__row`. Each row is a grid with a
+// magnitude-tinted ::before sized by the route via the --bar custom
+// property; hover swaps in the well. The grid template is the row's job —
+// this mixin only owns the chrome.
+@mixin ranked-row {
+  position: relative;
+  display: grid;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 10px var(--sp-2);
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--rule);
+  transition: background 0.12s;
+
+  &::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: var(--bar, 0%);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    pointer-events: none;
+  }
+
+  > * {
+    position: relative; // ride above the magnitude tint
+  }
+
+  &:last-child {
+    border-bottom: 0;
+  }
+
+  &:hover {
+    color: var(--ink);
+    background: var(--well);
+  }
+}
+
+// Pill: a small rounded label used for badges and chips across the app.
+// Centralises the radius / padding / type so vbadge / ratio__badge / chip
+// stay in lockstep.
+@mixin pill($size: var(--eye-chip)) {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: $size;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+  white-space: nowrap;
 }

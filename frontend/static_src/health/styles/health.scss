@@ -72,16 +72,31 @@
   background: var(--well);
 }
 
-/* ---------- endpoints ---------- */
+/* ---------- endpoints ----------
+   Phase 31: an explicit 3-up at desktop, 2-up at tablet, 1-up at phone,
+   so the SEC / Stooq / Yahoo cards always read in a tidy grid rather
+   than the previous auto-fit which dropped to 1-up at narrow desktops. */
 .endpoint-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 12px;
+  grid-template-columns: 1fr;
+  gap: var(--sp-3);
+}
+
+@media (min-width: $bp-sm) {
+  .endpoint-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: $bp-md) {
+  .endpoint-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 .endpoint {
   @include card;
-  padding: 16px;
+  padding: var(--sp-4);
 }
 
 .endpoint__head,
@@ -214,10 +229,14 @@
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: 4px 10px;
-  padding: 9px 0;
+  gap: var(--sp-1) var(--sp-3);
+  padding: 8px 0;
   border-top: 1px solid var(--rule);
-  font-size: 0.84rem;
+  font-size: var(--fs-sm);
+  /* routine `ok` rows mute their entire body; the time, job, detail and
+     meta all drop a tier so the eye glides past them and lands on
+     anything coloured. */
+  color: var(--ink-faint);
 }
 
 .logrow:first-child {
@@ -225,13 +244,19 @@
 }
 
 .logrow__time {
+  @include mono;
   color: var(--ink-faint);
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
 }
 
 .logrow__job {
+  @include mono;
   min-width: 6ch;
   font-weight: 600;
+  color: var(--ink-dim);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .logrow__detail {
@@ -240,14 +265,20 @@
   color: var(--ink-dim);
 }
 
-/* a failed fetch should catch the eye down the tail */
+/* a failed fetch should catch the eye down the tail; the row's job pill
+   and detail both pop, the time/meta stay quiet. */
+.logrow--bad .logrow__job {
+  color: var(--down);
+}
+
 .logrow--bad .logrow__detail {
   color: var(--down);
+  font-weight: 500;
 }
 
 .logrow__meta {
   color: var(--ink-faint);
-  font-size: 0.76rem;
+  font-size: var(--fs-2xs);
 }
 
 /* ---------- empty states ---------- */

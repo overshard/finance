@@ -2,23 +2,26 @@
 @use "../../base/styles/mixins" as *;
 
 /* ---------- count beside the page heading ---------- */
+/* Phase 31: drop the eyebrow voice — the page-head already announces the
+   page, the count just needs to read as a quiet annotation. */
 .search-count {
-  @include eyebrow;
-  font-size: 0.6rem;
+  font-size: var(--fs-sm);
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
 }
 
 /* ---------- data-freshness caption above the results grid (Phase 22) ---------- */
 .results-asof {
-  margin: 4px 0 12px;
-  font-size: 0.76rem;
+  margin: var(--sp-1) 0 var(--sp-3);
+  font-size: var(--fs-xs);
   color: var(--ink-faint);
 }
 
 /* ---------- the on-page search field ---------- */
 .searchbar {
   display: flex;
-  gap: 10px;
-  margin: 14px 0 2px;
+  gap: var(--sp-2);
+  margin: var(--sp-3) 0 2px;
 }
 
 .searchbar input {
@@ -56,17 +59,15 @@
 }
 
 .kind-pill {
-  @include tap;
   display: inline-flex;
   align-items: center;
-  min-height: 0;
-  min-width: 0;
-  padding: 7px 14px;
+  padding: 8px 14px;
+  min-height: 36px;
   border-radius: 999px;
   border: 1px solid var(--rule-strong);
   background: var(--surface);
   color: var(--ink-dim);
-  font-size: 0.82rem;
+  font-size: var(--fs-sm);
   font-weight: 500;
   transition: border-color 0.14s, color 0.14s, background 0.14s;
 }

@@ -13,23 +13,17 @@
    ========================================================================== */
 
 .ind-blurb {
-  margin: 0 0 16px;
+  margin: var(--sp-3) 0 var(--sp-4);
   max-width: 78ch;
   color: var(--ink-dim);
-  font-size: 0.86rem;
-}
-
-.ind-empty {
-  padding: 60px 0;
-  text-align: center;
-  color: var(--ink-faint);
-  font-size: 0.9rem;
+  font-size: var(--fs-sm);
+  line-height: 1.55;
 }
 
 .ind-crumbs {
-  margin: -6px 0 14px;
+  margin: calc(var(--sp-2) * -1) 0 var(--sp-3);
   color: var(--ink-faint);
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
 
   a {
     color: var(--ink-dim);
@@ -37,6 +31,8 @@
   }
   a:hover {
     color: var(--ink);
+    text-decoration: underline;
+    text-underline-offset: 2px;
   }
 }
 
@@ -44,18 +40,19 @@
 .ind-table {
   width: 100%;
   border-collapse: collapse;
-  margin-bottom: 24px;
+  margin-bottom: var(--sp-6);
 
   th,
   td {
-    padding: 9px 10px;
+    padding: var(--sp-2) var(--sp-3);
     border-bottom: 1px solid var(--rule);
     text-align: right;
-    font-size: 0.86rem;
+    font-size: var(--fs-sm);
   }
 
   thead th {
     @include eyebrow;
+    font-size: var(--eye-cap);
     color: var(--ink-faint);
     text-align: right;
     border-bottom: 1px solid var(--rule-strong);

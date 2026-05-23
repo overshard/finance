@@ -18,19 +18,54 @@
   --rule:        rgba(33, 31, 26, 0.14); /* hairline */
   --rule-strong: rgba(33, 31, 26, 0.32); /* emphasised divider */
 
-  /* semantic — good / ok / bad */
+  /* semantic — good / ok / bad. The app's only colours apart from ink:
+     up = positive / strong, down = negative / weak, warn = caution.
+     `--ok` / `--bad` are aliases retained because earlier SCSS used them;
+     they map to up / down so anything still spelling those words renders
+     in the right hue. */
   --up:        #2f7d4f;
   --down:      #b23b32;
   --warn:      #b3801f;
   --up-soft:   rgba(47, 125, 79, 0.14);
   --down-soft: rgba(178, 59, 50, 0.14);
   --warn-soft: rgba(179, 128, 31, 0.14);
+  --ok:        var(--up);
+  --bad:       var(--down);
+  --ok-soft:   var(--up-soft);
+  --bad-soft:  var(--down-soft);
 
   --lift:       0 1px 2px rgba(33, 31, 26, 0.05);
   --lift-hover: 0 5px 16px rgba(33, 31, 26, 0.11);
 
   --radius:    8px;
   --radius-sm: 6px;
+
+  /* type scale (rem). Phase 31 tightened ~30 ad-hoc sizes down to this. The
+     scale is geometric-ish (≈1.18×) so steps read distinct at a glance. */
+  --fs-2xs:  0.68rem;  /* fine print, table captions, sub-meta */
+  --fs-xs:   0.76rem;  /* secondary meta, chip captions, table cells */
+  --fs-sm:   0.84rem;  /* body-small, eyebrows-large, dense lists */
+  --fs-md:   0.94rem;  /* default body in panels */
+  --fs-lg:   1.06rem;  /* prominent figures inside a row */
+  --fs-xl:   1.32rem;  /* card statistic */
+  --fs-2xl:  1.65rem;  /* section figure */
+  --fs-3xl:  2.05rem;  /* page-head price / ticker */
+
+  /* eyebrow type — three sizes, matching the three places eyebrows ride:
+     a small pill / badge, a default eyebrow caption, a section-header label */
+  --eye-chip: 0.56rem;
+  --eye-cap:  0.64rem;
+  --eye-lbl:  0.74rem;
+
+  /* spacing scale (px). Used for paddings and gaps so vertical rhythm holds
+     across the whole app rather than drifting per component. */
+  --sp-1:  4px;
+  --sp-2:  8px;
+  --sp-3:  12px;
+  --sp-4:  16px;
+  --sp-5:  20px;
+  --sp-6:  28px;
+  --sp-7:  40px;
 
   --font-serif: "Source Serif 4", Georgia, "Times New Roman", serif;
   --font-ui:    "Inter", system-ui, -apple-system, sans-serif;
@@ -451,51 +486,62 @@ main {
 }
 
 /* ---------- page heading ---------- */
+/* The page's h1. Sits above the first section, with a strong rule below.
+   The new `.section-title` is the second-tier heading; the page-head's
+   font-size stays distinctly larger so the hierarchy reads h1 → h2. */
 .page-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 8px;
-  margin: 6px 0 4px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--rule-strong);
+  gap: 6px 14px;
+  margin: var(--sp-1) 0 0;
+  padding-bottom: var(--sp-3);
+  border-bottom: 2px solid var(--rule-strong);
 }
 
 .page-head h1 {
-  font-size: 1.6rem;
+  font-size: var(--fs-2xl);
+}
+
+@media (min-width: $bp-md) {
+  .page-head h1 {
+    font-size: 1.9rem;
+  }
 }
 
 /* ---------- section title ---------- */
-/* A ledger column-header: eyebrow text with a hairline rule trailing off. */
+/* A proper readable heading, not the uppercase eyebrow it used to be.
+   The serif label sits left, a small "as of" caption sits right; a
+   double hairline rule below (a ledger column foot) anchors the section.
+   Phase 31: tightened hierarchy so eight stacked sections no longer blur. */
 .section-title {
-  @include eyebrow;
+  @include serif;
   display: flex;
-  align-items: center;
+  align-items: baseline;
   /* wrap is a safety net: if a freshness caption cannot fit beside the rule
      on a narrow phone it drops to its own line rather than overflowing. */
   flex-wrap: wrap;
-  gap: 12px;
-  margin: 30px 0 13px;
-}
-
-.section-title::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--rule);
+  gap: 6px 14px;
+  margin: var(--sp-7) 0 var(--sp-3);
+  padding-bottom: 7px;
+  font-size: var(--fs-xl);
+  letter-spacing: -0.01em;
+  border-bottom: 1px solid var(--rule-strong);
+  /* the second hairline of the ledger "double underline", echoing the
+     brand mark. Sits 3px below the first. */
+  box-shadow: 0 3px 0 -2px var(--rule);
 }
 
 /* A quiet data-freshness caption riding at the right end of a section title
-   (PLAN.md Phase 22). order:1 places it past the ::after hairline rule; the
-   eyebrow's uppercase voice is dropped for a calmer annotation. */
+   (PLAN.md Phase 22). margin-left:auto pushes it past the heading text. */
 .section-title__asof {
-  order: 1;
+  margin-left: auto;
   flex: none;
-  text-transform: none;
-  letter-spacing: normal;
-  font-size: 0.7rem;
+  font-family: var(--font-ui);
   font-weight: 400;
+  font-size: var(--fs-xs);
+  letter-spacing: normal;
   color: var(--ink-faint);
   white-space: nowrap;
 }
@@ -646,14 +692,15 @@ main {
 }
 
 /* ---------- intro note under a section title ---------- */
-/* A quiet ink-faint line, scoped wider than a chip caption. Used on the home
+/* A quiet ink-dim line, scoped wider than a chip caption. Used on the home
    panels and the symbol-page Stock health panel (Phase 17) to introduce a
    section in one short sentence without crowding the title. */
 .section-note {
-  margin: -2px 0 14px;
-  max-width: 64ch;
-  color: var(--ink-faint);
-  font-size: 0.82rem;
+  margin: var(--sp-1) 0 var(--sp-3);
+  max-width: 68ch;
+  color: var(--ink-dim);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
 }
 
 /* ---------- disclaimer line (Phase 30) ---------- */
@@ -661,10 +708,28 @@ main {
    page header. Always smaller than body text; never carries a semantic
    colour — the picks themselves are explicitly "for fun and testing". */
 .disclaimer {
-  margin: -8px 0 14px;
-  font-size: 0.72rem;
+  margin: calc(var(--sp-2) * -1) 0 var(--sp-3);
+  font-size: var(--fs-xs);
   color: var(--ink-faint);
   font-style: italic;
+  line-height: 1.5;
+}
+
+/* ---------- focus-visible ring (Phase 31) ---------- */
+/* A single quiet keyboard-focus ring across the app: a thin ink outline
+   plus a faint warm halo, so tab navigation lands legibly on every link,
+   button, and input without needing per-component focus rules. */
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* inputs already carry their own focus border ring; suppress the global
+   outline there so it doesn't double up */
+input:focus-visible,
+button:focus-visible {
+  outline-offset: 1px;
 }
 
 /* ---------- desktop layering ---------- */

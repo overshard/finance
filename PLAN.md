@@ -32,8 +32,14 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-23_
 
-**Current phase: Phase 15 (industry trends) complete, verified and
-deployed to production 2026-05-23 (commit `6043657`).** Yahoo
+**Current phase: Phase 31 (full UI polish pass) complete and verified
+locally 2026-05-23; not yet deployed.** Driven by the user's
+"really do a full pass" steer. The Paper Ledger look is preserved; the
+plumbing under it now provides hierarchy, rhythm, and aligned mobile +
+desktop layouts. See the Phase 31 Done entry for the full list of changes.
+
+**Last deployed to production: Phase 15 (industry trends), 2026-05-23
+(commit `6043657`).** Yahoo
 `quoteSummary.assetProfile` is the source
 (clean GICS-style names); migration `0012` adds
 `symbols.asset_profile_synced_at` (the long-existing-but-unpopulated
@@ -168,6 +174,89 @@ backlog as Phase 19. The `watchlists` / `watchlist_items` tables stay in the
 schema, unused for now.
 
 **Done**
+- **Phase 31 full UI polish pass.** Complete and verified locally
+  2026-05-23. The Paper Ledger look stays; what changes is the design
+  plumbing under it. Touches every page; no schema change, no new
+  network calls, no new endpoint guard.
+  - **Design tokens (base.scss).** Added a fluid type scale
+    (`--fs-2xs` … `--fs-3xl`), three eyebrow sizes (`--eye-chip /
+    --eye-cap / --eye-lbl`), and a spacing scale (`--sp-1` … `--sp-7`)
+    on `:root`. Replaced ad-hoc font-sizes and paddings across the
+    SCSS with the new tokens.
+  - **Broken token bugs fixed.** `symbol.scss` had used `var(--ok)` /
+    `var(--bad)` in `.ret-cell--up/down` and `.fund-about__sub`; those
+    vars never existed so the ETF trailing-returns column and the NAV
+    premium pill rendered grey. Aliased `--ok` / `--bad` /
+    `--ok-soft` / `--bad-soft` to the real `--up` / `--down` tokens in
+    `:root` so any rule still spelling those words renders in the
+    right hue, and rewrote the symbol-page call sites to the canonical
+    `--up` / `--down`.
+  - **Section title hierarchy (base.scss).** `.section-title` is now a
+    proper serif heading with a ledger "double underline" (one
+    `border-bottom` + a 1px `box-shadow` offset 3px), not the
+    uppercase eyebrow + trailing hairline it was before. The home
+    page's nine sections and the symbol page's twelve now read as a
+    sequence instead of one wash. `.section-title__asof` pushed right
+    via `margin-left:auto` with a tighter quiet caption.
+  - **Ranked-row primitive (`_mixins.scss`).** New `@mixin ranked-row`
+    consolidates the four near-duplicate row chromes
+    (`.mover`, `.standing`, `.hrow`, `.industry-row`) into one shared
+    grid + magnitude-tint pattern. Each row class now only owns its
+    grid template and per-column type; the chrome rides in via
+    `@include ranked-row`. Cut ~120 lines of duplicated CSS.
+  - **Focus state (base.scss).** Single `:focus-visible` ring across
+    the app so keyboard nav lands legibly on links, buttons and inputs
+    without per-component focus rules. Inputs trim the offset to 1px
+    so the existing focus border ring doesn't double up.
+  - **Home page.** Picks panel rebuilt: the desktop layout dropped the
+    `.pick__name` empty slot, badges align cell-for-cell across the
+    four horizon cards via a tighter grid template. Movers /
+    standings / health / industries rows now share the ranked-row
+    chrome with a consistent type scale (sym `fs-sm`, name `fs-xs`,
+    chg `fs-sm` mono bold) so the eye lands the same way down every
+    panel. Spark cards tightened to the new tokens.
+  - **Symbol page.** Header is now a 2-row layout: identity (ticker +
+    tags) on top, name on a second line, price + change + asof on a
+    third row with a hairline divider before the "At close" caption.
+    The ledger double-rule under the header echoes the section
+    titles. Stock-health row rebuilt on a two-column `label | value`
+    grid with the note on its own second line at every width (the
+    7.5rem fixed label column on desktop wrong-sized longer labels
+    and clipped the note). Fundamentals ratio cards muted the "how
+    to read it" explainer to `--fs-2xs` and a quieter colour so 9
+    cards no longer dominate the page. ETF holdings now render 2-up
+    on desktop via CSS columns (`columns: 2; break-inside: avoid`)
+    so a 25-row list doesn't reach off the panel.
+  - **Search.** `.search-count` shed its eyebrow voice for a quieter
+    mono caption beside the heading. `.kind-pill` reads larger
+    (`fs-sm` + 36px min-height) so the filter row is easier to tap.
+  - **Industries.** Replaced the bare "No stocks classified yet" line
+    with a proper `.empty` card carrying a Paper Ledger illustration
+    (stacked sector columns over a ledger underline) mirroring the
+    home empty state, so a fresh DB looks intentional rather than
+    broken.
+  - **Backtest.** Replaced bare "Loading backtest…" text with a
+    skeleton (4 stat bones + a chart bone) that shimmers while the
+    JSON loads, both server-rendered on first paint and re-created by
+    the page script on every tab switch. Tabs gained the new serif
+    voice. Disclaimer text tightened from a five-line paragraph to
+    one sentence.
+  - **Health.** Endpoint grid pinned to 1 / 2 / 3 columns at
+    phone / tablet / desktop, replacing the previous `auto-fit` that
+    occasionally dropped to 1-up at narrow desktops. Activity log
+    rows mute the routine `ok` ones to `ink-faint` so a `bad` row
+    pops; the job-id slot reads as a small mono uppercase pill.
+  - **Verification.** `cargo check` clean. `bun run build` clean
+    (CSS bundle: base 56.16 → 57.25 kB, symbol 20.93 → 20.51 kB,
+    home 7.94 → 7.99 kB — net +0.5 kB across the whole frontend
+    for the new tokens and the ranked-row mixin). Every page
+    screenshotted at 1280px desktop and 390px phone with no
+    horizontal overflow, no broken layout, and only the expected
+    SSE-reconnect console errors during the dev-server restart
+    window. Industries empty state, backtest skeleton, ETF holdings
+    2-up grid, ETF trailing-returns colour, and the new section
+    title hierarchy all confirmed visually before / after.
+
 - **Phase 15 industry trends.** Complete, verified, and deployed to
   production 2026-05-23 (commit `6043657`).
   New `asset_profile` Yahoo scheduler section populates each stock's
@@ -1774,6 +1863,107 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   fund category were dropped (not in SEC structured data — user decision).
   Commodity grantor trusts (GLD, SLV) get a minimal AUM-only profile.
 
+- [x] **Phase 31: Full UI polish pass.** Complete and verified locally
+  2026-05-23. See the Phase 31 entry in the Done list above and the
+  decisions log for the full set of changes. (Captured 2026-05-23 from
+  the user's "really do a full pass on the entire UI" steer.)
+  Paper Ledger stays — what changes is the plumbing under it so the same
+  visual vocabulary reads cleaner, skims faster, and aligns on phone and
+  desktop. Audit-driven; the findings below are the work.
+
+  **Design system (`base.scss`, `_mixins.scss`, `_variables.scss`).**
+  - Fix broken tokens. `symbol.scss` uses `var(--ok)` and `var(--bad)` in
+    `.ret-cell--up/down` and `.fund-about__sub--good/ok/bad`; those vars
+    do not exist (the real ones are `--up`/`--down`/`--warn`), so the ETF
+    trailing-returns column and the NAV premium pill currently render
+    grey. Replace with the real tokens, or alias `--ok` / `--bad` /
+    `--ok-soft` / `--bad-soft` in `:root` so the existing rules just work.
+  - One type scale. Replace the ~30 ad-hoc font-sizes scattered across
+    SCSS with a small fluid scale on `:root` — `--fs-xs`, `--fs-sm`,
+    `--fs-md`, `--fs-lg`, `--fs-xl`, `--fs-2xl`, `--fs-3xl` — and roll
+    every existing size to its nearest step. Same for the eyebrow voice:
+    two steps (`--eyebrow-xs`, `--eyebrow-sm`), not the six that exist
+    today.
+  - One spacing scale. `--sp-1` … `--sp-6` (4 / 8 / 12 / 16 / 24 / 32)
+    replacing the per-component pixel paddings.
+  - Section title hierarchy. The current `.section-title` is the same
+    uppercase eyebrow with a trailing hairline on every section, on
+    every page. Make it a proper readable heading (serif, small caps
+    optional, with the "as of" caption right-aligned in a fixed slot),
+    so the home page's nine sections and the symbol page's twelve read
+    as a sequence instead of a wash.
+  - Focus state. Add a single `:focus-visible` ring on inputs and
+    buttons.
+
+  **Home page.**
+  - Top picks rebuild. On desktop the `pick__name` is hidden, leaving a
+    sparse `rank | ticker | empty | badge | score` row. Either show the
+    name (with truncation) or collapse the grid to `rank | ticker |
+    badge | score`. Pick at build time; tighter grid wins on a narrow
+    desktop card.
+  - Row consistency. `mover`, `standing`, `hrow` and `industry-row` are
+    near-duplicates with slightly different font sizes (0.85 / 0.86 /
+    0.92 / 0.95). Promote them to one `.row` primitive with a magnitude
+    tint, then layer the per-section bits on top.
+  - Section pacing. Eight movers-shaped panels in a row blur; introduce
+    a gentle visual differentiator between the picks block, the movers
+    block, and the rankings (health / strongest / weakest) — same
+    framing, different eyebrow voice, or a `.section--rank` wrapper.
+
+  **Symbol page.**
+  - Header. Promote name to its own line at desktop, drop the tag chip
+    font-size to a quieter pill, push the live quote block to the
+    right-hand half so the identity and the price are visually
+    separate, not vertically stacked.
+  - Chart toolbar. Split the cramped one-row bar into two: ranges left
+    + summary chip right on top, indicator toggles below.
+  - Stock health. The 7.5rem fixed-width label column wrong-sizes
+    longer labels; rebuild on a `grid-template-columns: minmax(0,1fr)
+    auto 1fr` so label / value / note each get their share and the
+    note never wraps under the value awkwardly.
+  - Fundamentals ratio cards. The "how to read it" explainer doubles
+    every card. Tighten: shrink it to `--fs-xs`, mute it harder, and
+    optionally collapse behind `<details>` so a curious reader can pop
+    it but the default scroll is half the height.
+  - Holdings list. Render 2-up on desktop (`md` breakpoint), one
+    column on phone. The current single tall column wastes the panel's
+    width on an ETF page.
+  - Dividends, earnings, leadership, anomalies, filings. All carry a
+    near-identical row shape (date · label · meta · external icon).
+    Promote to one `.timeline-row` primitive and consume it across the
+    four sections.
+
+  **Search page.**
+  - Filter pills: slightly larger, sticky to the top of the results.
+  - Result count beside the heading: lift to the page-head right
+    slot, not the eyebrow.
+
+  **Industries empty state.**
+  - Add a Paper Ledger illustration mirroring the home empty state, so
+    a fresh DB looks intentional rather than broken.
+
+  **Backtest.**
+  - Better loading skeleton (a card outline + bone bar for stats and
+    chart), not bare "Loading…".
+  - Disclaimer wording: tighten to one sentence under the page intro,
+    move the methodology detail into the chart-panel provenance line.
+
+  **Health page.**
+  - Endpoint grid: 2-up on tablet, 3-up on desktop.
+  - Activity log: mute routine rows, brighten failures; group by
+    minute or by job, so the eye finds anomalies fast.
+
+  **Verification.** Screenshot every page at 390 / 1024 / 1440 before
+  and after; confirm no horizontal overflow at 320px, zero new console
+  errors, every tap target stays ≥44px on phones. Each round of
+  changes goes through `cargo check` + `bun run build` clean.
+
+  **Non-goals.** No new features, no schema change, no new endpoint
+  guard. Pure presentation work over what already ships. The "polish
+  last, not mid-build" memory applies — this is the deliberate polish
+  pass after the long backlog of feature phases, exactly the slot
+  Phase 31 was meant for.
+
 - [ ] **Phase 19: Watchlists.** Named lists of symbols the user curates:
   watchlist and per-list pages plus mutation APIs (create / delete / rename
   lists, add / remove symbols). The schema already carries the `watchlists`
@@ -3376,6 +3566,27 @@ finance/
   does not store shares-outstanding (and the Phase 13 drop above means no
   reason to start). Anti-spam: ~512 stocks × monthly refresh = ~17/day on
   the existing `yahoo` 1000/hr guard, no new endpoint.
+
+- **2026-05-23 — Phase 31 (full UI polish pass) picked next; scope and
+  approach settled in one audit.** Trigger: user said "I'd like to do
+  a clean pass on the entire UI to really clean things up, make them
+  clearer to read and skim with nice UI elements and make things
+  aligned better on mobile and desktop … I like the overall styling
+  but some elements on pages are just poorly designed." The pre-pass
+  audit found nine concrete issues (two broken color tokens, ~30
+  ad-hoc font-sizes, flat section hierarchy across every page, the
+  symbol page running 5,000px tall on phone, picks rows sparse on
+  desktop, ETF holdings one-column at desktop, bare industries empty
+  state, dense health log, bare backtest loading text). Approach
+  settled: keep the Paper Ledger look, change the plumbing under it.
+  Build it as four staged tranches — design tokens, home page,
+  symbol page, then search / industries / backtest / health — each
+  built mobile-first and verified via screenshot at 1280px and
+  390px. No new features, no schema change, no new endpoint guard;
+  scope is purely presentation. This is the "polish last" slot the
+  PLAN budgeted from the start (Phase 12 deferred the polish pass to
+  the post-MVP backlog), now spent in one focused phase. Verified
+  end-to-end; see the Phase 31 Done entry for the per-page work.
 
 ---
 

@@ -51,9 +51,32 @@ function setActive(horizon) {
   });
 }
 
+// Phase 31: a small skeleton (4 stat bones + a chart bone + status text)
+// shown while the JSON loads, instead of bare "Loading backtest…" text on
+// empty paper. The first render keeps the server-rendered skeleton; later
+// tab switches re-create it so each horizon change shows the skeleton too.
+function skeletonHtml() {
+  return `
+    <div class="bt-skeleton" data-role="skeleton">
+      <div class="bt-skeleton__stats">
+        <div class="bt-skeleton__stat"></div>
+        <div class="bt-skeleton__stat"></div>
+        <div class="bt-skeleton__stat"></div>
+        <div class="bt-skeleton__stat"></div>
+      </div>
+      <div class="bt-skeleton__chart"></div>
+      <p class="bt-status">Loading backtest&hellip;</p>
+    </div>`;
+}
+
 function load(horizon) {
   setActive(horizon);
-  panel.innerHTML = '<p class="bt-status">Loading backtest&hellip;</p>';
+  // Reuse the existing server-rendered skeleton on the first load (no
+  // flicker / paint cost); regenerate it on each subsequent horizon
+  // change so the loading affordance is consistent.
+  if (!panel.querySelector("[data-role=skeleton]")) {
+    panel.innerHTML = skeletonHtml();
+  }
   fetch(`/api/backtest?horizon=${encodeURIComponent(horizon)}`)
     .then((res) => {
       if (!res.ok) throw new Error(`backtest ${res.status}`);

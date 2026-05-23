@@ -62,21 +62,22 @@
 .spark-card__head {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 
 .spark-card__sym {
   @include mono;
   font-weight: 700;
-  font-size: 0.95rem;
+  font-size: var(--fs-md);
 }
 
 .spark-card__name {
-  font-size: 0.73rem;
+  font-size: var(--fs-2xs);
   color: var(--ink-dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 
 /* the sparkline svg is stretched to the card width (preserveAspectRatio
@@ -140,13 +141,13 @@
 }
 
 .spark-card__price {
-  font-size: 0.95rem;
-  font-weight: 600;
+  font-size: var(--fs-md);
+  font-weight: 700;
 }
 
 .spark-card__chg {
-  font-size: 0.81rem;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: 700;
 }
 
 /* update flash, toggled by the live stream client (mirrors .ticker-card) */
@@ -166,74 +167,48 @@
 
 .movers__panel {
   @include card;
-  padding: 6px 14px 8px;
+  padding: 4px var(--sp-3) var(--sp-2);
 }
 
+/* Panel header: a small serif label (echoes the page-level section titles
+   one tier down) with a hairline rule below. */
 .movers__title {
-  @include eyebrow;
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: var(--fs-md);
+  letter-spacing: -0.01em;
   display: block;
-  padding: 12px 4px 8px;
-  border-bottom: 1px solid var(--rule-strong);
+  padding: var(--sp-3) 2px var(--sp-2);
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink);
 }
 
 .movers__empty {
   color: var(--ink-faint);
-  font-size: 0.82rem;
-  padding: 16px 4px;
+  font-size: var(--fs-sm);
+  padding: var(--sp-4) 4px;
 }
 
+/* The four ranked-row classes (mover / standing / hrow / industry-row)
+   share the chrome via the `ranked-row` mixin; each only owns its grid
+   template and per-column type. */
 .mover {
-  position: relative;
-  display: grid;
+  @include ranked-row;
   /* sym, name, standing badge, price, day change */
   grid-template-columns: auto minmax(0, 1fr) auto auto auto;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 6px;
-  color: var(--ink);
-  border-bottom: 1px solid var(--rule);
 }
 
-.mover:last-child {
-  border-bottom: 0;
-}
-
-/* a soft magnitude tint behind the row: width set by the route via --bar.
-   A pseudo-element keeps it independent of the hover background. */
-.mover::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: var(--bar, 0%);
-  border-radius: var(--radius-sm);
-}
-
-.mover--up::before {
-  background: var(--up-soft);
-}
-
-.mover--down::before {
-  background: var(--down-soft);
-}
-
-.mover > * {
-  position: relative; /* sit above the magnitude tint */
-}
-
-.mover:hover {
-  color: var(--ink);
-  background: var(--well);
-}
+.mover--up::before    { background: var(--up-soft); }
+.mover--down::before  { background: var(--down-soft); }
 
 .mover__sym {
+  font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 0.86rem;
+  font-size: var(--fs-sm);
 }
 
 .mover__name {
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   color: var(--ink-dim);
   white-space: nowrap;
   overflow: hidden;
@@ -241,13 +216,15 @@
 }
 
 .mover__price {
-  font-size: 0.82rem;
-  color: var(--ink-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--ink-faint);
 }
 
 .mover__chg {
-  font-size: 0.85rem;
-  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-weight: 700;
   text-align: right;
   min-width: 4.4ch;
 }
@@ -259,61 +236,25 @@
 }
 
 /* ---------- strongest / weakest panels (Phase 20) ---------- */
-/* Rows reuse the .movers panel chrome but rank on the rolled-up standing
-   rather than the day's price move. Each carries a soft magnitude tint sized
-   by --bar, mirroring .mover. */
+/* Same ranked-row chrome as .mover; rank is the rolled-up standing rather
+   than the day's price move. */
 .standing {
-  position: relative;
-  display: grid;
+  @include ranked-row;
   /* sym, name, trailing-year return, verdict badge */
   grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 6px;
-  color: var(--ink);
-  border-bottom: 1px solid var(--rule);
 }
 
-.standing:last-child {
-  border-bottom: 0;
-}
-
-/* the magnitude tint behind the row; a pseudo-element keeps it independent of
-   the hover background */
-.standing::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: var(--bar, 0%);
-  border-radius: var(--radius-sm);
-}
-
-.standing--up::before {
-  background: var(--up-soft);
-}
-
-.standing--down::before {
-  background: var(--down-soft);
-}
-
-.standing > * {
-  position: relative; /* sit above the magnitude tint */
-}
-
-.standing:hover {
-  color: var(--ink);
-  background: var(--well);
-}
+.standing--up::before    { background: var(--up-soft); }
+.standing--down::before  { background: var(--down-soft); }
 
 .standing__sym {
+  font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 0.86rem;
+  font-size: var(--fs-sm);
 }
 
 .standing__name {
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   color: var(--ink-dim);
   white-space: nowrap;
   overflow: hidden;
@@ -322,8 +263,9 @@
 
 /* the trailing-year return, a quiet context figure beside the verdict */
 .standing__ret {
-  font-size: 0.8rem;
-  color: var(--ink-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--ink-faint);
   text-align: right;
   min-width: 5ch;
 }
@@ -334,62 +276,28 @@
    Healthy / Mixed / Concerning verdict on the right. The chips read as
    coloured pills so the synthesis is legible without expanding. */
 .hrow {
-  position: relative;
-  display: grid;
+  @include ranked-row;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 6px;
-  color: var(--ink);
-  border-bottom: 1px solid var(--rule);
 }
 
-.hrow:last-child {
-  border-bottom: 0;
-}
-
-/* the magnitude tint behind the row, mirroring .standing */
-.hrow::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: var(--bar, 0%);
-  border-radius: var(--radius-sm);
-}
-
-.hrow--up::before {
-  background: var(--up-soft);
-}
-
-.hrow--down::before {
-  background: var(--down-soft);
-}
-
-.hrow > * {
-  position: relative;
-}
-
-.hrow:hover {
-  color: var(--ink);
-  background: var(--well);
-}
+.hrow--up::before    { background: var(--up-soft); }
+.hrow--down::before  { background: var(--down-soft); }
 
 .hrow__sym {
+  font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 0.86rem;
+  font-size: var(--fs-sm);
 }
 
 .hrow__body {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--sp-1);
   min-width: 0;
 }
 
 .hrow__name {
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   color: var(--ink-dim);
   white-space: nowrap;
   overflow: hidden;
@@ -399,36 +307,27 @@
 .hrow__sub {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: var(--sp-1);
 }
 
 /* the three sub-component pills — fundamentals / trajectory / leadership */
 .hrow__chip {
-  @include eyebrow;
-  padding: 1px 6px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
   border-radius: 999px;
-  font-size: 0.48rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+  font-size: 0.54rem;
+  /* a hair larger than before (0.48 → 0.54): the chips were too small to
+     scan as discrete pills. Still well under the eyebrow voice. */
 }
 
-.hrow__chip--good {
-  color: var(--up);
-  background: var(--up-soft);
-}
-
-.hrow__chip--ok {
-  color: var(--warn);
-  background: var(--warn-soft);
-}
-
-.hrow__chip--bad {
-  color: var(--down);
-  background: var(--down-soft);
-}
-
-.hrow__chip--unknown {
-  color: var(--ink-faint);
-  background: var(--well);
-}
+.hrow__chip--good     { color: var(--up);        background: var(--up-soft); }
+.hrow__chip--ok       { color: var(--warn);      background: var(--warn-soft); }
+.hrow__chip--bad      { color: var(--down);      background: var(--down-soft); }
+.hrow__chip--unknown  { color: var(--ink-faint); background: var(--well); }
 
 /* ---------- top picks panel (Phase 30) ---------- */
 /* Four columns (Day / Week / Month / Year), each carrying 5 ranked picks.
@@ -460,28 +359,33 @@
   min-width: 0;
 }
 
+/* The picks-col title is a quiet header inside an already-bordered card,
+   so a serif label without an extra rule (the card border owns that). */
 .picks-col__title {
-  @include eyebrow;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--rule-strong);
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: var(--fs-md);
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  padding-bottom: var(--sp-1);
 }
 
 .picks-col__desc {
   margin: 0;
-  font-size: 0.7rem;
+  font-size: var(--fs-2xs);
   color: var(--ink-faint);
-  line-height: 1.35;
+  line-height: 1.4;
 }
 
 .picks-col__list {
   list-style: none;
-  margin: 4px 0 0;
+  margin: var(--sp-1) 0 0;
   padding: 0;
 }
 
 .picks-col__empty {
-  margin: 8px 0;
-  font-size: 0.78rem;
+  margin: var(--sp-2) 0;
+  font-size: var(--fs-xs);
   color: var(--ink-faint);
 }
 
@@ -493,18 +397,19 @@
   border-bottom: 0;
 }
 
-/* Each card carries its own grid, but pinning rank / sym / badge / score to
-   fixed track widths makes the four horizon cards visually line up cell-for-
-   cell across the page (the eye scans pick-1 → pick-1 → pick-1 cleanly
-   instead of zig-zagging through auto-sized tracks). The name column flexes
-   to fill what's left. */
+/* The pick row sheds the name column entirely — at desktop the 4-up
+   layout makes a useful name slice impossible (a single-character "M…"
+   reads as noise), and at smaller widths the score figure is the
+   primary read. The four tracks are pinned at fixed widths so rank-1
+   / rank-2 / ... line up cell-for-cell across the four horizon cards. */
 .pick__row {
   display: grid;
-  grid-template-columns: 1.5ch 5ch minmax(0, 1fr) 4.4em 5.6ch;
+  grid-template-columns: 1.5ch minmax(4.5ch, auto) 1fr minmax(5.6ch, auto);
   align-items: center;
-  gap: 8px;
-  padding: 7px 2px;
+  gap: var(--sp-2);
+  padding: 9px 2px;
   color: var(--ink);
+  min-height: 36px;
 }
 
 .pick__row:hover {
@@ -514,62 +419,38 @@
 
 .pick__rank {
   text-align: right;
-  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
   color: var(--ink-faint);
   font-weight: 600;
 }
 
 .pick__sym {
+  font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 0.82rem;
+  font-size: var(--fs-sm);
 }
 
+/* The name span exists in the template across all breakpoints but never
+   shows: at every width either the score fits in this slot or the badge
+   does. Reclaim the column for the badge. */
 .pick__name {
-  font-size: 0.74rem;
-  color: var(--ink-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  display: none;
 }
 
-/* center the verdict pill in its fixed-width slot so Strong / Fair / Weak
-   all sit at the same x-axis across cards */
+/* center the verdict pill in its slot so Strong / Fair / Weak align
+   horizontally across the four cards */
 .pick__badge {
   display: flex;
-  justify-content: center;
+  justify-content: flex-start;
+  margin-left: auto;
 }
 
 .pick__score {
-  font-size: 0.78rem;
-  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-weight: 700;
   text-align: right;
-}
-
-/* The name column only earns its width on the 2-up tablet layout, where
-   each card is wide enough to show a useful slice of it. On the 4-up
-   desktop layout cards are too narrow (a single-character "I…" reads as
-   noise), and on phones we drop name to keep room for the figures. */
-@media (min-width: $bp-md) {
-  .pick__name {
-    display: none;
-  }
-  .pick__row {
-    grid-template-columns: 1.5ch 5ch 1fr 4.4em 5.6ch;
-  }
-}
-
-/* Mobile: name is hidden but the card itself is too narrow for fixed
-   tracks to fit. Fall back to auto sizing so the score never gets clipped;
-   cross-card alignment matters less here because the eye scans one card
-   at a time. */
-@media (max-width: $bp-sm) {
-  .pick__name {
-    display: none;
-  }
-  .pick__row {
-    grid-template-columns: 1.5ch auto 1fr auto auto;
-    gap: 6px;
-  }
 }
 
 /* ---------- desktop layering ---------- */
@@ -598,51 +479,18 @@
 /* ---------- Today's industries panel (Phase 15) ---------- */
 
 /* Each row is one sector: name on the left, member count, and the day
-   composite %. Same magnitude-tint pattern as `.mover` and `.standing`. */
+   composite %. Same chrome as `.mover` and `.standing` via the
+   ranked-row mixin. */
 .industry-row {
-  position: relative;
-  display: grid;
+  @include ranked-row;
   grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 6px;
-  color: var(--ink);
-  border-bottom: 1px solid var(--rule);
-  text-decoration: none;
-
-  &:last-child {
-    border-bottom: 0;
-  }
-
-  &::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    width: var(--bar, 0%);
-    border-radius: var(--radius-sm);
-  }
-
-  > * {
-    position: relative;
-  }
-
-  &:hover {
-    background: var(--well);
-  }
 }
 
-.industry-row--up::before {
-  background: var(--up-soft);
-}
-
-.industry-row--down::before {
-  background: var(--down-soft);
-}
+.industry-row--up::before    { background: var(--up-soft); }
+.industry-row--down::before  { background: var(--down-soft); }
 
 .industry-row__name {
-  font-size: 0.92rem;
+  font-size: var(--fs-md);
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -650,13 +498,14 @@
 }
 
 .industry-row__count {
-  font-size: 0.74rem;
+  font-size: var(--fs-2xs);
   color: var(--ink-faint);
 }
 
 .industry-row__chg {
-  font-size: 0.95rem;
-  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  font-weight: 700;
   text-align: right;
   min-width: 5.5ch;
 }

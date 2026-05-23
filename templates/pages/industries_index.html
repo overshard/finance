@@ -11,10 +11,22 @@
   </div>
 
   {% if empty %}
-  <p class="ind-empty">No stocks have been classified yet. The Yahoo
-     <code>assetProfile</code> sweep runs in the background and fills in over
-     time &mdash; check the <a href="/health">data health page</a> to follow
-     its progress.</p>
+  <section class="empty">
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+      {# stacked ledger columns — a quiet hint at the per-sector composition
+         this page will show once classifications land. #}
+      <rect x="6"  y="40" width="8" height="18" stroke="currentColor" stroke-width="2.4" rx="1.5"/>
+      <rect x="18" y="28" width="8" height="30" stroke="currentColor" stroke-width="2.4" rx="1.5"/>
+      <rect x="30" y="18" width="8" height="40" stroke="currentColor" stroke-width="2.4" rx="1.5"/>
+      <rect x="42" y="32" width="8" height="26" stroke="currentColor" stroke-width="2.4" rx="1.5"/>
+      <rect x="54" y="44" width="8" height="14" stroke="currentColor" stroke-width="2.4" rx="1.5"/>
+      <line x1="2" y1="60" x2="62" y2="60" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </svg>
+    <h1>Industries are still classifying</h1>
+    <p>The Yahoo <code>assetProfile</code> sweep runs in the background and
+       fills in over time. Once a stock has a sector and industry it shows up
+       here; follow the sweep on the <a href="/health">data health page</a>.</p>
+  </section>
   {% else %}
 
   <p class="ind-blurb">{{ total }} curated stocks across {{ sectors|length }} sectors and {{ total_industries }} industries.
