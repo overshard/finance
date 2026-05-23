@@ -32,8 +32,8 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-23_
 
-**Current phase: Phase 16 (per-ticker anomaly feed) complete and verified
-locally 2026-05-23; not yet deployed.** A new symbol-page section between
+**Current phase: Phase 16 (per-ticker anomaly feed) complete, verified,
+and deployed to production 2026-05-23 (commit `a839737`).** A new symbol-page section between
 Leadership and Recent SEC filings, surfacing notable recent events: large
 daily price moves, drawdowns (new 6-month lows), large YoY fundamentals
 changes, and 8-K item-5.02 leadership changes (reused from Phase 14). One
@@ -660,8 +660,10 @@ schema, unused for now.
     overflow and zero console errors. The sweep is paced and guarded — it
     backfills the universe over several daily `sec` cycles.
 
-- **Phase 16 per-ticker anomaly feed.** Complete and verified locally
-  2026-05-23; not yet deployed. A new "Notable recent events" section on
+- **Phase 16 per-ticker anomaly feed.** Complete, verified, and deployed
+  to production 2026-05-23 (commit `a839737`). The same `git push server
+  master` shipped the Phase 30 rework (`year` → `quarter`, true
+  out-of-sample backtest) and the S&P 500 universe expansion alongside. A new "Notable recent events" section on
   the symbol page between Leadership and Recent SEC filings, surfacing four
   kinds of dated events in one merged list — one line per event, date ·
   glyph · headline, newest first, capped at 20 over the past year. Pure
@@ -1398,9 +1400,9 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   7), show industry-level performance, seasonality (the months an industry
   tends to do well or poorly, computed from `daily_prices`), and how the
   industry is trending currently.
-- [x] **Phase 16: Per-ticker anomaly feed.** Complete and verified
-  locally 2026-05-23; not yet deployed. See the Phase 16 Done entry in
-  Status and the decisions log. (Picked as the next backlog phase and
+- [x] **Phase 16: Per-ticker anomaly feed.** Complete, verified, and
+  deployed to production 2026-05-23 (commit `a839737`). See the Phase 16
+  Done entry in Status and the decisions log. (Picked as the next backlog phase and
   scoped 2026-05-23 — see decisions log.) On the symbol page, a
   feed of notable recent events for that one ticker: large changes in its
   fundamentals, leadership changes, and unusually large price moves or
@@ -2901,7 +2903,10 @@ finance/
   + `/s/^SPX` (index) each rendered 1 drawdown event; `/s/GC=F` (future,
   no `daily_prices`) hid the section entirely. Desktop (1280px) and
   phone (390px) both rendered with no horizontal overflow and zero
-  console errors. No deploy yet.
+  console errors. Deployed to production 2026-05-23 via `git push server
+  master` (commit `a839737`), bundled with the Phase 30 rework and the
+  S&P 500 universe expansion that were also pending deploy from earlier
+  the same day.
 
 ---
 
