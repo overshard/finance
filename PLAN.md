@@ -32,14 +32,12 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-23_
 
-**Current phase: Phase 31 (full UI polish pass) complete and verified
-locally 2026-05-23; not yet deployed.** Driven by the user's
-"really do a full pass" steer. The Paper Ledger look is preserved; the
-plumbing under it now provides hierarchy, rhythm, and aligned mobile +
-desktop layouts. See the Phase 31 Done entry for the full list of changes.
-
-**Last deployed to production: Phase 15 (industry trends), 2026-05-23
-(commit `6043657`).** Yahoo
+**Current phase: Phase 31 (full UI polish pass) complete, verified,
+and deployed to production 2026-05-23 (commit `d53651e`).** Driven by
+the user's "really do a full pass" steer. The Paper Ledger look is
+preserved; the plumbing under it now provides hierarchy, rhythm, and
+aligned mobile + desktop layouts. See the Phase 31 Done entry for the
+full list of changes. Yahoo
 `quoteSummary.assetProfile` is the source
 (clean GICS-style names); migration `0012` adds
 `symbols.asset_profile_synced_at` (the long-existing-but-unpopulated
@@ -174,8 +172,8 @@ backlog as Phase 19. The `watchlists` / `watchlist_items` tables stay in the
 schema, unused for now.
 
 **Done**
-- **Phase 31 full UI polish pass.** Complete and verified locally
-  2026-05-23. The Paper Ledger look stays; what changes is the design
+- **Phase 31 full UI polish pass.** Complete, verified, and deployed
+  to production 2026-05-23 (commit `d53651e`). The Paper Ledger look stays; what changes is the design
   plumbing under it. Touches every page; no schema change, no new
   network calls, no new endpoint guard.
   - **Design tokens (base.scss).** Added a fluid type scale
@@ -1863,10 +1861,11 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   fund category were dropped (not in SEC structured data — user decision).
   Commodity grantor trusts (GLD, SLV) get a minimal AUM-only profile.
 
-- [x] **Phase 31: Full UI polish pass.** Complete and verified locally
-  2026-05-23. See the Phase 31 entry in the Done list above and the
-  decisions log for the full set of changes. (Captured 2026-05-23 from
-  the user's "really do a full pass on the entire UI" steer.)
+- [x] **Phase 31: Full UI polish pass.** Complete, verified, and
+  deployed to production 2026-05-23 (commit `d53651e`). See the Phase 31
+  entry in the Done list above and the decisions log for the full set of
+  changes. (Captured 2026-05-23 from the user's "really do a full pass on
+  the entire UI" steer.)
   Paper Ledger stays — what changes is the plumbing under it so the same
   visual vocabulary reads cleaner, skims faster, and aligns on phone and
   desktop. Audit-driven; the findings below are the work.
