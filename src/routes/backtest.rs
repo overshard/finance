@@ -6,11 +6,12 @@
 //! `picks::run_backtest`, served as JSON at
 //! `GET /api/backtest?horizon=<key>&capital=<usd>`.
 //!
-//! The fundamental signals are today's values (we do not store a per-period
-//! history of Phase 7 ratios), which is acknowledged look-ahead bias —
-//! surfaced explicitly in the page's disclaimer. The user's own framing of
-//! the feature is "for fun and testing", so this is the right trade-off for
-//! v1; a future phase can layer in point-in-time fundamentals.
+//! At each historical rebalance date the picker grades a stock using only the
+//! fundamentals that would actually have been *filed* by then (latest annual
+//! whose period_end is at least 90 days before the rebalance — see
+//! `models::FILING_LAG_DAYS`) and only the closes up to that date, so the
+//! backtest is genuinely out-of-sample: a stock that grades strong today
+//! but was weak in 2022 will grade weak in a 2022 rebalance.
 
 use axum::{
     extract::{Query, State},
@@ -42,7 +43,7 @@ async fn backtest_page(State(state): State<AppState>) -> Response {
 
 #[derive(Debug, Deserialize)]
 struct BacktestQuery {
-    /// One of `day | week | month | year`. Defaults to `month`, the
+    /// One of `day | week | month | quarter`. Defaults to `month`, the
     /// medium-cadence read that has both enough rebalances to be informative
     /// and few enough to be quick to glance at.
     horizon: Option<String>,

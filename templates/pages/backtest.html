@@ -14,11 +14,12 @@
      shown is rebalanced equal-weight at the end of every horizon period and
      compared to <code>^SPX</code> over the same window.</p>
 
-  <p class="disclaimer">For fun and testing. Not financial advice. The picker
-     uses today&rsquo;s fundamentals applied to historical prices (per-period
-     fundamentals are not stored) &mdash; treat as a stress test of the
-     ranker, not an out-of-sample evaluation. Frictionless: no transaction
-     costs, slippage, or taxes modelled.</p>
+  <p class="disclaimer">For fun and testing. Not financial advice. At each
+     rebalance the picker grades a stock only against fundamentals that would
+     actually have been filed by then (latest annual report at least 90 days
+     before the rebalance) and only against closes up to that date, so the
+     backtest is genuinely out-of-sample. Frictionless: no transaction costs,
+     slippage, or taxes modelled.</p>
 
   {# Horizon tabs: clicking re-runs the backtest in place via the JSON
      endpoint, so the URL stays /backtest while the rendered horizon

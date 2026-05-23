@@ -98,6 +98,10 @@ pub struct FundFact {
     pub fiscal_year: i64,
     pub fiscal_qtr: Option<i64>,
     pub value: f64,
+    /// `YYYY-MM-DD` end-of-period date. Carried so the backtest can pick the
+    /// latest annual whose figures would actually have been *filed* by an
+    /// as-of date (period_end + a filing-lag cushion ≤ as_of).
+    pub period_end: String,
 }
 
 /// Assemble [`compute::RatioInputs`] for a company's most recent full fiscal
@@ -106,11 +110,41 @@ pub struct FundFact {
 /// company has no annual facts. Shared by the symbol page and the home
 /// strongest / weakest ranking so both grade a stock identically.
 pub fn latest_annual_inputs(facts: &[FundFact], price: Option<f64>) -> Option<compute::RatioInputs> {
+    latest_annual_inputs_filtered(facts, price, |_| true)
+}
+
+/// Conservative filing-lag cushion applied by [`latest_annual_inputs_as_of`]:
+/// an SEC 10-K is due 60–90 days after fiscal year end depending on filer
+/// category, so a backtest standing at date `D` should only see annuals
+/// whose period_end is at least 90 days before `D`. Prevents the backtest
+/// from grading a stock with figures that did not yet exist on its as-of date.
+pub const FILING_LAG_DAYS: i64 = 90;
+
+/// As-of variant of [`latest_annual_inputs`] for the backtest: pick the
+/// latest annual fiscal year whose `period_end + FILING_LAG_DAYS ≤ as_of`.
+/// `None` when no annual would have been filed yet by then.
+pub fn latest_annual_inputs_as_of(
+    facts: &[FundFact],
+    price: Option<f64>,
+    as_of: chrono::NaiveDate,
+) -> Option<compute::RatioInputs> {
+    latest_annual_inputs_filtered(facts, price, |f| {
+        chrono::NaiveDate::parse_from_str(&f.period_end, "%Y-%m-%d")
+            .map(|d| d + chrono::Duration::days(FILING_LAG_DAYS) <= as_of)
+            .unwrap_or(false)
+    })
+}
+
+fn latest_annual_inputs_filtered(
+    facts: &[FundFact],
+    price: Option<f64>,
+    keep: impl Fn(&FundFact) -> bool,
+) -> Option<compute::RatioInputs> {
     // (metric, fiscal_year) -> value, annual rows only.
     let mut annual: HashMap<(&str, i64), f64> = HashMap::new();
     let mut latest_fy: Option<i64> = None;
     for f in facts {
-        if f.fiscal_qtr.is_none() {
+        if f.fiscal_qtr.is_none() && keep(f) {
             annual.insert((f.metric.as_str(), f.fiscal_year), f.value);
             latest_fy = Some(latest_fy.map_or(f.fiscal_year, |y| y.max(f.fiscal_year)));
         }

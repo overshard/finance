@@ -1278,12 +1278,42 @@ pub fn pick_month(i: &PickInput<'_>) -> Option<f64> {
     Some(ret_20d)
 }
 
-/// Year-horizon score: the Phase 20 combined fundamentals-and-trajectory
-/// score directly. The year horizon's right answer is already what `standing`
-/// computes — quality businesses with healthy trajectory — so we pass it
-/// through rather than invent a second long-horizon read.
-pub fn pick_year(i: &PickInput<'_>) -> Option<f64> {
-    Some(i.standing?.score * 100.0)
+/// Trailing window the quarter ranker measures its return over: roughly one
+/// earnings cycle (~63 trading days).
+const QUARTER_BARS: usize = 63;
+
+/// Quarter-horizon score: the trailing ~63-day price return, gated on the
+/// close being above its 200-day SMA and the stock not being weak. `None`
+/// when any of those does not hold or history is too short.
+///
+/// Medium-to-long momentum read: stocks in a confirmed long-term uptrend that
+/// have continued to grind higher across roughly one earnings cycle, with
+/// fundamental quality as a floor. Same shape as `pick_month` on a longer
+/// window — deliberately *not* a pass-through of the standing score, so the
+/// backtest produces genuinely different picks at different historical dates.
+pub fn pick_quarter(i: &PickInput<'_>) -> Option<f64> {
+    let s = i.standing?;
+    if matches!(s.grade, Grade::Bad) {
+        return None;
+    }
+    if i.closes.len() <= QUARTER_BARS.max(PICK_SMA_LONG) {
+        return None;
+    }
+    let len = i.closes.len();
+    let last = i.closes[len - 1];
+    let start = i.closes[len - 1 - QUARTER_BARS];
+    if start <= 0.0 || last <= 0.0 {
+        return None;
+    }
+    let ret_q = (last - start) / start * 100.0;
+    if ret_q <= 0.0 {
+        return None;
+    }
+    let sma200 = sma(i.closes, PICK_SMA_LONG).pop().flatten()?;
+    if last < sma200 {
+        return None;
+    }
+    Some(ret_q)
 }
 
 #[cfg(test)]

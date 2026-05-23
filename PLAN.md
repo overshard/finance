@@ -33,8 +33,9 @@ and resume cleanly from this file alone, keeping token use low.
 _Last updated: 2026-05-23_
 
 **Current phase: Phase 30 (top picks + backtest) complete, verified, and
-deployed to production 2026-05-23 (commit `8ea9048`).** Home page now carries a
-"Top picks" panel — four columns (Day / Week / Month / Year), 5 ranked
+deployed to production 2026-05-23 (commit `8ea9048`); a follow-up rework
+shipped same day (see the decisions log).** Home page now carries a
+"Top picks" panel — four columns (Day / Week / Month / Quarter), 5 ranked
 stocks each, every row a verdict badge over a headline figure. A new
 `/backtest` page replays the picker over historical prices and shows
 strategy vs `^SPX` equity, total return, CAGR, per-pick and
@@ -44,10 +45,14 @@ horizons (the user's design call); both win-rate definitions shown
 side-by-side; one chart with horizon tabs (vs four side-by-side).
 Migration `0009` adds the `picks` table; the scheduler's new `picks`
 section snapshots forward each day right after `daily_close`. The
-backtest uses today's standing applied historically (acknowledged
-look-ahead bias, surfaced in the page disclaimer) — for fun and
-testing, not an out-of-sample evaluation; the user is explicit this
-is for fun, not financial advice. **Phase 28 (ETFs as first-class
+backtest is genuinely out-of-sample: at each rebalance the picker
+grades a stock only against fundamentals that would actually have
+been filed by then (latest annual whose period_end is at least 90
+days before the rebalance — `models::FILING_LAG_DAYS`) and only
+against closes up to that date — so a stock strong today but weak
+in 2022 will grade weak in a 2022 rebalance. Migration `0010` cleared
+stale `year`-horizon snapshot rows during the rework. The user is
+explicit this is for fun, not financial advice. **Phase 28 (ETFs as first-class
 citizens) is complete, verified, and deployed to production (commit
 `2ae81d5`).** The new fund_metadata + sector/geography + ETF-distributions
 data populates async via the scheduler's first sec / fund_metadata /
@@ -874,9 +879,12 @@ schema, unused for now.
     Feb 2005 first stored bar) +692.8% / +10.24%/yr.
 
 - **Phase 30 top picks + backtest.** Complete, verified, and deployed
-  to production 2026-05-23 (commit `8ea9048`). A home-page "Top picks" panel of 5
-  forecast-horizon picks per horizon (Day / Week / Month / Year), and a
-  new `/backtest` page that replays the picker over historical prices.
+  to production 2026-05-23 (commit `8ea9048`); reworked same day to
+  replace the `year` horizon with `quarter` and to compute per-
+  rebalance historical standings (see the decisions log). A home-page
+  "Top picks" panel of 5 forecast-horizon picks per horizon
+  (Day / Week / Month / Quarter), and a new `/backtest` page that
+  replays the picker over historical prices.
   Stocks-only across all four horizons per the user's design call; one
   chart with horizon tabs on the backtest page; both per-pick and
   per-period win rates surfaced. For fun and testing — explicitly not
@@ -891,8 +899,10 @@ schema, unused for now.
       `[30, 70]` and the close being above SMA50; same `Weak` filter.
     - **Month:** trailing 20-day % return, gated on the close being
       above SMA200; same `Weak` filter.
-    - **Year:** the Phase 20 combined fundamentals + trajectory score,
-      pass-through — the right answer for the year horizon already.
+    - **Quarter:** trailing ~63-day (one earnings cycle) % return,
+      gated on the close being above SMA200; same `Weak` filter.
+      (Originally **Year**, a pass-through of the Phase 20 standing —
+      replaced same day; see the decisions log.)
   - **Picks module (`src/picks.rs`)** glues the rankers to the DB:
     `HORIZONS` const, `compute_picks(bundles)` runs each ranker against
     every stock and returns one `PickSlate` (the 5 top per horizon),
@@ -921,7 +931,7 @@ schema, unused for now.
     `frontend/static_src/backtest/`): one page, four horizon tabs that
     swap content in place via `GET /api/backtest?horizon=…`. The JSON
     feed runs `picks::run_backtest`, which walks back from today by
-    horizon stride (1/5/20/252 trading days), at each rebalance picks
+    horizon stride (1/5/20/63 trading days), at each rebalance picks
     the top 5 with the same rankers, equal-weights them for one stride,
     rebalances at the next stride, and tracks both the strategy's and
     `^SPX`'s equity from a $10k anchor. Renders an equity curve area
@@ -930,11 +940,14 @@ schema, unused for now.
     per-pick win rate, per-period win rate), and a per-rebalance
     history table with each period's picks color-tinted by their own
     return.
-  - **Acknowledged look-ahead.** The backtest uses today's standing
-    (Phase 7 fundamentals are not stored per period), so a stock that
-    is `Strong` today filters into every historical pick. Surfaced
-    explicitly in the page disclaimer; v1 trade-off, fits the user's
-    "for fun and testing" framing.
+  - **Out-of-sample standings.** At each rebalance date the backtest
+    grades a stock against the latest annual whose `period_end + 90
+    days ≤ rebalance` (a conservative SEC filing-lag cushion —
+    `models::FILING_LAG_DAYS`) and against closes sliced to that date.
+    `HistBundle` carries raw `FundFact`s; `rank_at` calls
+    `models::latest_annual_inputs_as_of` then `compute::standing` per
+    rebalance, so a stock weak in 2022 grades weak in a 2022
+    rebalance and the year-over-year picks genuinely diverge.
   - **Disclaimer style** in `base.scss`: a quiet ink-faint italic line,
     smaller than body text, never carries semantic color. Used on both
     the home Top picks panel and the backtest page header.
@@ -944,17 +957,19 @@ schema, unused for now.
     runs ~1-2s per horizon, warm ~100ms.
   - Verified: cargo + bun build clean; `/` renders the four-column
     Top picks section on desktop (4-wide) and phone (2x2), every row
-    carrying a verdict badge over a percent return (or the year score);
-    `/backtest` loads the Month horizon by default with 49 rebalances
-    over 4 years (`2022-05-25 → 2026-04-23`), the equity curve drawing
-    the strategy and `^SPX` from $10k. Headline figures across all
-    four horizons in local replay: day 250 rebalances / +76.8% vs ^SPX
-    +27.2% / 54.1% per-pick win / 57.2% beat-bench; week 99 / +59.7%
-    vs +41.3% / 52.7% / 46.5%; month 49 / +595.8% vs +78.7% / 58.2%
-    / 61.2%; year 3 / +142.1% vs +47.6% / 66.7% / 100.0%. Phone view
-    stacks the stat cards 2x2 and the rebalance table scrolls inside
-    its card. Tabs swap horizons in place without a navigation. Zero
-    console errors.
+    carrying a verdict badge over a percent return; `/backtest` loads
+    the Month horizon by default with the equity curve drawing the
+    strategy and `^SPX` from $10k. After the same-day rework the
+    Quarter horizon's local replay (2021-08 → 2026-02, 19 rebalances)
+    surfaced genuinely varying picks per period: 2021 H2 was tech
+    (NET, DDOG, NVDA, AMD, MRVL); 2022 H1 rotated to defensives
+    (CVX, LMT, PM, MO); MU appeared in exactly one 2022 period (where
+    its trailing-60d momentum and as-of fundamentals warranted entry)
+    and the backtest honestly recorded the -19.8% exit — a stark
+    contrast to the pre-rework behaviour where MU was top-5 in every
+    year by construction. Phone view stacks the stat cards 2x2 and
+    the rebalance table scrolls inside its card. Tabs swap horizons
+    in place without a navigation. Zero console errors.
 
 - **Phase 26 dividend payouts.** Complete, verified, and deployed to
   production (commit `7608b06`). Per-payout dividend history sourced from Yahoo's chart endpoint
@@ -2697,6 +2712,51 @@ finance/
   refresh (~144 calls)" are now historical — a full refresh today
   spans multiple hours by design; the seed and incremental jobs are
   built to stop and resume against the guard.
+- **2026-05-23 — Phase 30 rework: year horizon → quarter, and a true
+  out-of-sample backtest.** The user flagged that the Day/Week/Month
+  tabs varied year-over-year but the Year tab showed the same top-5
+  in every period — MU in 2022 despite a flat-downward trajectory.
+  Diagnosed: `pick_year` was a pass-through of today's `Standing`,
+  and `HistBundle::standing` was computed once from today's
+  fundamentals and today's full close history, then reused at every
+  historical rebalance. So the year horizon was constructed to be
+  identical year-over-year; the short rankers also carried a softer
+  today-bias via their `Bad`-grade filter (a stock weak now never got
+  picked historically). Two fixes shipped together:
+  - **Year → Quarter.** `pick_year` dropped; new `pick_quarter`
+    mirrors `pick_month`'s shape on a 63-bar window (one earnings
+    cycle), gated on close > SMA200, same `Weak` filter. A year
+    forecast that is honestly "today's standing rank" was not pulling
+    its weight; quarter sits cleanly between month and "no horizon"
+    and produces a real momentum read. `HORIZONS`, `stride_for`,
+    `max_bars_for`, and the match arms in `compute_picks` / `rank_at`
+    all updated. Migration `0010_quarter_horizon.sql` deletes any
+    stale `year`-keyed rows in the `picks` snapshot table; the next
+    `daily_close` writes a fresh `quarter` snapshot.
+  - **Per-rebalance standings.** `models::FundFact` now carries
+    `period_end`; new `models::latest_annual_inputs_as_of(facts,
+    price, as_of)` picks the latest annual whose `period_end +
+    FILING_LAG_DAYS (90) ≤ as_of` — a conservative SEC 10-K filing-
+    lag cushion (10-Ks are due 60–90 days after fiscal year end
+    depending on filer category), so the backtest never grades a
+    stock with figures that did not yet exist on its as-of date.
+    `HistBundle` carries raw `FundFact`s (not a precomputed
+    `Standing`); `rank_at` computes the standing per rebalance from
+    the closes-so-far slice and the as-of-filed inputs. Every
+    `FundFact` SELECT (4 sites: routes/home.rs, routes/search.rs,
+    routes/symbols.rs, picks.rs ×2) was extended to fetch the new
+    `period_end` column.
+  - **Disclaimers.** The "acknowledged look-ahead bias" copy on the
+    `/backtest` page and in the `routes/backtest.rs` + `picks.rs`
+    module docs is replaced with the honest "genuinely out-of-sample"
+    description. Home-page Top-picks copy reframed from "next year"
+    to "next quarter".
+  - Verified: cargo + bun build clean; `/backtest` Quarter tab runs
+    19 rebalances over 2021-08 → 2026-02 with genuinely varying picks
+    (2021 H2 tech, 2022 H1 defensives, MU appearing in exactly one
+    2022 period and the backtest honestly recording the -19.8%
+    exit). Home page renders all four columns including "Next
+    quarter" with the new description text. No deploy yet.
 
 ---
 

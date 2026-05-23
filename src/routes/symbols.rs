@@ -335,12 +335,12 @@ const Q4_DERIVABLE: &[&str] = &["revenue", "net_income", "eps_diluted", "dividen
 /// not decompose perfectly — the diluted share count drifts quarter to quarter
 /// — but the residual is small and the plan calls for showing it.
 fn derive_q4(facts: &[models::FundFact]) -> Vec<models::FundFact> {
-    // (metric, fiscal_year) -> fiscal_qtr (None = full year) -> value.
-    let mut by: HashMap<(&str, i64), HashMap<Option<i64>, f64>> = HashMap::new();
+    // (metric, fiscal_year) -> fiscal_qtr (None = full year) -> (value, period_end).
+    let mut by: HashMap<(&str, i64), HashMap<Option<i64>, (f64, String)>> = HashMap::new();
     for f in facts {
         by.entry((f.metric.as_str(), f.fiscal_year))
             .or_default()
-            .insert(f.fiscal_qtr, f.value);
+            .insert(f.fiscal_qtr, (f.value, f.period_end.clone()));
     }
     let mut derived = Vec::new();
     for ((metric, year), vals) in by {
@@ -348,7 +348,7 @@ fn derive_q4(facts: &[models::FundFact]) -> Vec<models::FundFact> {
         if !Q4_DERIVABLE.contains(&metric) || vals.contains_key(&Some(4)) {
             continue;
         }
-        let (Some(&fy), Some(&q1), Some(&q2), Some(&q3)) = (
+        let (Some(fy), Some(q1), Some(q2), Some(q3)) = (
             vals.get(&None),
             vals.get(&Some(1)),
             vals.get(&Some(2)),
@@ -361,7 +361,9 @@ fn derive_q4(facts: &[models::FundFact]) -> Vec<models::FundFact> {
             period: format!("Q4-{year}"),
             fiscal_year: year,
             fiscal_qtr: Some(4),
-            value: fy - q1 - q2 - q3,
+            value: fy.0 - q1.0 - q2.0 - q3.0,
+            // The synthetic Q4 ends on the FY's period end (Q4 closes the fiscal year).
+            period_end: fy.1.clone(),
         });
     }
     derived
@@ -1018,7 +1020,7 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
 
     let fundamentals = if is_stock {
         let facts: Vec<models::FundFact> = sqlx::query_as(
-            "SELECT metric, period, fiscal_year, fiscal_qtr, value \
+            "SELECT metric, period, fiscal_year, fiscal_qtr, value, period_end \
              FROM fundamentals WHERE ticker = ?",
         )
         .bind(&ticker)

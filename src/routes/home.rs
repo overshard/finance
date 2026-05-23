@@ -321,8 +321,8 @@ async fn load_stocks(state: &AppState) -> Vec<StockRow> {
 
     // 2. Every stored fundamentals fact for the curated stocks, grouped by
     //    ticker — the basis for each stock's graded ratios.
-    let fact_rows: Vec<(String, String, String, i64, Option<i64>, f64)> = sqlx::query_as(
-        "SELECT f.ticker, f.metric, f.period, f.fiscal_year, f.fiscal_qtr, f.value \
+    let fact_rows: Vec<(String, String, String, i64, Option<i64>, f64, String)> = sqlx::query_as(
+        "SELECT f.ticker, f.metric, f.period, f.fiscal_year, f.fiscal_qtr, f.value, f.period_end \
          FROM fundamentals f JOIN symbols s ON s.ticker = f.ticker \
          WHERE s.is_seeded = 1 AND s.kind = 'stock'",
     )
@@ -330,13 +330,14 @@ async fn load_stocks(state: &AppState) -> Vec<StockRow> {
     .await
     .unwrap_or_default();
     let mut facts: HashMap<String, Vec<models::FundFact>> = HashMap::new();
-    for (ticker, metric, period, fiscal_year, fiscal_qtr, value) in fact_rows {
+    for (ticker, metric, period, fiscal_year, fiscal_qtr, value, period_end) in fact_rows {
         facts.entry(ticker).or_default().push(models::FundFact {
             metric,
             period,
             fiscal_year,
             fiscal_qtr,
             value,
+            period_end,
         });
     }
 

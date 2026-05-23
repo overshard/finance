@@ -167,23 +167,24 @@ async fn attach_standings(state: &AppState, cards: &mut [Card]) {
     // input, so the placeholder count is bounded and safe.
     let placeholders = vec!["?"; stock_tickers.len()].join(",");
     let sql = format!(
-        "SELECT ticker, metric, period, fiscal_year, fiscal_qtr, value \
+        "SELECT ticker, metric, period, fiscal_year, fiscal_qtr, value, period_end \
          FROM fundamentals WHERE ticker IN ({placeholders})"
     );
-    let mut q = sqlx::query_as::<_, (String, String, String, i64, Option<i64>, f64)>(&sql);
+    let mut q = sqlx::query_as::<_, (String, String, String, i64, Option<i64>, f64, String)>(&sql);
     for t in &stock_tickers {
         q = q.bind(*t);
     }
     let fact_rows = q.fetch_all(&state.pool).await.unwrap_or_default();
 
     let mut facts: HashMap<String, Vec<models::FundFact>> = HashMap::new();
-    for (ticker, metric, period, fiscal_year, fiscal_qtr, value) in fact_rows {
+    for (ticker, metric, period, fiscal_year, fiscal_qtr, value, period_end) in fact_rows {
         facts.entry(ticker).or_default().push(models::FundFact {
             metric,
             period,
             fiscal_year,
             fiscal_qtr,
             value,
+            period_end,
         });
     }
 

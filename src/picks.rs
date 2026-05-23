@@ -1,15 +1,14 @@
 //! Top picks across four forecast horizons (Phase 30).
 //!
 //! Each horizon has a separate ranker in `compute` (`pick_day` / `pick_week`
-//! / `pick_month` / `pick_year`). This module is the glue: it loads the
+//! / `pick_month` / `pick_quarter`). This module is the glue: it loads the
 //! per-stock inputs once, runs every ranker, and returns the top-N per
 //! horizon. Two callers use it — the home page (live, every render) and the
 //! scheduler's `picks` snapshot job (once a day, persisted into `picks` so
 //! `/backtest` has immutable history to read).
 //!
-//! Stocks-only across all four horizons, per the user's design call: the
-//! short rankers filter on Phase 20 fundamental strength, which only stocks
-//! carry, and the year horizon delegates to the Phase 20 standing directly.
+//! Stocks-only across all four horizons, per the user's design call: every
+//! ranker filters on Phase 20 fundamental strength, which only stocks carry.
 
 use std::collections::HashMap;
 
@@ -45,9 +44,9 @@ pub const HORIZONS: &[Horizon] = &[
         desc: "trailing 20-day momentum, gated on the close above SMA200 and fundamentals not weak",
     },
     Horizon {
-        key: "year",
-        label: "Next year",
-        desc: "Phase 20 combined fundamentals + 12-month trajectory score (no recent-move signal)",
+        key: "quarter",
+        label: "Next quarter",
+        desc: "trailing 60-day momentum (roughly one earnings cycle), gated on the close above SMA200 and fundamentals not weak",
     },
 ];
 
@@ -127,7 +126,7 @@ pub fn compute_picks(bundles: &[StockBundle]) -> Vec<PickSlate> {
                         "day" => compute::pick_day(&input),
                         "week" => compute::pick_week(&input),
                         "month" => compute::pick_month(&input),
-                        "year" => compute::pick_year(&input),
+                        "quarter" => compute::pick_quarter(&input),
                         _ => None,
                     }?;
                     Some((b, score))
@@ -182,21 +181,22 @@ pub async fn load_bundles(pool: &SqlitePool) -> sqlx::Result<Vec<StockBundle>> {
     }
 
     // 2. Every fundamentals fact for the curated stocks, grouped by ticker.
-    let fact_rows: Vec<(String, String, String, i64, Option<i64>, f64)> = sqlx::query_as(
-        "SELECT f.ticker, f.metric, f.period, f.fiscal_year, f.fiscal_qtr, f.value \
+    let fact_rows: Vec<(String, String, String, i64, Option<i64>, f64, String)> = sqlx::query_as(
+        "SELECT f.ticker, f.metric, f.period, f.fiscal_year, f.fiscal_qtr, f.value, f.period_end \
          FROM fundamentals f JOIN symbols s ON s.ticker = f.ticker \
          WHERE s.is_seeded = 1 AND s.kind = 'stock'",
     )
     .fetch_all(pool)
     .await?;
     let mut facts: HashMap<String, Vec<models::FundFact>> = HashMap::new();
-    for (ticker, metric, period, fiscal_year, fiscal_qtr, value) in fact_rows {
+    for (ticker, metric, period, fiscal_year, fiscal_qtr, value, period_end) in fact_rows {
         facts.entry(ticker).or_default().push(models::FundFact {
             metric,
             period,
             fiscal_year,
             fiscal_qtr,
             value,
+            period_end,
         });
     }
 
@@ -294,10 +294,11 @@ pub async fn snapshot_today(pool: &SqlitePool, date: &str) -> anyhow::Result<usi
 // The picks held for one stride, equal-weight, are sold at the next
 // rebalance close.
 //
-// Acknowledged look-ahead: fundamentals are today's (we do not store a
-// per-period history of Phase 7 facts). The page's disclaimer surfaces
-// this — the backtest is a stress test "for fun and testing", not a clean
-// out-of-sample evaluation.
+// Out-of-sample: at each rebalance date the picker grades a stock only
+// against fundamentals that would actually have been filed by then
+// (`models::latest_annual_inputs_as_of`, with a 90-day filing-lag cushion)
+// and only against closes up to that date. So a stock that grades strong
+// today but was weak in 2022 will grade weak in a 2022 rebalance.
 
 /// One historical bar a backtest reads off — a trading date and the close.
 #[derive(Debug, Clone)]
@@ -306,13 +307,17 @@ pub struct HistBar {
     pub close: f64,
 }
 
-/// Per-stock bundle for the backtest: the standing carried as today's value
-/// (look-ahead bias acknowledged), and the full close history the rankers
-/// walk over.
+/// Per-stock bundle for the backtest: the full close history the rankers
+/// walk over plus the raw stored fundamentals. The standing is *not*
+/// precomputed; `rank_at` builds it at each rebalance date from the slice
+/// of closes-so-far and the latest annual that would actually have been
+/// filed by then (see [`models::latest_annual_inputs_as_of`]). That makes
+/// the backtest genuinely out-of-sample: a stock that is strong today but
+/// was weak in 2022 won't be graded "strong" in a 2022 rebalance.
 pub struct HistBundle {
     pub ticker: String,
     pub bars: Vec<HistBar>,
-    pub standing: Option<Standing>,
+    pub facts: Vec<models::FundFact>,
 }
 
 /// The benchmark every horizon's strategy is measured against. Hardcoded to
@@ -321,9 +326,9 @@ pub struct HistBundle {
 pub const BENCHMARK_TICKER: &str = "^SPX";
 
 /// Calendar days of history the backtest's loader pulls. Comfortably covers
-/// the longest horizon (year, ~5 rebalances × 252 bars ≈ 5 years) plus the
-/// warm-up the rankers need (200-day SMA + a year for the standing). Capping
-/// here keeps the load query off the deep history some indexes carry
+/// the longest horizon (quarter, ~20 rebalances × 63 bars ≈ 5 years) plus
+/// the warm-up the rankers need (200-day SMA + a year for the standing).
+/// Capping here keeps the load query off the deep history some indexes carry
 /// (`^SPX` goes back to 1789), trading no real backtest depth for a fast
 /// request.
 const HIST_LOOKBACK_DAYS: i64 = 365 * 7;
@@ -400,20 +405,21 @@ fn stride_for(horizon_key: &str) -> usize {
         "day" => 1,
         "week" => 5,
         "month" => 20,
-        "year" => 252,
+        "quarter" => 63,
         _ => 1,
     }
 }
 
 /// Maximum backtest window per horizon, in trading bars. Cap each so the
 /// number of rebalances stays meaningful without dragging the request: day
-/// has too many otherwise, year too few. Roughly 1y / 2y / 4y / 5y.
+/// has too many otherwise, quarter too few on a short window. Roughly
+/// 1y / 2y / 4y / 5y across the four horizons.
 fn max_bars_for(horizon_key: &str) -> usize {
     match horizon_key {
         "day" => 252,
         "week" => 504,
         "month" => 1008,
-        "year" => 1260,
+        "quarter" => 1260,
         _ => 252,
     }
 }
@@ -426,31 +432,30 @@ fn max_bars_for(horizon_key: &str) -> usize {
 pub async fn load_hist_bundles(
     pool: &SqlitePool,
 ) -> sqlx::Result<(Vec<HistBundle>, Vec<HistBar>)> {
-    // 1. The curated stocks' price, plus today's standing as for the live
-    //    picks. (Name not needed: the backtest table shows tickers only.)
-    let price_rows: Vec<(String, Option<f64>)> = sqlx::query_as(
-        "SELECT s.ticker, \
-           COALESCE(s.last_price, \
-             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1)) \
-         FROM symbols s WHERE s.is_seeded = 1 AND s.kind = 'stock'",
+    // 1. The curated stocks' tickers. (Price not needed: the backtest only
+    //    reads each stock's closes, indexed by date, never `last_price`.
+    //    Name not needed either: the backtest table shows tickers only.)
+    let price_rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT s.ticker FROM symbols s WHERE s.is_seeded = 1 AND s.kind = 'stock'",
     )
     .fetch_all(pool)
     .await?;
-    let fact_rows: Vec<(String, String, String, i64, Option<i64>, f64)> = sqlx::query_as(
-        "SELECT f.ticker, f.metric, f.period, f.fiscal_year, f.fiscal_qtr, f.value \
+    let fact_rows: Vec<(String, String, String, i64, Option<i64>, f64, String)> = sqlx::query_as(
+        "SELECT f.ticker, f.metric, f.period, f.fiscal_year, f.fiscal_qtr, f.value, f.period_end \
          FROM fundamentals f JOIN symbols s ON s.ticker = f.ticker \
          WHERE s.is_seeded = 1 AND s.kind = 'stock'",
     )
     .fetch_all(pool)
     .await?;
     let mut facts: HashMap<String, Vec<models::FundFact>> = HashMap::new();
-    for (ticker, metric, period, fiscal_year, fiscal_qtr, value) in fact_rows {
+    for (ticker, metric, period, fiscal_year, fiscal_qtr, value, period_end) in fact_rows {
         facts.entry(ticker).or_default().push(models::FundFact {
             metric,
             period,
             fiscal_year,
             fiscal_qtr,
             value,
+            period_end,
         });
     }
 
@@ -478,18 +483,10 @@ pub async fn load_hist_bundles(
 
     let bundles: Vec<HistBundle> = price_rows
         .into_iter()
-        .map(|(ticker, last_price)| {
+        .map(|(ticker,)| {
             let bars = bars_by.remove(&ticker).unwrap_or_default();
-            let closes: Vec<f64> = bars.iter().map(|b| b.close).collect();
-            let standing = facts.get(&ticker).and_then(|f| {
-                let inputs = models::latest_annual_inputs(f, last_price)?;
-                compute::standing(&compute::compute_ratios(&inputs), &closes)
-            });
-            HistBundle {
-                ticker,
-                bars,
-                standing,
-            }
+            let facts = facts.remove(&ticker).unwrap_or_default();
+            HistBundle { ticker, bars, facts }
         })
         .collect();
 
@@ -511,18 +508,23 @@ pub async fn load_hist_bundles(
     Ok((bundles, bench_bars))
 }
 
-/// Rank `bundles` as of bar index `idx` (within the benchmark's date list).
-/// Each bundle is sliced to its own bars at-or-before the benchmark's
-/// `as_of` date, with `last_price` and `prev_close` derived from that slice.
-/// A stock that does not yet have two bars by that date is silently dropped.
+/// Rank `bundles` as of the trading date `as_of`. Each bundle is sliced to
+/// its own bars at-or-before that date; its standing is computed *as of*
+/// that date too, using the latest annual that would actually have been
+/// filed by then (see [`models::latest_annual_inputs_as_of`]) — so a stock
+/// that is strong today but was weak in 2022 will grade weak in a 2022
+/// rebalance. A stock that does not yet have two bars, or whose
+/// fundamentals had not been filed yet, is silently dropped.
 fn rank_at(
     bundles: &[HistBundle],
     as_of: &str,
     horizon_key: &str,
 ) -> Vec<(String, f64, f64)> {
+    let as_of_date = chrono::NaiveDate::parse_from_str(as_of, "%Y-%m-%d").ok();
     let mut scored: Vec<(String, f64, f64)> = bundles
         .iter()
         .filter_map(|b| {
+            let as_of_date = as_of_date?;
             // Find the index of the bundle's last bar at-or-before `as_of`.
             // `partition_point` returns the first index *after* the predicate
             // holds, so subtracting one yields the bar at-or-before. The
@@ -533,21 +535,28 @@ fn rank_at(
             }
             let idx = upper - 1;
             let last_price = b.bars[idx].close;
-            let prev_close = b.bars[idx - 1].close;
             let closes: Vec<f64> = b.bars[..=idx].iter().map(|x| x.close).collect();
+            // Standing as-of: grade the latest annual whose period_end is
+            // at least FILING_LAG_DAYS before as_of, against the closes
+            // sliced to as_of (so the trajectory score reads the same
+            // window the rankers see).
+            let standing = models::latest_annual_inputs_as_of(
+                &b.facts,
+                Some(last_price),
+                as_of_date,
+            )
+            .and_then(|inputs| {
+                compute::standing(&compute::compute_ratios(&inputs), &closes)
+            });
             let input = PickInput {
                 closes: &closes,
-                standing: b.standing,
+                standing,
             };
-            // `last_price` and `prev_close` are read above only for the
-            // entry-price recording below; the rankers themselves consume
-            // `closes` exclusively.
-            let _ = (last_price, prev_close);
             let score = match horizon_key {
                 "day" => compute::pick_day(&input),
                 "week" => compute::pick_week(&input),
                 "month" => compute::pick_month(&input),
-                "year" => compute::pick_year(&input),
+                "quarter" => compute::pick_quarter(&input),
                 _ => None,
             }?;
             Some((b.ticker.clone(), score, last_price))
