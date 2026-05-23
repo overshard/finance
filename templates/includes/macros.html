@@ -67,6 +67,43 @@
 </a>
 {% endmacro %}
 
+{# `picks_column` renders one horizon's column of Top picks (Phase 30):
+   a header with the horizon's label + a quiet one-line description, then up
+   to 5 ranked rows. The score is formatted differently per horizon — a
+   percent return for day/week/month, a raw composite for year — so each
+   row's headline figure reads in the right units. `slate.picks` is empty
+   when no stock qualified (e.g. no fundamentals synced yet); the panel
+   gracefully shows an empty state instead of disappearing. #}
+{% macro picks_column(slate) %}
+<section class="picks-col">
+  <h3 class="picks-col__title">{{ slate.horizon.label }}</h3>
+  <p class="picks-col__desc">{{ slate.horizon.desc }}</p>
+  {% if slate.picks %}
+  <ol class="picks-col__list">
+    {% for p in slate.picks %}
+    <li class="pick">
+      <a class="pick__row" href="/s/{{ p.ticker|urlencode }}">
+        <span class="pick__rank num">{{ p.rank }}</span>
+        <span class="pick__sym num">{{ p.ticker }}</span>
+        <span class="pick__name">{{ p.name }}</span>
+        <span class="pick__badge">{{ verdict_badge(p.standing) }}</span>
+        <span class="pick__score num {{ 'is-up' if p.score >= 0 else 'is-down' }}">
+          {%- if slate.horizon.key == 'year' -%}
+            {{ '%+.1f'|format(p.score) }}
+          {%- else -%}
+            {{ p.score|pct }}
+          {%- endif -%}
+        </span>
+      </a>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p class="picks-col__empty">No qualifying picks &mdash; fundamentals may not be synced yet.</p>
+  {% endif %}
+</section>
+{% endmacro %}
+
 {# `standing_row` renders one strongest/weakest row (Phase 20): the rolled-up
    verdict badge over a combined fundamentals-and-trajectory score, with the
    trailing 12-month return alongside for context. `--bar` sizes the magnitude

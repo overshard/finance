@@ -1,3 +1,4 @@
+pub mod backtest;
 pub mod health;
 pub mod home;
 pub mod search;

@@ -15,7 +15,7 @@
        starter list and its deep price history. This dashboard fills in once data lands.</p>
   </section>
   {% else %}
-  {% from "includes/macros.html" import spark_card, mover_row, standing_row %}
+  {% from "includes/macros.html" import spark_card, mover_row, standing_row, picks_column %}
 
   <div class="page-head">
     <h1>Markets</h1>
@@ -54,6 +54,20 @@
       <p class="movers__empty">No price data yet.</p>
       {% endif %}
     </section>
+  </div>
+
+  <h2 class="section-title">Top picks<span class="section-title__asof"><a href="/backtest">Backtest these &rarr;</a></span></h2>
+  <p class="section-note">Forecasts for tomorrow, next week, next month and
+     next year &mdash; ranked off recent momentum and the fundamentals /
+     trajectory the app already carries, using only data available now.
+     The figure beside each row is the signal that earned the pick (e.g.
+     yesterday&rsquo;s move, trailing 20-day return), not a prediction of
+     what it will return.</p>
+  <p class="disclaimer">For fun and testing. Not financial advice. The picker
+     uses momentum + quality as forecasting signals; it does not know
+     what tomorrow holds.</p>
+  <div class="picks-grid">
+    {% for slate in pick_slates %}{{ picks_column(slate) }}{% endfor %}
   </div>
 
   <h2 class="section-title">Strongest &amp; weakest{% if standings_asof %}<span class="section-title__asof">fundamentals synced {{ standings_asof|ago }}</span>{% endif %}</h2>

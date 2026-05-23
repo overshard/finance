@@ -336,10 +336,126 @@
   min-width: 5ch;
 }
 
+/* ---------- top picks panel (Phase 30) ---------- */
+/* Four columns (Day / Week / Month / Year), each carrying 5 ranked picks.
+   On a phone the four stack 2-up so a quick read of all horizons stays
+   above the fold; on desktop they spread out into one row. */
+.picks-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.picks-col {
+  @include card;
+  padding: 10px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.picks-col__title {
+  @include eyebrow;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+.picks-col__desc {
+  margin: 0;
+  font-size: 0.7rem;
+  color: var(--ink-faint);
+  line-height: 1.35;
+  /* clamp to two lines on a phone so the column heights stay close */
+  min-height: 2.6em;
+}
+
+.picks-col__list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+
+.picks-col__empty {
+  margin: 8px 0;
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+}
+
+.pick {
+  border-bottom: 1px solid var(--rule);
+}
+
+.pick:last-child {
+  border-bottom: 0;
+}
+
+.pick__row {
+  display: grid;
+  /* rank, sym, name, badge, score */
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 2px;
+  color: var(--ink);
+}
+
+.pick__row:hover {
+  color: var(--ink);
+  background: var(--well);
+}
+
+.pick__rank {
+  width: 1.5ch;
+  text-align: right;
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+
+.pick__sym {
+  font-weight: 700;
+  font-size: 0.82rem;
+}
+
+.pick__name {
+  font-size: 0.74rem;
+  color: var(--ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pick__badge {
+  display: flex;
+}
+
+.pick__score {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-align: right;
+  min-width: 4.4ch;
+}
+
+/* on a narrow phone the name yields so rank/sym/badge/score keep their
+   shape — the name is implied by the ticker. */
+@media (max-width: $bp-sm) {
+  .pick__name {
+    display: none;
+  }
+  .pick__row {
+    grid-template-columns: auto auto auto 1fr auto;
+  }
+}
+
 /* ---------- desktop layering ---------- */
 @media (min-width: $bp-md) {
   .movers {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .picks-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 

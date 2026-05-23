@@ -30,9 +30,24 @@ and resume cleanly from this file alone, keeping token use low.
 
 ## Status
 
-_Last updated: 2026-05-22_
+_Last updated: 2026-05-23_
 
-**Current phase: none in progress. Phase 28 (ETFs as first-class
+**Current phase: Phase 30 (top picks + backtest) complete and verified
+locally 2026-05-23; not yet deployed.** Home page now carries a
+"Top picks" panel — four columns (Day / Week / Month / Year), 5 ranked
+stocks each, every row a verdict badge over a headline figure. A new
+`/backtest` page replays the picker over historical prices and shows
+strategy vs `^SPX` equity, total return, CAGR, per-pick and
+per-period win rates, and a per-rebalance history table; horizon tabs
+swap the rendered horizon in place. Stocks-only across all four
+horizons (the user's design call); both win-rate definitions shown
+side-by-side; one chart with horizon tabs (vs four side-by-side).
+Migration `0009` adds the `picks` table; the scheduler's new `picks`
+section snapshots forward each day right after `daily_close`. The
+backtest uses today's standing applied historically (acknowledged
+look-ahead bias, surfaced in the page disclaimer) — for fun and
+testing, not an out-of-sample evaluation; the user is explicit this
+is for fun, not financial advice. **Phase 28 (ETFs as first-class
 citizens) is complete, verified, and deployed to production (commit
 `2ae81d5`).** The new fund_metadata + sector/geography + ETF-distributions
 data populates async via the scheduler's first sec / fund_metadata /
@@ -858,6 +873,89 @@ schema, unused for now.
     history: 10y +320.6% / +15.45%/yr, since-inception (from the
     Feb 2005 first stored bar) +692.8% / +10.24%/yr.
 
+- **Phase 30 top picks + backtest.** Complete and verified locally
+  2026-05-23 — not yet deployed. A home-page "Top picks" panel of 5
+  forecast-horizon picks per horizon (Day / Week / Month / Year), and a
+  new `/backtest` page that replays the picker over historical prices.
+  Stocks-only across all four horizons per the user's design call; one
+  chart with horizon tabs on the backtest page; both per-pick and
+  per-period win rates surfaced. For fun and testing — explicitly not
+  financial advice, a quiet disclaimer rides on both surfaces.
+  - **Pick math (`compute.rs`)** — four pure `pick_*` rankers, each
+    taking the shared `PickInput` (last price, prev close, daily closes,
+    Phase 20 standing) and returning an `Option<f64>` (the headline
+    figure that justified the pick, `None` when disqualified):
+    - **Day:** today's intraday % move + a bias for sitting near the
+      52-week high; skips stocks the standing rates `Weak`.
+    - **Week:** trailing 5-day % return, gated on RSI(14) being in
+      `[30, 70]` and the close being above SMA50; same `Weak` filter.
+    - **Month:** trailing 20-day % return, gated on the close being
+      above SMA200; same `Weak` filter.
+    - **Year:** the Phase 20 combined fundamentals + trajectory score,
+      pass-through — the right answer for the year horizon already.
+  - **Picks module (`src/picks.rs`)** glues the rankers to the DB:
+    `HORIZONS` const, `compute_picks(bundles)` runs each ranker against
+    every stock and returns one `PickSlate` (the 5 top per horizon),
+    `load_bundles(pool)` builds the per-stock bundles in 3 queries (the
+    same shape as `routes::home::load_stocks`), `snapshot_today(pool,
+    date)` writes the result into the `picks` table.
+  - **Migration `0009`** adds the `picks` table:
+    `(snapshot_date, horizon, rank, ticker, score, price_at_pick)`, PK
+    on the first three. One row per pick, replaced wholesale on each
+    snapshot date (idempotent reruns). Frozen forward from the first
+    deploy so the backtest reads immutable history, not today's algo
+    replayed over old data (which an algo tweak would silently rewrite).
+  - **Scheduler** gained a `picks` section right after
+    `run_daily_close_if_due`. Keyed in `meta` on `picks_snapshot_date`
+    so it fires exactly once per ET trading date, and gated on
+    `daily_close_date` already being set so the picks are scored off
+    fresh closes. Logs to `fetch_log` + flips `data_status` like every
+    other job; surfaces on `/health` for free.
+  - **Home page** (`routes/home.rs` + `home.html`) carries the "Top
+    picks" section between Today's movers and Strongest & weakest.
+    Computed live every render (cheap: the new pick scan + the existing
+    standings scan together still come in under 600ms warm); a fixed
+    page-load snapshot like the movers and standings panels, so the
+    stream client does not stall on it.
+  - **`/backtest` page** (`routes/backtest.rs` + `backtest.html` +
+    `frontend/static_src/backtest/`): one page, four horizon tabs that
+    swap content in place via `GET /api/backtest?horizon=…`. The JSON
+    feed runs `picks::run_backtest`, which walks back from today by
+    horizon stride (1/5/20/252 trading days), at each rebalance picks
+    the top 5 with the same rankers, equal-weights them for one stride,
+    rebalances at the next stride, and tracks both the strategy's and
+    `^SPX`'s equity from a $10k anchor. Renders an equity curve area
+    chart (lightweight-charts, mirroring the Phase 28 growth chart),
+    four stat cards (strategy total + CAGR, benchmark total + CAGR,
+    per-pick win rate, per-period win rate), and a per-rebalance
+    history table with each period's picks color-tinted by their own
+    return.
+  - **Acknowledged look-ahead.** The backtest uses today's standing
+    (Phase 7 fundamentals are not stored per period), so a stock that
+    is `Strong` today filters into every historical pick. Surfaced
+    explicitly in the page disclaimer; v1 trade-off, fits the user's
+    "for fun and testing" framing.
+  - **Disclaimer style** in `base.scss`: a quiet ink-faint italic line,
+    smaller than body text, never carries semantic color. Used on both
+    the home Top picks panel and the backtest page header.
+  - **Performance**: the backtest load query was capped at the trailing
+    7 years (`HIST_LOOKBACK_DAYS`) so deep histories (`^SPX` back to
+    1789) do not pull a million-row scan; cold-cache `/api/backtest`
+    runs ~1-2s per horizon, warm ~100ms.
+  - Verified: cargo + bun build clean; `/` renders the four-column
+    Top picks section on desktop (4-wide) and phone (2x2), every row
+    carrying a verdict badge over a percent return (or the year score);
+    `/backtest` loads the Month horizon by default with 49 rebalances
+    over 4 years (`2022-05-25 → 2026-04-23`), the equity curve drawing
+    the strategy and `^SPX` from $10k. Headline figures across all
+    four horizons in local replay: day 250 rebalances / +76.8% vs ^SPX
+    +27.2% / 54.1% per-pick win / 57.2% beat-bench; week 99 / +59.7%
+    vs +41.3% / 52.7% / 46.5%; month 49 / +595.8% vs +78.7% / 58.2%
+    / 61.2%; year 3 / +142.1% vs +47.6% / 66.7% / 100.0%. Phone view
+    stacks the stat cards 2x2 and the rebalance table scrolls inside
+    its card. Tabs swap horizons in place without a navigation. Zero
+    console errors.
+
 - **Phase 26 dividend payouts.** Complete, verified, and deployed to
   production (commit `7608b06`). Per-payout dividend history sourced from Yahoo's chart endpoint
   via `events=div`, surfaced as a new Dividends section on the symbol page
@@ -942,7 +1040,9 @@ distributions ride the same code path. Phase 29 (issuer-direct ETF data
 feeds: iShares/BlackRock, Vanguard, ...) was captured 2026-05-22 from a
 vibe-coding side note mid-Phase-28; see the decisions log.
 
-After Phase 28 ships, remaining post-MVP work is the loose-ordered
+Phase 30 (top picks + backtest) is complete and verified locally
+2026-05-23 — not yet deployed; ships on the next `git push server master`.
+After Phase 30 deploys, remaining post-MVP work is the loose-ordered
 Phase 13, 15, 16, 17, 19, 25, 27, 29 backlog. Phase 26 (dividend payouts)
 is complete and deployed (commit `7608b06`); the MVP plus Phase 14,
 Phase 18, Phase 20, Phase 21, Phase 23 + 24, Phase 22 and Phase 26 are all
@@ -1588,6 +1688,128 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   No order or schedule attached; the user can pick after the current
   backlog. Depends on Phase 28 (the schema and the fund-profile
   scaffolding to overlay onto).
+
+- [x] **Phase 30: Top picks + backtest.** Complete and verified locally
+  2026-05-23; see the Phase 30 entry in Status and the decisions log.
+  (Captured 2026-05-23 from a vibe-coding session right after Phase 28
+  deployed. Picked as the next phase to build on 2026-05-23.) The user's steer, verbatim:
+  *"on the home page i'd like to use all the fundamentals and trajectory
+  and stats we have in the system to show a new panel on the home page —
+  this panel would be top 5 picks for day / week / month / year — this
+  would be our best guess given time frames relevant to this information
+  and all the information we have as to what we should invest in — i'd
+  also like a feature tied to this in guess testing the results so this
+  would be a separate page you go to that shows the results of our guess
+  with a win rate and % gains if $ invested was done kind of thing as
+  like a stress test to show how solid our pick rate is — also i know
+  you are not a financial advisor i am not either this is just for fun
+  and testing"*. Two surfaces, one shared picking engine.
+
+  **Scope settled 2026-05-23 (see the decisions log).** Picks are
+  *forecast-horizon* picks: each tier predicts who will do best over
+  that forward horizon (day = movers / intraday momentum; year = the
+  Phase 20 fundamentals + trajectory composite). The holding period is
+  implicit in the horizon. A "for fun and testing — not financial
+  advice" disclaimer rides quietly on both surfaces.
+
+  **Planned pieces:**
+
+  (1) **Per-horizon ranking math** in `compute.rs`. Four pure functions,
+  each taking the same per-stock input bundle (latest price, full daily
+  history, current-day intraday bars, Phase 7 fundamentals, Phase 20
+  standing) and returning a per-symbol score. Suggested signals — settle
+  at build time:
+    - **Day:** today's intraday return + a small "near 52-week high"
+      bias + a fundamental-strength filter (no weak-graded stocks).
+      Conceptually the movers panel sharpened by quality.
+    - **Week (~5 trading days):** 5-day return + RSI not extreme
+      (skip > 70 / < 30) + above SMA50. Short-momentum read.
+    - **Month (~20 trading days):** 20-day return + above SMA200 +
+      Phase 20 standing not weak. Medium-momentum read filtered by
+      fundamental quality.
+    - **Year (~252 trading days):** reuse Phase 20's combined score
+      directly — fundamentals 2:1 + trajectory — which is already the
+      year-horizon answer the app computes.
+
+  (2) **Home-page panel** alongside movers and strongest / weakest. A
+  "Top picks" section showing four small lists of 5 stocks each
+  (Day / Week / Month / Year), each row a `verdict_badge` + ticker +
+  the score's headline figure (the relevant return or composite).
+  Either a 4-column row on desktop and stacked on phone, or a tabbed
+  segment — design pass at build time. A quiet disclaimer line under
+  the section header ("for fun and testing, not financial advice"). The
+  panel is a fixed page-load snapshot, like movers and strongest /
+  weakest (per Phase 11 / Phase 20), so the home render stays cheap.
+
+  (3) **Daily pick snapshot** to a new `picks` table (migration `0009`),
+  one row per (snapshot_date, horizon, rank 1-5, ticker, score,
+  price_at_pick). Snapshotted by a new scheduler section right after
+  the daily-close job (a known once-a-day market-close moment when
+  every stock has a fresh close). This is the load-bearing piece for
+  the backtest: without it the backtest can only replay today's algo
+  over old data, which means *every algo tweak invalidates history*.
+  With it the picks the app actually made on every past day are immutable
+  and the backtest is honest. The first day the feature ships seeds
+  day 1 of the table; the table grows from there. (No retroactive
+  backfill — see the decisions log when it's settled.)
+
+  (4) **Backtest page** at `/backtest`. A simulation: starting capital
+  (default $10k), pick a horizon, rebalance into the day's 5 picks
+  equal-weight every period (day picks = daily rebalance, year picks =
+  yearly), accrue returns through the snapshot history. Outputs:
+    - **Equity curve** (lightweight-charts area), $X simulated capital
+      over time, with `^SPX` benchmark dashed on the same axes.
+    - **Win rate.** Settle definition at build time — either per-pick
+      (% of picks that gained over their horizon) or per-period (% of
+      horizons where the basket beat the benchmark). The user's phrasing
+      "win rate" suggests per-pick; the per-period view is sharper for
+      strategy quality. Likely show both.
+    - **% gain vs benchmark.** Total return of the strategy minus
+      `^SPX` total return over the same window. Compounded annualised
+      growth (CAGR) once the history is long enough.
+    - **Tabular history.** Each snapshot's picks and how each fared.
+  A "for fun and testing — not financial advice" disclaimer rides at
+  the top of the page.
+
+  (5) **Disclaimer.** A new shared `.disclaimer` style (base.scss) — a
+  quiet ink-faint line, smaller than body text, never green / amber /
+  red. Used on both the home panel and the backtest page.
+
+  **Schema.** Migration `0009` adds `picks (snapshot_date TEXT,
+  horizon TEXT, rank INTEGER, ticker TEXT, score REAL, price_at_pick
+  REAL, PRIMARY KEY (snapshot_date, horizon, rank))`. No change to
+  `symbols`. Compute is pure (no new network calls) — reuses the data
+  the home and symbol routes already read.
+
+  **Open design questions (settle at build time):**
+  - **Universe per horizon.** Stocks-only on all four? Or include
+    curated ETFs on the year horizon (a steadily growing fund is a
+    legitimate one-year pick)? Probably stocks-only on day / week /
+    month (fundamentals filter excludes ETFs anyway), open on year.
+  - **Win-rate definition** — per-pick vs per-period (see piece 4).
+  - **Backtest UI** — four separate charts (one per horizon) or one
+    chart with a horizon toggle. The latter is tidier; the former
+    enables side-by-side reads.
+  - **Rebalance cost.** Skip transaction-cost modelling in v1 (single
+    operator, no real money) and label the backtest as "frictionless"
+    in its provenance line. A later refinement could add a flat bps
+    drag.
+  - **Retroactive backfill.** Skip in v1 — the snapshot table grows
+    forward from the first deploy and the backtest is honest about
+    "history since 2026-Mm-DD". Backfilling by replaying today's algo
+    over past `daily_prices` would be tempting but lies about what
+    the app actually said at the time, so it stays out.
+  - **Disclaimer wording** — design pass with the user.
+
+  **Anti-spam.** Zero new network calls. Compute is pure over data
+  already stored (`daily_prices`, `intraday_bars`, `fundamentals`,
+  `quotes`). No new `EndpointGuard` row.
+
+  **Dependencies.** Phase 20 (its standing score is the year horizon
+  directly, the strength filter on the shorter horizons). Phase 11 /
+  Phase 20 home dashboard scaffolding to hang the panel on. No hard
+  dependency on Phase 14 / 15 / 16 / 17 (could later layer leadership
+  and industry signals into a future v2 of the picks).
 
 ---
 
@@ -2358,6 +2580,86 @@ finance/
   query in symbols.rs. No deploy yet — the local verification used a
   synthetic `fund_metadata` row injected via the python `sqlite3`
   module since Yahoo refuses this WSL2 IP.
+- **2026-05-23 — Phase 30 follow-up: `pick_day` now uses the last
+  completed daily bar, not live intraday.** Mid-verification the user
+  flagged the Day picks as reading "after the fact": a stock up 12%
+  intraday today was being top-ranked for "today's pick", which is
+  exactly the post-hoc trap (if the move happened during the session,
+  buying on it means chasing what already happened). Two fixes shipped
+  together: (1) `pick_day` now reads `closes[-1] / closes[-2] - 1`
+  (most recent completed daily bar's close-to-close return), not
+  `last_price / prev_close - 1`. After-hours both forms give the same
+  number; during regular hours the new form returns yesterday's
+  full-day move instead of today's intraday-so-far — a legitimate
+  forward-looking momentum signal for tomorrow's continuation. The
+  `52-week-high bias` was also refactored to read off the same
+  `closes` series. `PickInput` dropped `last_price` / `prev_close`
+  entirely, so every ranker now reads the same single-source slice
+  and no signal can leak from intraday. (2) Horizon labels reframed
+  forward-looking — `Tomorrow / Next week / Next month / Next year`
+  (the `key` strings stay `day / week / month / year`, since the
+  picks table stores them). The home panel's section note and
+  disclaimer now both call the displayed figure "the signal that
+  earned the pick" rather than implying it is a prediction of
+  return. The picker is honest about doing momentum + quality, and
+  honest that it does not know what tomorrow holds.
+- **2026-05-23 — Phase 30 top picks + backtest shipped (local).** Design
+  Q&A settled three points before the build: stocks-only across all
+  four horizons (the user's pick over including ETFs on the year
+  horizon; the short rankers all filter on Phase 20 strength, which
+  only stocks carry), both win-rate definitions shown side-by-side
+  (per-pick = % of picks that gained over their horizon, per-period
+  = % of horizons where the basket beat `^SPX`), and one chart with
+  horizon tabs over four side-by-side charts (tidier, deeper detail
+  per horizon). Build calls made during the work: (1) **acknowledged
+  look-ahead bias from today's standing.** Per-period fundamentals are
+  not stored, so the backtest applies today's `Strong/Fair/Weak`
+  verdict to every historical date. Surfaced explicitly in the page
+  disclaimer; a future phase could store point-in-time fundamentals
+  if we ever want a clean out-of-sample run, but for v1 this matches
+  the user's "for fun and testing" framing. (2) **`HIST_LOOKBACK_DAYS`
+  cap of 7 years on the backtest load query.** A first run pulled
+  ~948k rows from `daily_prices` (some indexes go back to the 1700s)
+  and the API took 7s; the cap drops it to ~1-2s without losing any
+  realistic backtest depth (the year horizon's 5 rebalances × 252
+  bars ≈ 5 years). (3) **The pick rankers' headline figures are the
+  raw score**, so the home panel and the backtest both display the
+  same number per row without a separate display pass — `+3.2%`,
+  `+12.0%`, etc. (4) **`pick_year` returns Phase 20's combined score
+  on a `× 100` scale** so the four lines of the home panel read on
+  roughly the same magnitude; the year column shows the raw composite
+  rather than a percent, which is honest about what the year ranker is
+  ranking on. (5) **The snapshot job fires right after `daily_close`,
+  keyed in `meta` on `picks_snapshot_date`**, and only proceeds once
+  `daily_close_date` is also today's — so the picks are never scored
+  off stale prices, and the job is idempotent across restarts.
+- **2026-05-23 — Phase 30 captured + picked next: top picks + backtest.**
+  Resuming from a cleared context, the user floated a new feature mid-
+  resume: a home-page panel of 5 forecast-horizon picks for day / week /
+  month / year using the fundamentals / trajectory / stats the app
+  already carries, plus a separate `/backtest` page that simulates
+  following the picks and reports a win rate and $ gain. Two design
+  questions settled the scope before write-up: (1) "pick" means
+  *forecast-horizon* — each tier predicts who will do best over that
+  forward horizon, with different signals per horizon (day = movers /
+  momentum, year = Phase 20's combined fundamentals + trajectory score
+  unchanged), holding period implicit; (2) picked as the next phase to
+  build, ahead of the loose 13/15/16/17/19/25/27/29 queue. Budgeted as
+  Phase 30 (Phase 29 already holds the issuer-direct ETF feeds backlog).
+  The phase's most load-bearing call is the new `picks` table
+  (migration `0009`): daily snapshot of each horizon's 5 picks right
+  after the daily-close job, so the backtest runs against immutable
+  historical picks rather than replaying today's algo over old data
+  (every algo tweak would otherwise rewrite history). v1 grows the
+  history forward from first deploy — no retroactive backfill, the
+  backtest is honest about "history since". Anti-spam clean: zero new
+  network calls, pure compute over data already stored. The user
+  explicitly said "i know you are not a financial advisor, i am not
+  either, this is just for fun and testing" — captured as a quiet
+  disclaimer line on both surfaces. Open design questions noted in
+  the phase entry (universe per horizon, win-rate definition, backtest
+  UI layout, retroactive backfill, disclaimer wording) settle at build
+  time per the vibe-coding norm.
 - **2026-05-22 — Phase 29 captured: issuer-direct ETF data feeds.**
   Mid-Phase-28 the user floated: *"as a future plan we tie into
   iShares/blackrock and Vanguard directly for even more data for their

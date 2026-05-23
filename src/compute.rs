@@ -1107,6 +1107,185 @@ pub fn premium_grade(premium_pct: f64) -> Grade {
     }
 }
 
+// ─────────────────────── forecast-horizon picks (Phase 30) ────────────────
+//
+// The four rankers behind the home page's "Top picks" panel and the /backtest
+// page. Each takes the same per-stock input bundle and returns a score for
+// one horizon — higher is better, `None` when the stock is disqualified
+// (missing data, fails a filter). The caller (`picks::compute_picks`) ranks
+// every curated stock descending and keeps the top 5 per horizon.
+//
+// The score is the headline figure that justified the pick (intraday return
+// for `day`, 5d/20d return for `week` / `month`, the Phase 20 combined score
+// for `year`), so the home panel and the backtest can both display it
+// straight without a second computation. Stocks-only across all four horizons
+// per the user's design call — fundamentals filters exclude ETFs anyway.
+
+/// Inputs one stock contributes to a pick ranker. A caller fills it once per
+/// curated stock from the standard `load_stocks` scan, then runs each
+/// ranker. Every signal reads off completed daily bars (closes) plus the
+/// rolled-up standing — no live intraday data — so a pick can never reflect
+/// "what already moved today".
+#[derive(Debug, Clone)]
+pub struct PickInput<'a> {
+    /// Daily closes, oldest first. Every ranker reads its signal off this
+    /// series: day = close-to-close of the last two bars, week / month =
+    /// trailing returns + moving averages, year = the standing (which was
+    /// itself computed off the same series).
+    pub closes: &'a [f64],
+    /// The Phase 20 rolled-up standing (strong / fair / weak + combined score).
+    /// `None` until SEC fundamentals have synced; without it the short
+    /// horizons skip the stock and `year` cannot rank it.
+    pub standing: Option<Standing>,
+}
+
+/// Trailing-day windows the short-horizon rankers measure their return over.
+const WEEK_BARS: usize = 5;
+const MONTH_BARS: usize = 20;
+
+/// RSI period the week ranker gates on (Phase 8's classic 14-day window).
+const PICK_RSI_PERIOD: usize = 14;
+/// RSI bands the week ranker excludes — overbought (mean reversion risk) and
+/// oversold (still falling, momentum not yet flipped).
+const PICK_RSI_HIGH: f64 = 70.0;
+const PICK_RSI_LOW: f64 = 30.0;
+
+/// Moving-average windows the short / medium horizons filter on. Above the
+/// 50-day = the stock is in a near-term uptrend; above the 200-day = it is
+/// not in a long-term downtrend.
+const PICK_SMA_SHORT: usize = 50;
+const PICK_SMA_LONG: usize = 200;
+
+/// 52-week-high lookback for the day ranker's "near the high" bias.
+const PICK_52W_BARS: usize = 252;
+
+/// Day-horizon score: the most recent **completed** daily bar's
+/// close-to-close return, gently boosted when the stock is near its 52-week
+/// high. Predicts tomorrow's continuation, not what already moved today —
+/// crucially the live intraday move is NOT used here, since a stock up 5%
+/// during the session is one you have already missed if you read this and
+/// buy. After market close today's bar is the most recent completed; during
+/// the session yesterday's is. Either way the signal is a finished day.
+///
+/// `None` when the stock has weak fundamental strength (we do not pick weak
+/// names even on a strong day), or has fewer than two daily bars to read.
+pub fn pick_day(i: &PickInput<'_>) -> Option<f64> {
+    // Strength filter: skip the bottom band entirely; we are not picking weak
+    // names regardless of their price action. A stock without graded
+    // fundamentals (unsynced) also drops out, since we cannot vouch for it.
+    let s = i.standing?;
+    if matches!(s.grade, Grade::Bad) {
+        return None;
+    }
+    let len = i.closes.len();
+    if len < 2 {
+        return None;
+    }
+    let last = i.closes[len - 1];
+    let prev = i.closes[len - 2];
+    if prev <= 0.0 || last <= 0.0 {
+        return None;
+    }
+    let day_pct = (last - prev) / prev * 100.0;
+    if day_pct <= 0.0 {
+        return None;
+    }
+    // Near-52w-high bias: a small +pct boost for sitting close to the top of
+    // the trailing-year range, since a stock breaking through its own highs is
+    // a stronger continuation candidate than one rallying off a deep base.
+    // Capped so it refines rather than dominates the day's move.
+    let bias = if len >= PICK_52W_BARS {
+        let window = &i.closes[len - PICK_52W_BARS..];
+        let high = window.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        if high > 0.0 {
+            // 1.0 at the high, 0.0 at 10% below it, clamped.
+            ((last / high - 0.90) / 0.10).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+    Some(day_pct + bias)
+}
+
+/// Week-horizon score: the trailing 5-day price return, gated on RSI not being
+/// extreme and the close being above its 50-day SMA. `None` when the stock has
+/// weak fundamental strength, fails either gate, or has too little history.
+///
+/// Short-momentum read filtered by quality — the next ~week's continuation
+/// candidates among names already trending and not stretched.
+pub fn pick_week(i: &PickInput<'_>) -> Option<f64> {
+    let s = i.standing?;
+    if matches!(s.grade, Grade::Bad) {
+        return None;
+    }
+    if i.closes.len() <= WEEK_BARS.max(PICK_SMA_SHORT) {
+        return None;
+    }
+    let len = i.closes.len();
+    let last = i.closes[len - 1];
+    let start = i.closes[len - 1 - WEEK_BARS];
+    if start <= 0.0 || last <= 0.0 {
+        return None;
+    }
+    let ret_5d = (last - start) / start * 100.0;
+    if ret_5d <= 0.0 {
+        return None;
+    }
+    // Above the 50-day SMA: a near-term uptrend filter.
+    let sma50 = sma(i.closes, PICK_SMA_SHORT).pop().flatten()?;
+    if last < sma50 {
+        return None;
+    }
+    // RSI gate: skip stretched (>70) and falling (<30) names. The window must
+    // be long enough for RSI to have warmed up by the last bar.
+    let r = rsi(i.closes, PICK_RSI_PERIOD).pop().flatten()?;
+    if !(PICK_RSI_LOW..=PICK_RSI_HIGH).contains(&r) {
+        return None;
+    }
+    Some(ret_5d)
+}
+
+/// Month-horizon score: the trailing 20-day price return, gated on the close
+/// being above its 200-day SMA and the stock not being weak. `None` when any
+/// of those does not hold or history is too short.
+///
+/// Medium-momentum read: stocks in a confirmed long-term uptrend that are
+/// also up over the last month, with fundamental quality as a floor.
+pub fn pick_month(i: &PickInput<'_>) -> Option<f64> {
+    let s = i.standing?;
+    if matches!(s.grade, Grade::Bad) {
+        return None;
+    }
+    if i.closes.len() <= MONTH_BARS.max(PICK_SMA_LONG) {
+        return None;
+    }
+    let len = i.closes.len();
+    let last = i.closes[len - 1];
+    let start = i.closes[len - 1 - MONTH_BARS];
+    if start <= 0.0 || last <= 0.0 {
+        return None;
+    }
+    let ret_20d = (last - start) / start * 100.0;
+    if ret_20d <= 0.0 {
+        return None;
+    }
+    let sma200 = sma(i.closes, PICK_SMA_LONG).pop().flatten()?;
+    if last < sma200 {
+        return None;
+    }
+    Some(ret_20d)
+}
+
+/// Year-horizon score: the Phase 20 combined fundamentals-and-trajectory
+/// score directly. The year horizon's right answer is already what `standing`
+/// computes — quality businesses with healthy trajectory — so we pass it
+/// through rather than invent a second long-horizon read.
+pub fn pick_year(i: &PickInput<'_>) -> Option<f64> {
+    Some(i.standing?.score * 100.0)
+}
+
 #[cfg(test)]
 mod phase28_tests {
     use super::*;

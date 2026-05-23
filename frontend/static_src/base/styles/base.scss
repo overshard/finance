@@ -500,6 +500,18 @@ main {
   white-space: nowrap;
 }
 
+/* a link inside the asof slot (e.g. the Top picks "Backtest these →" CTA)
+   reads as a quiet annotation, not a body link. Hover ramps to ink. */
+.section-title__asof a {
+  color: var(--ink-dim);
+}
+
+.section-title__asof a:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 /* ---------- ticker grid + card ---------- */
 .ticker-grid {
   display: grid;
@@ -631,6 +643,17 @@ main {
 .vbadge--bad {
   color: var(--down);
   background: var(--down-soft);
+}
+
+/* ---------- disclaimer line (Phase 30) ---------- */
+/* A quiet ink-faint line used on the home Top picks panel and the /backtest
+   page header. Always smaller than body text; never carries a semantic
+   colour — the picks themselves are explicitly "for fun and testing". */
+.disclaimer {
+  margin: -8px 0 14px;
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  font-style: italic;
 }
 
 /* ---------- desktop layering ---------- */

@@ -5,6 +5,7 @@ mod guard;
 mod market;
 mod middleware;
 mod models;
+mod picks;
 mod providers;
 mod render;
 mod routes;

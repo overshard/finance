@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Backtest{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ vite_asset('static_src/backtest/index.js', 'css') }}">{% endblock %}
+
+{% block main %}
+<div class="wrap">
+  <div class="page-head">
+    <h1>Backtest</h1>
+    <a class="page-head__link" href="/">Back to home</a>
+  </div>
+
+  <p class="bt-blurb">Walks the picker over historical daily prices and
+     simulates following its top 5 picks at each rebalance. Each strategy
+     shown is rebalanced equal-weight at the end of every horizon period and
+     compared to <code>^SPX</code> over the same window.</p>
+
+  <p class="disclaimer">For fun and testing. Not financial advice. The picker
+     uses today&rsquo;s fundamentals applied to historical prices (per-period
+     fundamentals are not stored) &mdash; treat as a stress test of the
+     ranker, not an out-of-sample evaluation. Frictionless: no transaction
+     costs, slippage, or taxes modelled.</p>
+
+  {# Horizon tabs: clicking re-runs the backtest in place via the JSON
+     endpoint, so the URL stays /backtest while the rendered horizon
+     changes. The active tab is set by the JS once it knows what it loaded. #}
+  <div class="bt-tabs" role="tablist">
+    {% for h in horizons %}
+    <button class="bt-tab" data-horizon="{{ h.key }}" role="tab"
+            type="button" aria-controls="bt-panel">{{ h.label }}</button>
+    {% endfor %}
+  </div>
+
+  <div id="bt-panel" class="bt-panel" role="tabpanel">
+    <p class="bt-status">Loading backtest&hellip;</p>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}<script type="module" src="{{ vite_asset('static_src/backtest/index.js') }}"></script>{% endblock %}

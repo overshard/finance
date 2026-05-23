@@ -16,6 +16,7 @@ use serde::Serialize;
 use crate::compute::{self, Sparkline};
 use crate::market;
 use crate::models;
+use crate::picks;
 use crate::render::render;
 use crate::AppState;
 
@@ -160,6 +161,16 @@ async fn home(State(state): State<AppState>) -> Response {
     let (gainers, losers) = movers(&stocks);
     let (strongest, weakest) = strength_panels(&stocks);
 
+    // Top picks (Phase 30): computed live every render, so the panel works on
+    // day 1 before the snapshot job has run. A separate scan (LOOKBACK_DAYS is
+    // longer than `load_stocks` needs for the 12m return, since the picks
+    // rankers want the full 200-day SMA + 52-week-high window). Cheap; the
+    // home render still comes in well under 1s warm.
+    let pick_slates = picks::load_bundles(&state.pool)
+        .await
+        .map(|b| picks::compute_picks(&b))
+        .unwrap_or_default();
+
     // Section freshness (PLAN.md Phase 22): the movers panels date off the
     // freshest stock quote, the strongest / weakest panels off the most recent
     // SEC fundamentals sync — the data each panel actually leans on.
@@ -179,6 +190,7 @@ async fn home(State(state): State<AppState>) -> Response {
         strongest => strongest,
         weakest => weakest,
         standings_asof => standings_asof,
+        pick_slates => pick_slates,
         total => total,
     };
     render(&state, "pages/home.html", "/", extra)
