@@ -32,8 +32,9 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-23_
 
-**Current phase: Phase 15 (industry trends) complete and verified
-locally 2026-05-23.** Yahoo `quoteSummary.assetProfile` is the source
+**Current phase: Phase 15 (industry trends) complete, verified and
+deployed to production 2026-05-23 (commit `6043657`).** Yahoo
+`quoteSummary.assetProfile` is the source
 (clean GICS-style names); migration `0012` adds
 `symbols.asset_profile_synced_at` (the long-existing-but-unpopulated
 `symbols.sector` / `symbols.industry` columns are now written by a
@@ -167,7 +168,8 @@ backlog as Phase 19. The `watchlists` / `watchlist_items` tables stay in the
 schema, unused for now.
 
 **Done**
-- **Phase 15 industry trends.** Complete and verified locally 2026-05-23.
+- **Phase 15 industry trends.** Complete, verified, and deployed to
+  production 2026-05-23 (commit `6043657`).
   New `asset_profile` Yahoo scheduler section populates each stock's
   `symbols.sector` and `symbols.industry` (existing columns since
   `0001_initial.sql` but never written before) from
@@ -190,7 +192,13 @@ schema, unused for now.
   all returned 200. `/industries` renders the empty state cleanly
   until the first asset_profile sweep lands (Yahoo rate-limits the
   WSL2 dev IP, so verification stops at "renders" until production
-  picks it up). Not yet deployed.
+  picks it up). Deployed to production 2026-05-23 via
+  `git push server master` (commit `6043657`); production confirmed
+  the `asset_profile` job is registered on `/health` with its
+  monthly cadence brought forward to the first tick, and the
+  classification will populate as the yahoo guard recovers from the
+  boot-time breaker trip (the usual pattern for a deploy that adds
+  a new yahoo-backed job).
 - **Phase 25 earnings dates.** Complete, verified, and deployed to
   production 2026-05-23 (commit `aac84ae`). On-deploy state: the new
   `earnings_calendar` job populates `next_earnings_at` on its first
