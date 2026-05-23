@@ -51,6 +51,10 @@ const MOVERS_LIMIT: usize = 8;
 /// `MOVERS_LIMIT` so the two pairs of panels read alike.
 const STANDING_LIMIT: usize = 8;
 
+/// How many stocks each of the healthiest / most-concerning health panels
+/// lists (Phase 17). Mirrors `STANDING_LIMIT`.
+const HEALTH_LIMIT: usize = 8;
+
 /// A symbol's latest session counts as the bars within this window of its most
 /// recent intraday bar. The regular-plus-extended session spans ~16h, while
 /// the prior session's bars sit a full ~24h earlier, so 23h cleanly isolates
@@ -117,16 +121,32 @@ struct StandingRow {
     up: bool,
 }
 
+/// One row in a healthiest / most-concerning panel (Phase 17). Carries the
+/// `HealthRead` directly so the row can show the overall verdict alongside
+/// the three sub-readings.
+#[derive(Serialize, Clone)]
+struct HealthRow {
+    ticker: String,
+    name: String,
+    health: compute::HealthRead,
+    /// Width (0..100) of the row's magnitude tint, scaled to the largest
+    /// absolute score shown across both panels (mirrors movers / standing).
+    bar: f64,
+    /// Colour hook: true when the composite score is not negative.
+    up: bool,
+}
+
 /// One curated large-cap stock with everything the home panels need: its
-/// price, the close it is changing against, its rolled-up standing, and its
-/// trailing-year return. Built once per render and fed to both the movers and
-/// the strongest / weakest panels.
+/// price, the close it is changing against, its rolled-up standing, its
+/// trailing-year return, and the health read (Phase 17). Built once per
+/// render and fed to the movers, strongest / weakest, and health panels.
 struct StockRow {
     ticker: String,
     name: String,
     last: Option<f64>,
     prev: Option<f64>,
     standing: Option<compute::Standing>,
+    health: Option<compute::HealthRead>,
     ret_12m: Option<f64>,
     /// When this stock was last quoted (epoch-ms); feeds the movers panel's
     /// freshness caption (PLAN.md Phase 22).
@@ -134,6 +154,9 @@ struct StockRow {
     /// When this stock's SEC fundamentals last synced (epoch-ms); feeds the
     /// strongest / weakest panels' freshness caption.
     fundamentals_synced_at: Option<i64>,
+    /// When this stock's SEC leadership roster last synced (epoch-ms); feeds
+    /// the health panels' freshness caption.
+    leadership_synced_at: Option<i64>,
 }
 
 async fn home(State(state): State<AppState>) -> Response {
@@ -160,6 +183,7 @@ async fn home(State(state): State<AppState>) -> Response {
     let stocks = load_stocks(&state).await;
     let (gainers, losers) = movers(&stocks);
     let (strongest, weakest) = strength_panels(&stocks);
+    let (healthiest, concerning) = health_panels(&stocks);
 
     // Top picks (Phase 30): computed live every render, so the panel works on
     // day 1 before the snapshot job has run. A separate scan (LOOKBACK_DAYS is
@@ -176,6 +200,17 @@ async fn home(State(state): State<AppState>) -> Response {
     // SEC fundamentals sync — the data each panel actually leans on.
     let movers_asof = stocks.iter().filter_map(|s| s.last_quote_at).max();
     let standings_asof = stocks.iter().filter_map(|s| s.fundamentals_synced_at).max();
+    // The health panels lean on both fundamentals and leadership, so their
+    // freshness caption tracks whichever sync ran later.
+    let health_asof = stocks
+        .iter()
+        .filter_map(|s| {
+            [s.fundamentals_synced_at, s.leadership_synced_at]
+                .iter()
+                .filter_map(|x| *x)
+                .max()
+        })
+        .max();
 
     let extra = minijinja::context! {
         title => "Markets",
@@ -190,6 +225,9 @@ async fn home(State(state): State<AppState>) -> Response {
         strongest => strongest,
         weakest => weakest,
         standings_asof => standings_asof,
+        healthiest => healthiest,
+        concerning => concerning,
+        health_asof => health_asof,
         pick_slates => pick_slates,
         total => total,
     };
@@ -301,17 +339,27 @@ async fn spark_cards_for(state: &AppState, tickers: &[&str]) -> SparkSection {
 /// excluded: only single stocks have the SEC fundamentals a standing needs.
 async fn load_stocks(state: &AppState) -> Vec<StockRow> {
     // 1. Price per curated stock: the live last price, else the latest daily
-    //    close; plus the prior close it is changing against.
-    let price_rows: Vec<(String, String, Option<f64>, Option<f64>, Option<i64>, Option<i64>)> =
-        sqlx::query_as(
-            "SELECT s.ticker, s.name, \
+    //    close; plus the prior close it is changing against. Also pulls each
+    //    stock's fundamentals and leadership sync times (for the panels'
+    //    freshness captions, Phase 22 + Phase 17).
+    type PriceRow = (
+        String,
+        String,
+        Option<f64>,
+        Option<f64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+    );
+    let price_rows: Vec<PriceRow> = sqlx::query_as(
+        "SELECT s.ticker, s.name, \
            COALESCE(s.last_price, \
              (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1)), \
            COALESCE(s.prev_close, \
              (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1 OFFSET 1)), \
-           s.last_quote_at, s.fundamentals_synced_at \
+           s.last_quote_at, s.fundamentals_synced_at, s.leadership_synced_at \
          FROM symbols s WHERE s.is_seeded = 1 AND s.kind = 'stock'",
-        )
+    )
     .fetch_all(&state.pool)
     .await
     .unwrap_or_default();
@@ -357,28 +405,75 @@ async fn load_stocks(state: &AppState) -> Vec<StockRow> {
         closes.entry(ticker).or_default().push(close);
     }
 
+    // 4. Recent 8-K item-5.02 leadership-change count per curated stock,
+    //    inside the Phase 17 stability window. One bulk query: the GROUP BY
+    //    returns only stocks with at least one match, so the lookup misses
+    //    cleanly for a fully-stable company (read below as 0).
+    let lead_cutoff = (chrono::Utc::now().date_naive()
+        - chrono::Duration::days(compute::LEADERSHIP_STABILITY_DAYS))
+    .to_string();
+    let change_rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT f.ticker, COUNT(*) FROM filings f JOIN symbols s ON s.ticker = f.ticker \
+         WHERE s.is_seeded = 1 AND s.kind = 'stock' \
+           AND f.form LIKE '8-K%' AND f.items LIKE '%5.02%' \
+           AND f.filed_at >= ? \
+         GROUP BY f.ticker",
+    )
+    .bind(&lead_cutoff)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+    let lead_counts: HashMap<String, usize> = change_rows
+        .into_iter()
+        .map(|(t, n)| (t, n.max(0) as usize))
+        .collect();
+
     // Assemble: grade each stock off its facts and price, read its trajectory
-    // off its closes. A stock with no fundamentals stored yet simply has no
-    // standing and is left out of the strongest / weakest ranking.
+    // off its closes, and read its leadership stability off the change count.
+    // A stock with no fundamentals stored yet simply has no standing or health
+    // and is left out of the strongest / weakest and healthiest rankings.
     price_rows
         .into_iter()
-        .map(|(ticker, name, last, prev, last_quote_at, fundamentals_synced_at)| {
-            let stock_closes = closes.get(&ticker).map(Vec::as_slice).unwrap_or(&[]);
-            let standing = facts.get(&ticker).and_then(|f| {
-                let inputs = models::latest_annual_inputs(f, last)?;
-                compute::standing(&compute::compute_ratios(&inputs), stock_closes)
-            });
-            StockRow {
+        .map(
+            |(
                 ticker,
                 name,
                 last,
                 prev,
-                standing,
-                ret_12m: compute::trailing_return(stock_closes),
                 last_quote_at,
                 fundamentals_synced_at,
-            }
-        })
+                leadership_synced_at,
+            )| {
+                let stock_closes = closes.get(&ticker).map(Vec::as_slice).unwrap_or(&[]);
+                let ratios = facts.get(&ticker).and_then(|f| {
+                    let inputs = models::latest_annual_inputs(f, last)?;
+                    Some(compute::compute_ratios(&inputs))
+                });
+                let standing = ratios
+                    .as_ref()
+                    .and_then(|r| compute::standing(r, stock_closes));
+                // Leadership-change count is `None` until the leadership sweep
+                // has reached this stock; the composite then drops that
+                // component instead of penalising an unsynced company.
+                let recent_changes = leadership_synced_at
+                    .map(|_| lead_counts.get(&ticker).copied().unwrap_or(0));
+                let health = ratios
+                    .as_ref()
+                    .and_then(|r| compute::health_read(r, stock_closes, recent_changes));
+                StockRow {
+                    ticker,
+                    name,
+                    last,
+                    prev,
+                    standing,
+                    health,
+                    ret_12m: compute::trailing_return(stock_closes),
+                    last_quote_at,
+                    fundamentals_synced_at,
+                    leadership_synced_at,
+                }
+            },
+        )
         .collect()
 }
 
@@ -488,4 +583,54 @@ fn strength_panels(stocks: &[StockRow]) -> (Vec<StandingRow>, Vec<StandingRow>) 
         };
     }
     (strongest, weakest)
+}
+
+/// The healthiest and most-concerning curated stocks by their Phase 17
+/// composite — fundamentals + trajectory + leadership stability. A broader
+/// read than the Phase 20 strongest / weakest pair, layering the leadership
+/// stability signal on top. Stocks without a health read (fundamentals not
+/// synced) are left out; the panels are a fixed page-load snapshot.
+fn health_panels(stocks: &[StockRow]) -> (Vec<HealthRow>, Vec<HealthRow>) {
+    let mut ranked: Vec<&StockRow> = stocks.iter().filter(|s| s.health.is_some()).collect();
+    if ranked.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    ranked.sort_by(|a, b| {
+        let (sa, sb) = (a.health.unwrap().score, b.health.unwrap().score);
+        sb.partial_cmp(&sa).unwrap_or(Ordering::Equal)
+    });
+
+    let row = |s: &StockRow| {
+        let health = s.health.unwrap();
+        HealthRow {
+            ticker: s.ticker.clone(),
+            name: s.name.clone(),
+            health,
+            bar: 0.0,
+            up: health.score >= 0.0,
+        }
+    };
+    let mut healthiest: Vec<HealthRow> =
+        ranked.iter().copied().take(HEALTH_LIMIT).map(&row).collect();
+    let mut concerning: Vec<HealthRow> = ranked
+        .iter()
+        .copied()
+        .rev()
+        .take(HEALTH_LIMIT)
+        .map(&row)
+        .collect();
+
+    let max_abs = healthiest
+        .iter()
+        .chain(concerning.iter())
+        .map(|r| r.health.score.abs())
+        .fold(0.0_f64, f64::max);
+    for r in healthiest.iter_mut().chain(concerning.iter_mut()) {
+        r.bar = if max_abs > 0.0 {
+            (r.health.score.abs() / max_abs * 100.0).clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
+    }
+    (healthiest, concerning)
 }

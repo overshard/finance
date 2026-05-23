@@ -15,7 +15,7 @@
        starter list and its deep price history. This dashboard fills in once data lands.</p>
   </section>
   {% else %}
-  {% from "includes/macros.html" import spark_card, mover_row, standing_row, picks_column %}
+  {% from "includes/macros.html" import spark_card, mover_row, standing_row, health_row, picks_column %}
 
   <div class="page-head">
     <h1>Markets</h1>
@@ -68,6 +68,31 @@
      what tomorrow holds.</p>
   <div class="picks-grid">
     {% for slate in pick_slates %}{{ picks_column(slate) }}{% endfor %}
+  </div>
+
+  <h2 class="section-title">Stock health{% if health_asof %}<span class="section-title__asof">last sync {{ health_asof|ago }}</span>{% endif %}</h2>
+  <p class="section-note">Fundamentals + recent price and growth trajectory +
+     leadership stability, rolled into one read per stock. Industry context
+     is not yet folded in.</p>
+  <p class="disclaimer">For fun and reading at a glance. Not investment advice
+     and not a buy or sell signal.</p>
+  <div class="movers">
+    <section class="movers__panel">
+      <h3 class="movers__title">Healthiest</h3>
+      {% if healthiest %}
+      <div class="movers__list">{% for r in healthiest %}{{ health_row(r) }}{% endfor %}</div>
+      {% else %}
+      <p class="movers__empty">No graded fundamentals yet.</p>
+      {% endif %}
+    </section>
+    <section class="movers__panel">
+      <h3 class="movers__title">Most concerning</h3>
+      {% if concerning %}
+      <div class="movers__list">{% for r in concerning %}{{ health_row(r) }}{% endfor %}</div>
+      {% else %}
+      <p class="movers__empty">No graded fundamentals yet.</p>
+      {% endif %}
+    </section>
   </div>
 
   <h2 class="section-title">Strongest &amp; weakest{% if standings_asof %}<span class="section-title__asof">fundamentals synced {{ standings_asof|ago }}</span>{% endif %}</h2>

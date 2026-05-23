@@ -26,14 +26,6 @@
   text-underline-offset: 2px;
 }
 
-/* ---------- intro note under a section title ---------- */
-.section-note {
-  margin: -2px 0 14px;
-  max-width: 64ch;
-  color: var(--ink-faint);
-  font-size: 0.82rem;
-}
-
 /* ---------- sparkline cards ---------- */
 .spark-grid {
   display: grid;
@@ -334,6 +326,108 @@
   color: var(--ink-dim);
   text-align: right;
   min-width: 5ch;
+}
+
+/* ---------- healthiest / most-concerning panels (Phase 17) ---------- */
+/* Each row carries the symbol, the name with three sub-component chips
+   underneath (fundamentals / trajectory / leadership), and the overall
+   Healthy / Mixed / Concerning verdict on the right. The chips read as
+   coloured pills so the synthesis is legible without expanding. */
+.hrow {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 6px;
+  color: var(--ink);
+  border-bottom: 1px solid var(--rule);
+}
+
+.hrow:last-child {
+  border-bottom: 0;
+}
+
+/* the magnitude tint behind the row, mirroring .standing */
+.hrow::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--bar, 0%);
+  border-radius: var(--radius-sm);
+}
+
+.hrow--up::before {
+  background: var(--up-soft);
+}
+
+.hrow--down::before {
+  background: var(--down-soft);
+}
+
+.hrow > * {
+  position: relative;
+}
+
+.hrow:hover {
+  color: var(--ink);
+  background: var(--well);
+}
+
+.hrow__sym {
+  font-weight: 700;
+  font-size: 0.86rem;
+}
+
+.hrow__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.hrow__name {
+  font-size: 0.78rem;
+  color: var(--ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hrow__sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* the three sub-component pills — fundamentals / trajectory / leadership */
+.hrow__chip {
+  @include eyebrow;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 0.48rem;
+}
+
+.hrow__chip--good {
+  color: var(--up);
+  background: var(--up-soft);
+}
+
+.hrow__chip--ok {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.hrow__chip--bad {
+  color: var(--down);
+  background: var(--down-soft);
+}
+
+.hrow__chip--unknown {
+  color: var(--ink-faint);
+  background: var(--well);
 }
 
 /* ---------- top picks panel (Phase 30) ---------- */

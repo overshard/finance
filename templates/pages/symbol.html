@@ -204,6 +204,49 @@
   {# --- fundamentals + financials: stocks only --- #}
   {% if symbol.kind == 'stock' %}
 
+  {# --- stock health read (Phase 17): a single non-advice synthesis of the
+         three signals below (fundamentals + price/growth trajectory +
+         leadership stability), so the headline reads in one glance before
+         the per-component sections. Hidden until ratios have synced. --- #}
+  {% if health %}
+  <h2 class="section-title">Stock health</h2>
+  <p class="section-note">A read across the data this app already carries:
+     fundamentals, recent price and growth trajectory, and leadership stability.
+     Industry context is not yet folded in.</p>
+  <p class="disclaimer">For fun and reading at a glance. Not investment advice
+     and not a buy or sell signal.</p>
+  <section class="panel health">
+    <div class="health__overall">
+      {{ verdict_badge({"grade": health.overall, "verdict": health.verdict}) }}
+      <p class="health__overall-text">Overall, {{ symbol.ticker }} reads as
+        <strong>{{ health.verdict|lower }}</strong>.</p>
+    </div>
+    <ul class="health__breakdown">
+      <li class="health-row health-row--{{ health.strength }}">
+        <span class="health-row__label">Fundamentals</span>
+        <span class="health-row__value">{{ health.strength_label }}</span>
+        <span class="health-row__note">across the nine graded ratios</span>
+      </li>
+      <li class="health-row health-row--{{ health.trajectory }}">
+        <span class="health-row__label">Trajectory</span>
+        <span class="health-row__value">{{ health.trajectory_label }}</span>
+        <span class="health-row__note">trailing-year price trend + revenue / earnings growth</span>
+      </li>
+      <li class="health-row health-row--{{ health.stability }}">
+        <span class="health-row__label">Leadership</span>
+        <span class="health-row__value">{{ health.stability_label }}</span>
+        <span class="health-row__note">
+          {%- if health.stability == 'unknown' -%}
+            leadership sync has not reached this stock yet
+          {%- else -%}
+            {{ health.recent_changes }} reported officer or director change{% if health.recent_changes != 1 %}s{% endif %} in the last 2 years
+          {%- endif -%}
+        </span>
+      </li>
+    </ul>
+  </section>
+  {% endif %}
+
   <h2 class="section-title">Fundamentals{% if symbol.fundamentals_synced_at %}<span class="section-title__asof">synced from SEC {{ symbol.fundamentals_synced_at|ago }}</span>{% endif %}</h2>
   {% if fundamentals and fundamentals.ratios %}
   {# The rolled-up standing badge sits above the per-ratio cards (Phase 20). #}

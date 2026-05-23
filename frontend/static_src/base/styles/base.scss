@@ -645,6 +645,17 @@ main {
   background: var(--down-soft);
 }
 
+/* ---------- intro note under a section title ---------- */
+/* A quiet ink-faint line, scoped wider than a chip caption. Used on the home
+   panels and the symbol-page Stock health panel (Phase 17) to introduce a
+   section in one short sentence without crowding the title. */
+.section-note {
+  margin: -2px 0 14px;
+  max-width: 64ch;
+  color: var(--ink-faint);
+  font-size: 0.82rem;
+}
+
 /* ---------- disclaimer line (Phase 30) ---------- */
 /* A quiet ink-faint line used on the home Top picks panel and the /backtest
    page header. Always smaller than body text; never carries a semantic

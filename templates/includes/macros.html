@@ -117,3 +117,23 @@
   {{ verdict_badge(r.standing) }}
 </a>
 {% endmacro %}
+
+{# `health_row` renders one healthiest / most-concerning row (Phase 17). The
+   overall verdict badge sits on the right; the three sub-readings ride below
+   the name as a compact line so the synthesis is legible without expanding.
+   `--bar` sizes the magnitude tint exactly like the standing rows. #}
+{% macro health_row(r) %}
+<a class="hrow {{ 'hrow--up' if r.up else 'hrow--down' }}"
+   href="/s/{{ r.ticker|urlencode }}" style="--bar: {{ r.bar }}%">
+  <span class="hrow__sym num">{{ r.ticker }}</span>
+  <span class="hrow__body">
+    <span class="hrow__name">{{ r.name }}</span>
+    <span class="hrow__sub">
+      <span class="hrow__chip hrow__chip--{{ r.health.strength }}">{{ r.health.strength_label }}</span>
+      <span class="hrow__chip hrow__chip--{{ r.health.trajectory }}">{{ r.health.trajectory_label }}</span>
+      <span class="hrow__chip hrow__chip--{{ r.health.stability }}">{{ r.health.stability_label }}</span>
+    </span>
+  </span>
+  {{ verdict_badge({"grade": r.health.overall, "verdict": r.health.verdict}) }}
+</a>
+{% endmacro %}

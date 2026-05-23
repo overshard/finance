@@ -380,6 +380,112 @@
   background: var(--down);
 }
 
+/* ---------- stock health read (Phase 17) ---------- */
+/* A synthesis panel above the per-component data sections: an overall
+   Healthy / Mixed / Concerning verdict, then the three sub-readings
+   (fundamentals / trajectory / leadership). Each sub-row carries the
+   semantic colour through a left border and a coloured value, keeping
+   the panel readable at a glance without overwhelming the page. */
+.health {
+  padding: 14px 16px;
+}
+
+.health__overall {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 12px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--rule);
+}
+
+/* the overall verdict reads larger than the inline app-wide pill */
+.health__overall .vbadge {
+  font-size: 0.74rem;
+  padding: 7px 14px;
+}
+
+.health__overall-text {
+  max-width: 70ch;
+  color: var(--ink-dim);
+  font-size: 0.92rem;
+}
+
+.health__breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.health-row {
+  display: grid;
+  grid-template-columns: 7.5rem auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 14px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--rule);
+  background: var(--well);
+  border-radius: var(--radius-sm);
+}
+
+.health-row--good {
+  border-left-color: var(--up);
+}
+
+.health-row--ok {
+  border-left-color: var(--warn);
+}
+
+.health-row--bad {
+  border-left-color: var(--down);
+}
+
+.health-row--unknown {
+  border-left-color: var(--ink-faint);
+}
+
+.health-row__label {
+  @include eyebrow;
+  color: var(--ink);
+}
+
+.health-row__value {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.health-row--good .health-row__value {
+  color: var(--up);
+}
+
+.health-row--ok .health-row__value {
+  color: var(--warn);
+}
+
+.health-row--bad .health-row__value {
+  color: var(--down);
+}
+
+.health-row--unknown .health-row__value {
+  color: var(--ink-faint);
+}
+
+.health-row__note {
+  font-size: 0.8rem;
+  color: var(--ink-faint);
+}
+
+@media (max-width: 480px) {
+  .health-row {
+    grid-template-columns: 1fr auto;
+    row-gap: 4px;
+  }
+
+  .health-row__note {
+    grid-column: 1 / -1;
+  }
+}
+
 /* ---------- fundamentals: graded ratio cards ---------- */
 .fund-basis {
   margin: 2px 0 14px;

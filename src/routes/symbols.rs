@@ -1135,9 +1135,42 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
     // rolled up, with the daily-close trajectory folded into its score. Shown
     // as a single badge over the ratio cards. `bars` is newest-first, so it is
     // reversed into an oldest-first close series.
-    let standing = fundamentals.as_ref().and_then(|f| {
-        let closes: Vec<f64> = bars.iter().rev().map(|b| b.4).collect();
-        compute::standing(&f.ratios, &closes)
+    let closes_oldest_first: Vec<f64> = if is_stock {
+        bars.iter().rev().map(|b| b.4).collect()
+    } else {
+        Vec::new()
+    };
+    let standing = fundamentals
+        .as_ref()
+        .and_then(|f| compute::standing(&f.ratios, &closes_oldest_first));
+
+    // The stock health read (Phase 17): the ratios + trajectory of the
+    // standing above, plus a leadership-stability signal read off the recent
+    // 8-K item-5.02 change count from Phase 14. `None` until the leadership
+    // sweep has reached this stock; the composite then drops that component
+    // cleanly instead of penalising an unsynced stock. Stocks only.
+    let leadership_changes_recent: Option<usize> = if is_stock
+        && symbol.leadership_synced_at.is_some()
+    {
+        let cutoff = (chrono::Utc::now().date_naive()
+            - chrono::Duration::days(compute::LEADERSHIP_STABILITY_DAYS))
+        .to_string();
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM filings \
+             WHERE ticker = ? AND form LIKE '8-K%' AND items LIKE '%5.02%' \
+               AND filed_at >= ?",
+        )
+        .bind(&ticker)
+        .bind(&cutoff)
+        .fetch_one(&state.pool)
+        .await
+        .ok()
+        .map(|n| n.max(0) as usize)
+    } else {
+        None
+    };
+    let health = fundamentals.as_ref().and_then(|f| {
+        compute::health_read(&f.ratios, &closes_oldest_first, leadership_changes_recent)
     });
 
     let filings: Vec<FilingView> = if is_stock || is_etf {
@@ -1272,6 +1305,7 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         quote => quote,
         fundamentals => fundamentals,
         standing => standing,
+        health => health,
         fund => fund,
         fund_meta => fund_meta,
         returns => returns,

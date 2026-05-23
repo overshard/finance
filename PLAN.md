@@ -32,7 +32,25 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-23_
 
-**Current phase: Phase 16 (per-ticker anomaly feed) complete, verified,
+**Current phase: Phase 17 (stock health read) complete and verified
+locally 2026-05-23 — not yet deployed.** A single non-advice "health" read
+per stock layered over the Phase 20 strength + trajectory composite: it
+folds in a leadership-stability signal read off the recent 8-K item-5.02
+change count (Phase 14). Industry context (Phase 15) was intentionally
+dropped from this phase — the read ships without it and a later pass can
+layer it on. Two surfaces. On the symbol page a new "Stock health" panel
+sits between key stats and Fundamentals (stocks only): an overall
+Healthy / Mixed / Concerning verdict plus three sub-readings —
+fundamentals (Strong / Fair / Weak), trajectory (Climbing / Steady /
+Slipping), leadership (Stable / Normal / Churning) with the actual
+recent-change count. On the home dashboard a new "Stock health" pair of
+panels (Healthiest / Most concerning) ranks the curated large-caps by the
+composite, mirroring the Phase 20 strongest/weakest layout but with the
+three sub-component chips visible on each row. Both surfaces carry a
+quiet "for fun and reading at a glance, not investment advice"
+disclaimer. Pure derivation from data already stored — no new network
+calls, no schema change, no new `EndpointGuard` row. **Phase 16
+(per-ticker anomaly feed) complete, verified,
 and deployed to production 2026-05-23 (commit `a839737`).** A new symbol-page section between
 Leadership and Recent SEC filings, surfacing notable recent events: large
 daily price moves, drawdowns (new 6-month lows), large YoY fundamentals
@@ -81,8 +99,9 @@ adds a stock Dividends section on the symbol page — inferred cadence,
 prior-year and YTD totals, a count-tempered on-track projection, and a per-
 event payout history — backed by a new weekly Yahoo `dividends` scheduler
 job. Deployed to production 2026-05-22 (commit `7608b06`). Remaining
-post-MVP work: the loose-ordered Phase 13, 15, 16, 17, 19, 25, 27, 29
-backlog (Phase 28 is now in progress). Phase 28 (ETFs as first-class
+post-MVP work: the loose-ordered Phase 13, 15, 19, 25, 27, 29
+backlog (Phases 16, 17 and 28 are now done; 28 is shipped, 16 is
+shipped, 17 is verified locally and pending deploy). Phase 28 (ETFs as first-class
 citizens) was picked as the next backlog phase and scoped 2026-05-22 (see
 the decisions log): one big phase covering all seven pieces (distributions,
 expense ratio + yield, NAV / premium-discount, sector + geography, full
@@ -107,6 +126,73 @@ backlog as Phase 19. The `watchlists` / `watchlist_items` tables stay in the
 schema, unused for now.
 
 **Done**
+- **Phase 17 stock health read.** Complete and verified locally
+  2026-05-23 — not yet deployed. A non-advice synthesis of the data this
+  app already carries (fundamentals + price/growth trajectory + leadership
+  stability), surfaced two ways: a "Stock health" panel on the stock
+  symbol page and a "Healthiest / Most concerning" pair on the home
+  dashboard. Industry context was intentionally dropped from this phase
+  (Phase 15 is not built; see decisions log) — the read ships without it
+  and a later pass can layer it on.
+  - **Compute** added `HealthRead` and `health_read(ratios, closes,
+    recent_changes)` in `compute.rs`, plus a `stability_grade` helper.
+    HealthRead carries the overall grade + verdict, the composite score
+    (for ranking), and three sub-component grades + labels — fundamentals
+    (Strong / Fair / Weak, from `graded_mean` over the nine ratios),
+    trajectory (Climbing / Steady / Slipping, from `trajectory_score`),
+    and leadership stability (Stable / Normal / Churning, from a discrete
+    band over the change count). Composite weighting: 0.55 strength /
+    0.30 trajectory / 0.15 stability, renormalised over the components
+    that landed so an unsynced leadership stat does not penalise the
+    stock. Stability bands: 0-1 changes in the last 730 days reads
+    Stable / +1.0; 2-3 Normal / 0.0; 4+ Churning / -1.0 — deliberately
+    lenient since big companies routinely file ~one planned-succession
+    5.02 a year. Each piece is pure; `LEADERSHIP_STABILITY_DAYS` and
+    `MIN_GRADED` from Phase 20 stay the same gates.
+  - **Symbol page wiring** in `routes/symbols.rs`. Hoisted the daily-close
+    series out of the standing block so the new health read can share it.
+    Added one small SELECT for the 8-K item-5.02 count over the last
+    730 days (only fired once leadership has synced; `None` otherwise so
+    the composite drops the stability term cleanly). `build_anomalies` and
+    the existing Phase 20 standing computation were left intact — the new
+    health read is additive, not a replacement.
+  - **Symbol template** got a new `{% if health %}` panel between the key
+    stats and Fundamentals (stocks only), introducing the section with a
+    quiet section note + a `.disclaimer` line. Three `.health-row` rows
+    carry the sub-component label / value / note; the per-row left
+    border + value colour are semantically green / amber / red. The
+    Phase 20 standing badge stays in the Fundamentals section above the
+    ratio cards — it remains the per-ratio rollup; the new panel is the
+    broader synthesis.
+  - **Home page wiring** in `routes/home.rs`. `StockRow` gained
+    `health: Option<HealthRead>` and a `leadership_synced_at` field.
+    `load_stocks` got a fourth bulk query — one `GROUP BY ticker` of the
+    8-K item-5.02 filings inside `LEADERSHIP_STABILITY_DAYS`, joined to
+    `is_seeded` stocks — that feeds each stock's HealthRead. A new
+    `health_panels()` ranks by composite score, takes the top and bottom 8,
+    and scales each row's magnitude tint to the largest absolute score
+    across both panels (mirroring the movers / standing tint maths).
+  - **Home template** picked up a "Stock health" section above the
+    existing "Strongest & weakest" section: section note + disclaimer +
+    a Healthiest / Most concerning panel pair. Each row uses a new
+    `health_row` macro and a new `.hrow` style: ticker, then the company
+    name with three sub-component pills underneath (the same green /
+    amber / red, smaller eyebrow type), then the overall verdict badge.
+  - **SCSS.** New `.health` / `.health-row` block in `symbol.scss` (a
+    three-column desktop grid that collapses to two-column on phones
+    via a 480px media query, so the note wraps under the value); new
+    `.hrow` / `.hrow__sub` / `.hrow__chip` block in `home.scss`. The
+    shared `.section-note` style moved from `home.scss` to `base.scss`
+    so the symbol page can use it too.
+  - Verified: `cargo check` + `bun run build` clean. `/s/AAPL` reads
+    `Mixed` overall — Fair fundamentals, Climbing trajectory, Churning
+    leadership at 7 reported changes in the last 2 years; the
+    Fundamentals section below still carries its own `FAIR` standing
+    badge. `/s/SPY` (ETF) and `/s/^SPX` (index) hide the section cleanly.
+    `/` renders the Stock health panel above Strongest & weakest with
+    GOOGL, GOOG and MU leading the healthiest list. Desktop (1280px)
+    and phone (390px) both render with no horizontal overflow; zero
+    console errors on the home page or any symbol page checked.
 - **Phase 0 skeleton** — complete, verified. `make run` serves the dark
   futuristic dashboard on port 8000, migrations apply on boot, routes plus a
   themed 404 work, the request log is colored.
@@ -1430,14 +1516,18 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   reads consistently. Section hides cleanly on an empty feed.
   Pure derivation: no schema change, no new network calls, no new
   `EndpointGuard` row.
-- [ ] **Phase 17: Stock health read.** Synthesize fundamentals, price
-  trajectory, leadership, and industry context into a single non-advice
-  "health" read: is this a healthy company (capable leadership familiar with
-  the industry, solid fundamentals, consistent gains with the occasional
-  acceptable setback)? Explicitly NOT buy or sell advice, and labelled as such
-  in the UI. Builds on Phase 20 (its composite fundamental-strength grade and
-  trajectory measure are the core of the read), layering Phase 14 leadership
-  and Phase 15 industry context on top. Builds on Phases 7, 14, 15 and 20.
+- [x] **Phase 17: Stock health read.** Complete and verified locally
+  2026-05-23 (not yet deployed) — see the Phase 17 Done entry in Status
+  and the decisions log. Synthesizes fundamentals + price/growth
+  trajectory + leadership stability into a single non-advice "health"
+  read, on the stock symbol page and as a Healthiest / Most concerning
+  pair on the home dashboard. Industry context (Phase 15) was
+  intentionally dropped from this phase since Phase 15 is not built; the
+  read ships without it and a later pass can layer it on. The leadership
+  signal is a stability score read off the count of recent 8-K item-5.02
+  filings (the same Phase 14 data already on the page); the user-picked
+  scope was "stability via churn count" over a qualitative note. Builds
+  on Phases 7, 14 and 20.
 - [x] **Phase 18: ETF profiles.** Complete and verified (2026-05-22) — the
   first post-MVP phase, see the Phase 18 entry in Status and the decisions
   log. ETFs are first-class: a fund profile (AUM, holdings count, top 25
@@ -2907,6 +2997,52 @@ finance/
   master` (commit `a839737`), bundled with the Phase 30 rework and the
   S&P 500 universe expansion that were also pending deploy from earlier
   the same day.
+- **2026-05-23 — Phase 17 picked next; scope settled in three Q&A.** The
+  user picked Phase 17 (stock health read) over the remaining loose
+  backlog (13 heat map, 15 industry trends, 25 earnings dates, 27 backup
+  providers, 29 issuer-direct ETF feeds). Three scoping questions settled
+  before any code:
+  1. **Industry context** — Phase 15 (industry trends) was scheduled as a
+     prerequisite in the original Phase 17 scope. The user chose to
+     **drop industry from this phase** rather than detour through Phase
+     15 first or fold a minimal SIC tag inline. The health read ships
+     without industry context; a later pass after Phase 15 can layer it
+     on. The Phases-list and Done entries note this explicitly.
+  2. **Leadership signal** — Phase 14 ships only a roster + 8-K item-5.02
+     change feed (no tenure, no insider/outsider read). The user picked
+     a **stability score via recent change count**, not a qualitative
+     note alongside the composite. Discrete three-band score (0-1 →
+     Stable, 2-3 → Normal, 4+ → Churning) over the count of 8-K item-5.02
+     filings in the last 730 days — deliberately lenient because large
+     companies routinely file ~one planned-succession 5.02 a year.
+  3. **Surfaces** — the user picked **symbol page + a home rank panel**
+     (rather than symbol-page-only). The home panels mirror the Phase 20
+     strongest / weakest pair, sitting above them; the symbol-page panel
+     sits above Fundamentals (the existing Phase 20 standing badge stays
+     in place, since it is specifically the per-ratio rollup and the new
+     panel is the broader synthesis).
+- **2026-05-23 — Phase 17 stock health read shipped (local).** Pure
+  derivation on top of data the app already carries, no schema change
+  and no new network calls. The composite is fundamentals 0.55 +
+  trajectory 0.30 + leadership stability 0.15, renormalised over the
+  components that landed so an unsynced stock is not penalised; bands
+  use the same `STRONG_CUTOFF` / `WEAK_CUTOFF` as Phase 20 so the overall
+  verdict (Healthy / Mixed / Concerning) stays consistent with the
+  per-ratio standing (Strong / Fair / Weak). The new "Stock health"
+  symbol-page panel renders three sub-rows (fundamentals / trajectory /
+  leadership) with the actual numeric reasoning beside each (e.g. "7
+  reported officer or director changes in the last 2 years"); the
+  Fundamentals section below still carries its own standing badge —
+  intentional, since the two read at different levels (per-ratio rollup
+  vs broader synthesis) and the user wanted the synthesis at the top.
+  The home Stock health pair mirrors strongest / weakest layout with a
+  new `health_row` macro showing the three sub-component pills under
+  the name and the overall verdict on the right. Verified: cargo + bun
+  build clean; `/s/AAPL` reads Mixed (Fair / Climbing / Churning at 7
+  changes), `/s/SPY` and `/s/^SPX` hide the panel cleanly; `/` renders
+  the Healthiest panel with GOOGL / GOOG / MU leading; desktop and
+  390px phone both render with no horizontal overflow and zero console
+  errors. Not yet deployed.
 
 ---
 

@@ -906,6 +906,152 @@ pub fn standing(ratios: &[Ratio], closes: &[f64]) -> Option<Standing> {
     })
 }
 
+// ─────────────────────── stock health read (Phase 17) ──────────────────────
+//
+// The health read layers a leadership-stability signal over the Phase 20
+// strength + trajectory composite to give a single non-advice summary of
+// whether a stock looks healthy. Pure derivation: ratios from Phase 7, a
+// daily-close series, and a count of recent 8-K item-5.02 leadership changes
+// from Phase 14. Industry context (Phase 15) is intentionally not folded in
+// yet; this phase ships without it and a later pass will layer it on.
+
+/// Trailing window in days for counting 8-K item-5.02 leadership changes that
+/// feed the stability score (~24 months). Long enough to capture an annual
+/// change pattern, short enough that years-old turnover ages out.
+pub const LEADERSHIP_STABILITY_DAYS: i64 = 730;
+
+/// Health-composite weights. Strength carries the most weight (a healthy
+/// company is first built well), trajectory next, stability last. They sum
+/// to 1; the weighting mirrors the Phase 20 user steer that the ranking
+/// should lean on how the company is *built* over how its price has *moved*.
+const HEALTH_W_STRENGTH: f64 = 0.55;
+const HEALTH_W_TRAJECTORY: f64 = 0.30;
+const HEALTH_W_STABILITY: f64 = 0.15;
+
+/// A stock's health read: an overall healthy / mixed / concerning verdict,
+/// the composite score the home panels rank by, and the three sub-components
+/// behind it so the symbol page can show the breakdown.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct HealthRead {
+    /// CSS hook for the overall badge: `good` | `ok` | `bad`.
+    pub overall: Grade,
+    /// Badge text derived from `overall`: `Healthy` | `Mixed` | `Concerning`.
+    pub verdict: &'static str,
+    /// Composite score in [-1, 1]; home panels sort by it.
+    pub score: f64,
+    pub strength: Grade,
+    pub strength_label: &'static str,
+    pub trajectory: Grade,
+    pub trajectory_label: &'static str,
+    pub stability: Grade,
+    pub stability_label: &'static str,
+    /// 8-K item-5.02 filings counted inside `LEADERSHIP_STABILITY_DAYS`.
+    pub recent_changes: usize,
+}
+
+/// Map an overall health grade to its display verdict. Distinct from the
+/// per-ratio `Strong/Fair/Weak` so the panel reads as a synthesis, not a
+/// ratio rollup.
+fn health_verdict(g: Grade) -> &'static str {
+    match g {
+        Grade::Good => "Healthy",
+        Grade::Ok => "Mixed",
+        Grade::Bad => "Concerning",
+        Grade::Unknown => "Unread",
+    }
+}
+
+/// Trajectory sub-component label.
+fn trajectory_label(g: Grade) -> &'static str {
+    match g {
+        Grade::Good => "Climbing",
+        Grade::Ok => "Steady",
+        Grade::Bad => "Slipping",
+        Grade::Unknown => "—",
+    }
+}
+
+/// Leadership-stability sub-component label.
+fn stability_label(g: Grade) -> &'static str {
+    match g {
+        Grade::Good => "Stable",
+        Grade::Ok => "Normal",
+        Grade::Bad => "Churning",
+        Grade::Unknown => "—",
+    }
+}
+
+/// Grade leadership stability from the count of recent 8-K item-5.02 changes
+/// inside `LEADERSHIP_STABILITY_DAYS`. Returns `None` when the leadership
+/// sweep has not reached the stock yet (the caller passes `None`), so the
+/// component drops out of the composite cleanly instead of penalising
+/// an unsynced stock. Three discrete bands rather than a linear scale: the
+/// signal is coarse and the bands keep it from drifting on small counts.
+///
+/// - 0-1 change  → `Good` / `+1.0` — stable
+/// - 2-3 changes → `Ok`   / `0.0`  — normal
+/// - 4+ changes  → `Bad`  / `-1.0` — churn
+///
+/// Big companies routinely file ~one planned-succession 5.02 a year, so the
+/// bands are deliberately lenient.
+pub fn stability_grade(recent_changes: Option<usize>) -> Option<(Grade, f64)> {
+    match recent_changes? {
+        0 | 1 => Some((Grade::Good, 1.0)),
+        2 | 3 => Some((Grade::Ok, 0.0)),
+        _ => Some((Grade::Bad, -1.0)),
+    }
+}
+
+/// Roll a stock's ratios, trajectory and leadership-change count into a
+/// single [`HealthRead`]. `ratios` is the output of [`compute_ratios`];
+/// `closes` is a daily-close series (oldest first) over roughly the trailing
+/// year (may be empty); `recent_changes` is the count of 8-K item-5.02
+/// filings in the last `LEADERSHIP_STABILITY_DAYS`, or `None` if the
+/// leadership sweep has not reached this stock. `None` when too few ratios
+/// graded to judge (same gate as [`standing`]).
+///
+/// The composite renormalises over the components that landed — a stock with
+/// no leadership data yet is read on strength + trajectory alone, not penalised.
+pub fn health_read(
+    ratios: &[Ratio],
+    closes: &[f64],
+    recent_changes: Option<usize>,
+) -> Option<HealthRead> {
+    let strength_raw = graded_mean(ratios.iter().map(|r| r.grade), MIN_GRADED)?;
+    let trajectory_raw = trajectory_score(ratios, closes);
+    let stability_pair = stability_grade(recent_changes);
+
+    let mut weighted = HEALTH_W_STRENGTH * strength_raw;
+    let mut total = HEALTH_W_STRENGTH;
+    if let Some(t) = trajectory_raw {
+        weighted += HEALTH_W_TRAJECTORY * t;
+        total += HEALTH_W_TRAJECTORY;
+    }
+    if let Some((_, s)) = stability_pair {
+        weighted += HEALTH_W_STABILITY * s;
+        total += HEALTH_W_STABILITY;
+    }
+    let score = weighted / total;
+    let overall = score_grade(score);
+
+    let strength = score_grade(strength_raw);
+    let trajectory = trajectory_raw.map(score_grade).unwrap_or(Grade::Unknown);
+    let stability = stability_pair.map(|(g, _)| g).unwrap_or(Grade::Unknown);
+
+    Some(HealthRead {
+        overall,
+        verdict: health_verdict(overall),
+        score,
+        strength,
+        strength_label: strength.verdict(),
+        trajectory,
+        trajectory_label: trajectory_label(trajectory),
+        stability,
+        stability_label: stability_label(stability),
+        recent_changes: recent_changes.unwrap_or(0),
+    })
+}
+
 // ────────────────────── ETF trailing returns (Phase 28) ────────────────────
 //
 // Trailing total returns from a fund's daily-close series. Distributions are
