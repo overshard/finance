@@ -1472,3 +1472,98 @@ a.anomaly__link:hover .anomaly__body {
     min-height: 34px;
   }
 }
+
+/* ---------- earnings (Phase 25) ---------- */
+.earn {
+  padding: 14px 16px;
+}
+
+/* The two headline cells — most recent + next expected — stack on phone and
+   sit side by side from ~520px, mirroring .div-pace. */
+.earn__pair {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px 18px;
+  margin: 0 0 12px;
+}
+
+@media (min-width: 520px) {
+  .earn__pair {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.earn__cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+}
+
+.earn__cap {
+  @include eyebrow;
+  font-size: 0.6rem;
+}
+
+.earn__val {
+  font-size: 1.05rem;
+  font-weight: 600;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+}
+
+.earn__sub {
+  @include eyebrow;
+  font-size: 0.62rem;
+  font-weight: 400;
+  color: var(--ink-faint);
+}
+
+.earn__past-title {
+  @include eyebrow;
+  color: var(--ink);
+  margin-bottom: 2px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule-strong);
+}
+
+.earn__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.earn-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  padding: 9px 0;
+  border-top: 1px solid var(--rule);
+}
+
+.earn-row:first-child {
+  border-top: none;
+}
+
+.earn-row__date {
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+}
+
+.earn-row__ago {
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+}
+
+.earn__src {
+  margin: 12px 0 0;
+  padding-top: 11px;
+  border-top: 1px solid var(--rule);
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+}

@@ -342,6 +342,76 @@ impl YahooProvider {
         Ok(Some(parse_fund_metadata(result)))
     }
 
+    /// Fetch the next-expected earnings date for `ticker` from Yahoo's
+    /// `quoteSummary.calendarEvents` module (Phase 25). One request to the
+    /// same v10 endpoint that already serves `fund_metadata`, asking only for
+    /// the calendar module — Yahoo's smallest reply on this endpoint.
+    ///
+    /// Returns `Ok(Some(epoch_ms))` when Yahoo has an upcoming earnings date,
+    /// `Ok(None)` when it knows the symbol but carries no date (Yahoo's
+    /// coverage is uneven on small caps, and a closely-watched name with a
+    /// just-passed print also briefly reads empty), or `Ok(None)` for an
+    /// unknown symbol (404 or `quoteSummary.error`). Gating responses (429 /
+    /// 503 / 401 / 403) surface as the typed [`RateLimited`], same defensive
+    /// set as `fund_metadata`.
+    pub async fn earnings_calendar(&self, ticker: &str) -> Result<Option<i64>> {
+        let sym = urlencoding::encode(&yahoo_symbol(ticker)).into_owned();
+        let url = format!(
+            "https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}\
+             ?modules=calendarEvents"
+        );
+        let resp = self.client.get(&url).send().await?;
+        let status = resp.status();
+        if matches!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS
+                | StatusCode::SERVICE_UNAVAILABLE
+                | StatusCode::UNAUTHORIZED
+                | StatusCode::FORBIDDEN
+        ) {
+            let retry_after_secs = resp
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<i64>().ok());
+            return Err(anyhow::Error::new(RateLimited {
+                status: status.as_u16(),
+                retry_after_secs,
+            }));
+        }
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let resp = resp.error_for_status()?;
+        let env: QuoteSummaryEnvelope = resp.json().await?;
+        if env.quote_summary.error.is_some() {
+            return Ok(None);
+        }
+        let Some(result) = env
+            .quote_summary
+            .result
+            .and_then(|mut r| if r.is_empty() { None } else { Some(r.remove(0)) })
+        else {
+            return Ok(None);
+        };
+        // `earningsDate` is an array; Yahoo populates 1 or 2 entries — the
+        // confirmed date, or a confirmed/estimated pair. The earliest one
+        // is the upcoming print. Future events only: a date in the past
+        // means Yahoo has not yet rolled it forward, so we ignore it.
+        let now_secs = chrono::Utc::now().timestamp();
+        let next_secs = result
+            .calendar_events
+            .and_then(|c| c.earnings)
+            .and_then(|e| {
+                e.earnings_date
+                    .into_iter()
+                    .filter_map(|d| Some(d.0 as i64))
+                    .filter(|s| *s >= now_secs)
+                    .min()
+            });
+        Ok(next_secs.map(|s| s * 1000))
+    }
+
     /// Identify a symbol: validate it exists on Yahoo and return its name,
     /// kind, exchange and currency, alongside the quote the same request
     /// carried. Used by the Phase 9 add-symbol flow.
@@ -393,6 +463,23 @@ struct QuoteSummaryResult {
     summary_detail: Option<SummaryDetailModule>,
     price: Option<PriceModule>,
     asset_profile: Option<AssetProfileModule>,
+    /// `calendarEvents` (Phase 25) — the upcoming earnings date and ex-div
+    /// date a v10 request can carry alongside the fund modules.
+    calendar_events: Option<CalendarEventsModule>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct CalendarEventsModule {
+    earnings: Option<CalendarEarnings>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct CalendarEarnings {
+    /// Yahoo emits 1 or 2 `RawF64` entries (Unix seconds), the confirmed
+    /// upcoming date or a confirmed/estimated pair.
+    earnings_date: Vec<RawF64>,
 }
 
 #[derive(Default, Deserialize)]

@@ -4,6 +4,7 @@ import {
   LineSeries,
   HistogramSeries,
   ColorType,
+  createSeriesMarkers,
 } from "lightweight-charts";
 
 // Paper Ledger theme: ink figures and hairline rules on the warm paper
@@ -52,6 +53,12 @@ const RSI_INK = "#3f6f9c";
 const BENCH_INK = "#7a5237";
 const VOLUME_UP = "rgba(47,125,79,0.38)";
 const VOLUME_DOWN = "rgba(178,59,50,0.38)";
+// Phase 25: earnings-date markers. A small ink dot above each candle that
+// matches a past 8-K item-2.02 date. Same warm-paper ink-faint as the rest
+// of the Paper Ledger palette so it reads as wayfinding, not a value verdict
+// (the candles still own green/red and the indicator inks own the other
+// non-semantic palette).
+const EARNINGS_INK = "rgba(33,31,26,0.55)";
 
 /** `12.4` -> `+$12.40`, `-3` -> `-$3.00`. */
 function fmtMoney(n) {
@@ -128,6 +135,13 @@ export function initChart() {
     crosshairMarkerVisible: false,
     visible: false,
   });
+
+  // Earnings-date markers (Phase 25). Stocks only; the payload carries an
+  // `earnings` array of `YYYY-MM-DD` past dates that match candle times.
+  // Each draws a small ink dot above the matching bar. v5's
+  // createSeriesMarkers attaches to the candle series and is replaced
+  // wholesale on each setMarkers call.
+  const earningsMarkers = createSeriesMarkers(series, []);
 
   let bars = []; // loaded candles, ascending by time
   let latest = null; // last loaded payload, kept so RSI can attach on demand
@@ -346,6 +360,23 @@ export function initChart() {
     if (benchBtn) benchBtn.hidden = bench.length === 0;
     const benchOn = bench.length > 0 && (!benchBtn || benchBtn.classList.contains("is-active"));
     benchmarkSeries.applyOptions({ visible: benchOn });
+
+    // Phase 25: earnings-date pips. Filter to dates inside the visible
+    // candle window — lightweight-charts ignores markers whose time
+    // does not match a candle, but trimming first keeps the payload small
+    // and the markers sorted ascending (the API requires it).
+    const earnings = d.earnings || [];
+    const candleTimes = new Set(d.candles.map((c) => c.time));
+    const markers = earnings
+      .filter((e) => candleTimes.has(e.time))
+      .map((e) => ({
+        time: e.time,
+        position: "aboveBar",
+        color: EARNINGS_INK,
+        shape: "circle",
+      }))
+      .sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+    earningsMarkers.setMarkers(markers);
   }
 
   // ── indicator toggles ──────────────────────────────────────────────────

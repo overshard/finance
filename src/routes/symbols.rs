@@ -930,6 +930,130 @@ async fn build_leadership(pool: &sqlx::SqlitePool, ticker: &str, synced: bool) -
     }
 }
 
+// ── earnings dates (Phase 25) ─────────────────────────────────────────────
+
+/// One past earnings date shaped for the page.
+#[derive(Serialize)]
+struct PastEarningsRow {
+    /// `YYYY-MM-DD`; the template's `shortdate` filter formats it.
+    date: String,
+    /// Days from today; positive for past dates.
+    days_ago: i64,
+}
+
+/// Everything the symbol-page Earnings section needs. Stocks only — every
+/// caller gates the build on `kind == "stock"`.
+#[derive(Serialize)]
+struct EarningsView {
+    /// Most recent past earnings date (`YYYY-MM-DD`), with a days-ago figure.
+    most_recent: Option<PastEarningsRow>,
+    /// Next-expected earnings date (`YYYY-MM-DD`) and days-from-today.
+    next_date: Option<String>,
+    next_days: Option<i64>,
+    /// Where the next date came from: `yahoo` (authoritative), `estimate`
+    /// (cadence projection), or `unknown` (Yahoo has no date and we cannot
+    /// estimate one — too few priors).
+    next_source: &'static str,
+    /// The last few past earnings dates, newest first. Capped to 4 (one
+    /// trailing year of a quarterly cadence) per the design pass.
+    past: Vec<PastEarningsRow>,
+    /// All past earnings dates surfaced to the chart as ink pips above
+    /// each matching candle. Kept here so the route's history API can
+    /// echo them into the chart payload.
+    chart_dates: Vec<String>,
+    /// When this stock's earnings-calendar sync last ran, for the section
+    /// caption. NULL when Yahoo has never been hit for this stock; the page
+    /// then shows the past dates and the cadence estimate without the "as of"
+    /// line so it does not lie about a sync that did not happen.
+    earnings_synced_at: Option<i64>,
+}
+
+/// How many past earnings dates to list on the page. Four covers one trailing
+/// year of a quarterly cadence; the chart pips show all of them up to the
+/// chart's visible range.
+const EARNINGS_PAST_LIMIT: usize = 4;
+
+/// Load past earnings dates from `filings.items LIKE '%2.02%'` (Phase 14
+/// stored 8-K item codes). Newest first; capped to a generous window so a
+/// company that moved its reporting day still produces a clean median.
+async fn load_past_earnings(pool: &sqlx::SqlitePool, ticker: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT filed_at FROM filings \
+         WHERE ticker = ? AND form LIKE '8-K%' AND items LIKE '%2.02%' \
+         ORDER BY filed_at DESC, accession DESC LIMIT 16",
+    )
+    .bind(ticker)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+}
+
+/// Build the Earnings section for a stock. Returns `None` when SEC has not
+/// synced yet (no past dates to anchor the section) and Yahoo also carries
+/// no next date — the section is hidden cleanly in that case.
+async fn build_earnings(
+    pool: &sqlx::SqlitePool,
+    ticker: &str,
+    next_earnings_at: Option<i64>,
+    earnings_synced_at: Option<i64>,
+) -> Option<EarningsView> {
+    let past_dates = load_past_earnings(pool, ticker).await;
+    if past_dates.is_empty() && next_earnings_at.is_none() {
+        return None;
+    }
+    let today = chrono::Utc::now().date_naive();
+    let days_between = |d: &str| -> Option<i64> {
+        chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+            .ok()
+            .map(|nd| (nd - today).num_days())
+    };
+
+    let most_recent = past_dates.first().and_then(|d| {
+        days_between(d).map(|gap| PastEarningsRow {
+            date: d.clone(),
+            days_ago: -gap, // gap is negative for past dates; flip to days-ago.
+        })
+    });
+
+    // Resolve the next date: Yahoo primary, cadence-estimate fallback.
+    let (next_date, next_source) = match next_earnings_at {
+        Some(ts) => {
+            let date = chrono::DateTime::from_timestamp_millis(ts)
+                .map(|dt| dt.naive_utc().date().format("%Y-%m-%d").to_string());
+            (date, "yahoo")
+        }
+        None => {
+            let date_refs: Vec<&str> = past_dates.iter().map(String::as_str).collect();
+            match compute::next_earnings_estimate(&date_refs) {
+                Some(d) => (Some(d), "estimate"),
+                None => (None, "unknown"),
+            }
+        }
+    };
+    let next_days = next_date.as_deref().and_then(days_between);
+
+    let past: Vec<PastEarningsRow> = past_dates
+        .iter()
+        .take(EARNINGS_PAST_LIMIT)
+        .filter_map(|d| {
+            days_between(d).map(|gap| PastEarningsRow {
+                date: d.clone(),
+                days_ago: -gap,
+            })
+        })
+        .collect();
+
+    Some(EarningsView {
+        most_recent,
+        next_date,
+        next_days,
+        next_source,
+        past,
+        chart_dates: past_dates,
+        earnings_synced_at,
+    })
+}
+
 // ── per-ticker anomaly feed (Phase 16) ────────────────────────────────────
 
 /// One row in the anomaly feed, as shaped for the template. Wraps
@@ -1298,6 +1422,23 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
     // the template hides the section.
     let anomalies = build_anomalies(&state.pool, &ticker, &symbol.kind, &bars, &facts).await;
 
+    // Earnings dates (Phase 25). Stocks only; the past dates ride for free
+    // off the existing 8-K item-2.02 filings (Phase 14 stored the `items`
+    // column), the next date is either Yahoo's `calendarEvents` or a cadence
+    // estimate from those past dates. The chart pips also read off the past
+    // dates carried in `earnings.chart_dates`.
+    let earnings = if is_stock {
+        build_earnings(
+            &state.pool,
+            &ticker,
+            symbol.next_earnings_at,
+            symbol.earnings_synced_at,
+        )
+        .await
+    } else {
+        None
+    };
+
     let extra = minijinja::context! {
         title => ticker,
         symbol => symbol,
@@ -1312,6 +1453,7 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         leadership => leadership,
         dividends => dividends,
         anomalies => anomalies,
+        earnings => earnings,
         filings => filings,
     };
     render(&state, "pages/symbol.html", &format!("/s/{ticker}"), extra)
@@ -1342,6 +1484,14 @@ struct LinePoint {
     value: f64,
 }
 
+/// One earnings-date marker for the chart. `YYYY-MM-DD` (matches the
+/// candle `time` field), so the client can index it against the candle
+/// series directly.
+#[derive(Serialize)]
+struct EarningsMarker {
+    time: String,
+}
+
 /// The symbol chart payload (Phase 8 + Phase 28): the candles for the
 /// selected range plus the indicator overlays, each already trimmed to the
 /// visible window. Phase 28 adds an optional benchmark series — the
@@ -1365,6 +1515,11 @@ struct HistoryResponse {
     /// Absent when no benchmark is configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     benchmark_ticker: Option<String>,
+    /// Past earnings-date markers for the chart (Phase 25). Each is a
+    /// `YYYY-MM-DD` matching one of the visible candles; the client draws
+    /// a small ink dot above each matching bar. Stocks only; empty otherwise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    earnings: Vec<EarningsMarker>,
 }
 
 /// Earliest `YYYY-MM-DD` to *show* for a range button. `None` means no limit.
@@ -1477,6 +1632,25 @@ async fn history_api(
         _ => Vec::new(),
     };
 
+    // Earnings-date pips (Phase 25). Stocks only; each pip is dated to an
+    // 8-K item-2.02 filing date (Phase 14 already stored those in
+    // `filings.items`). The chart maps each `time` to its matching candle.
+    let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM symbols WHERE ticker = ?")
+        .bind(&ticker)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten();
+    let earnings = if kind.as_deref() == Some("stock") {
+        let dates = load_past_earnings(&state.pool, &ticker).await;
+        dates
+            .into_iter()
+            .map(|time| EarningsMarker { time })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     let resp = HistoryResponse {
         sma50: line(compute::sma(&closes, 50)),
         sma200: line(compute::sma(&closes, 200)),
@@ -1485,6 +1659,7 @@ async fn history_api(
         candles: candles.into_iter().skip(start).collect(),
         benchmark,
         benchmark_ticker,
+        earnings,
     };
 
     Json(resp).into_response()

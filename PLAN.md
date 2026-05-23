@@ -32,8 +32,27 @@ and resume cleanly from this file alone, keeping token use low.
 
 _Last updated: 2026-05-23_
 
-**Current phase: Phase 17 (stock health read) complete, verified,
-and deployed to production 2026-05-23 (commit `8a16b14`).** A single non-advice "health" read
+**Current phase: Phase 25 (earnings dates) complete, verified
+locally — not yet deployed.** A new Earnings section on the stock
+symbol page between Key stats and Stock health, plus small ink-dot
+pips on the candlestick chart at each past earnings date. Two surfaces:
+(1) the page section carries Most recent + Next expected as a paired
+headline (with "23 days ago" / "in 68 days · estimated from cadence"
+sub-lines) and a list of the last four earnings dates. The next-expected
+date is Yahoo's `quoteSummary.calendarEvents` when available and a
+cadence-estimate fallback from the past 8-K item-2.02 dates when not.
+(2) The candle chart now carries small ink-faint circle pips above each
+matching bar (Paper Ledger ink palette — wayfinding, not a value
+verdict; the candles still own green/red). Migration `0011` adds two
+columns to `symbols` (`next_earnings_at`, `earnings_synced_at`); a new
+`earnings_calendar` scheduler job on the existing `yahoo`
+`EndpointGuard` sweeps stocks monthly (one request per stock to
+`v10/finance/quoteSummary?modules=calendarEvents`). Past dates ride
+for free off the 8-K item-2.02 filings the Phase 14 `items` column
+already stores. Pure derivation otherwise — no new endpoint guard, no
+SEC sync needed beyond what Phase 14 ships. **Phase 17 (stock health
+read) complete, verified, and deployed to production 2026-05-23
+(commit `8a16b14`).** A single non-advice "health" read
 per stock layered over the Phase 20 strength + trajectory composite: it
 folds in a leadership-stability signal read off the recent 8-K item-5.02
 change count (Phase 14). Industry context (Phase 15) was intentionally
@@ -126,6 +145,83 @@ backlog as Phase 19. The `watchlists` / `watchlist_items` tables stay in the
 schema, unused for now.
 
 **Done**
+- **Phase 25 earnings dates.** Complete, verified locally — not yet
+  deployed. Past earnings dates come for free from the 8-K item-2.02
+  filings Phase 14 already stores in `filings.items`; the next-expected
+  date is fetched fresh from Yahoo's `quoteSummary.calendarEvents`
+  module with a cadence-estimate fallback when Yahoo carries nothing.
+  Stocks only — ETFs / indexes / futures hide the section cleanly.
+  - **Migration `0011`** adds two columns to `symbols`:
+    `next_earnings_at` (epoch-ms, NULL when Yahoo has no upcoming
+    date or the sync has not run yet) and `earnings_synced_at`
+    (epoch-ms of the last successful sweep). No new table; the past
+    dates ride on the existing `filings.items LIKE '%2.02%'` SELECT.
+  - **Yahoo provider** got `earnings_calendar(ticker)` — one request
+    to `v10/finance/quoteSummary?modules=calendarEvents`, parses
+    `earnings.earningsDate[0]` (the array carries 1 or 2 entries —
+    confirmed date or confirmed/estimated pair). Filters to future
+    dates only (Yahoo sometimes returns the just-passed print before
+    rolling forward). Same defensive RateLimited surfacing as the
+    Phase 28 `fund_metadata` path (429 / 503 / 401 / 403 all trip the
+    `yahoo` `EndpointGuard`).
+  - **Compute** added `next_earnings_estimate(newest_first_dates)` —
+    a pure helper that reads the median gap between the last up-to-4
+    earnings dates and projects forward. Clamped into 60–200 days so
+    a degenerate same-day-correction gap (a 2.02 press-release + a
+    same-day follow-up) doesn't yield a date in the next week.
+    Returns `None` on fewer than 2 priors. Three unit tests
+    (quarterly cadence, too-few priors, same-day corrections).
+  - **Scheduler** has a new `earnings_calendar` section on the
+    existing `yahoo` `EndpointGuard`, monthly staleness OR re-run
+    once the stored `next_earnings_at` passes (a missed roll-forward
+    never sits stale). Brought forward to the first tick on boot the
+    same way `sec` / `dividends` / `fund_metadata` are. Logs to
+    `fetch_log` + `data_status`; surfaces on `/health` automatically.
+    `scheduler::backfill_symbol` pulls a new stock's earnings
+    calendar inside the add-symbol request, mirroring Phase 21's
+    intent.
+  - **Symbol route** has a new `build_earnings(pool, ticker,
+    next_earnings_at, earnings_synced_at)` that loads past dates from
+    8-K item-2.02 filings (newest first), computes the "days ago" /
+    "days from now" deltas off `chrono::Utc::now()`, picks the
+    next-date source (Yahoo primary, estimate fallback), and caps
+    the past-dates list at 4 (one trailing year of a quarterly
+    cadence) per the design pass. Returns `None` when there's
+    nothing to show — no past dates *and* no next date — so the
+    template hides the section cleanly.
+  - **History API** (`/api/symbols/{ticker}/history`) gained an
+    optional `earnings: [{time}, ...]` field for stocks, carrying
+    all past 8-K item-2.02 dates. The chart filters to dates that
+    match a visible candle (lightweight-charts ignores markers whose
+    time does not match), sorts ascending (the v5 API requires it),
+    and draws each as a small `aboveBar` `circle` marker via
+    `createSeriesMarkers`. Color `rgba(33,31,26,0.55)` — the warm
+    paper ink, never green / amber / red. The same exception the
+    Phase 8 indicator lines and the Phase 18 asset-mix bar take.
+  - **Symbol template** has a new "Earnings" section between Key
+    stats and Stock health: a 2-up paired headline (Most recent +
+    Next expected) on desktop that stacks on phone, plus a list of
+    the last four dates with days-ago captions, and a quiet
+    provenance line labelling the source.
+  - **Health page** lists the new `earnings_calendar` job between
+    `fund_metadata` and `dividends` (job_meta + job_rank).
+  - **SCSS** added a small `.earn` block to `symbol.scss` mirroring
+    `.div-panel` / `.div-pace` shape (`@include card` panel, eyebrow
+    captions, mono figures, hairline border per cell, 2-column at
+    520px) and an `.earn-row` history row mirroring `.div-row`.
+  - Verified: cargo + bun build clean; 3 new Phase 25 unit tests
+    pass alongside the 7 prior. `/api/symbols/AAPL/history?range=1Y`
+    returns an 11-entry `earnings` array (Apr 30, Jan 29, Oct 30,
+    Jul 31, ...). `/s/AAPL` renders the Earnings section with
+    "Apr 30 · 23 days ago" + "Jul 30 · in 68 days · estimated from
+    cadence" (Yahoo has not been hit yet on the dev box; the
+    cadence estimate handled the next-date fallback exactly as
+    designed) and four past-date rows. The candlestick chart at
+    1Y range shows four ink-faint dots above the Aug 1, Oct 30,
+    Jan 29, and Apr 30 candles. `/s/SPY` (ETF), `/s/^SPX` (index),
+    and `/s/GC=F` (future) hide the section cleanly. Desktop
+    (1280px) and phone (390px) both render with no horizontal
+    overflow and zero console errors.
 - **Phase 17 stock health read.** Complete, verified, and deployed to
   production 2026-05-23 (commit `8a16b14`). A non-advice synthesis of the data this
   app already carries (fundamentals + price/growth trajectory + leadership
@@ -1218,8 +1314,9 @@ feeds: iShares/BlackRock, Vanguard, ...) was captured 2026-05-22 from a
 vibe-coding side note mid-Phase-28; see the decisions log.
 
 Phase 30 (top picks + backtest) is complete, verified, and deployed to
-production 2026-05-23 (commit `8ea9048`). Remaining post-MVP work is
-the loose-ordered Phase 13, 15, 16, 17, 19, 25, 27, 29 backlog. Phase 26 (dividend payouts)
+production 2026-05-23 (commit `8ea9048`). Phase 25 (earnings dates) is
+complete and verified locally 2026-05-23 — not yet deployed. Remaining
+post-MVP work is the loose-ordered Phase 13, 15, 19, 27, 29 backlog. Phase 26 (dividend payouts)
 is complete and deployed (commit `7608b06`); the MVP plus Phase 14,
 Phase 18, Phase 20, Phase 21, Phase 23 + 24, Phase 22 and Phase 26 are all
 live at https://finance.bythewood.me. There is still no GitHub repo for
@@ -1636,7 +1733,20 @@ depend on Phase 5 (live quotes) and Phase 7 (SEC data).
   which reads as a stray decimal point — the user noticed it on DELL. Replace
   it with an em dash (`—`) or a similar unambiguous "no data" mark.
 
-- [ ] **Phase 25: Earnings dates.** (Captured 2026-05-22 as a vibe-coding
+- [x] **Phase 25: Earnings dates.** Complete and verified locally
+  2026-05-23 — see the Phase 25 entry in Status (Done list) and the
+  decisions log. Two surfaces: a new symbol-page section between Key
+  stats and Stock health (Most recent + Next expected as a paired
+  headline, plus the last four past dates), and small ink-faint dot
+  pips on the candlestick chart at each past earnings date. Next-date
+  source is Yahoo's `quoteSummary.calendarEvents` primary with a
+  cadence estimate from past 8-K item-2.02 dates as the fallback.
+  Migration `0011` adds `symbols.next_earnings_at` +
+  `symbols.earnings_synced_at`; a new `earnings_calendar` scheduler
+  section sweeps stocks monthly on the existing `yahoo`
+  `EndpointGuard`. Past dates come for free from the 8-K item-2.02
+  filings Phase 14 already stores. Original phase scope below.
+  (Captured 2026-05-22 as a vibe-coding
   side note.) Surface a stock's earnings rhythm on the symbol page and the
   chart. Pieces:
   (1) A small section showing the most recent earnings date with "N days
@@ -3021,6 +3131,59 @@ finance/
      sits above Fundamentals (the existing Phase 20 standing badge stays
      in place, since it is specifically the per-ratio rollup and the new
      panel is the broader synthesis).
+- **2026-05-23 — Phase 25 picked next; design Q&A settled four points.**
+  After Phase 17 deployed, the user picked Phase 25 (earnings dates)
+  over the remaining loose backlog (13 heat map, 15 industry trends,
+  27 backup providers, 29 issuer-direct ETF feeds). Four scoping
+  questions resolved before any code:
+  1. **Next-date source.** Yahoo's `quoteSummary.calendarEvents`
+     primary with a cadence-estimate fallback when Yahoo carries
+     nothing for the stock (uneven coverage on small caps). Hybrid
+     beats either alone — Yahoo is authoritative when present, the
+     cadence estimate covers what it does not.
+  2. **Page placement.** Right under Key stats — top-of-page,
+     before Stock health → Fundamentals → ... → Filings. Earnings
+     rhythm is "what's happening with this company now" and reads
+     alongside the live quote rather than buried near the filings.
+  3. **Chart pip style.** Small ink dot above each earnings bar via
+     lightweight-charts' v5 `createSeriesMarkers` API, `aboveBar`
+     `circle`, color `rgba(33,31,26,0.55)` — the Paper Ledger ink
+     palette, deliberately *not* green / amber / red so it reads as
+     wayfinding (same exception the Phase 8 indicator lines and the
+     Phase 18 asset-mix bar take). Picked over a vertical hairline
+     guide (too prominent) and an "E" letter glyph (slightly noisier).
+  4. **Past-dates depth.** Last 4 (one trailing year of a quarterly
+     cadence), matching the Phase 16 anomaly feed's 1-year window.
+     All past dates still ride the chart pip layer (filtered to the
+     visible candle range) so a 5Y view shows all of them.
+- **2026-05-23 — Phase 25 earnings dates shipped (local).** Yahoo
+  `quoteSummary` is now the source for a fourth concern beyond
+  quotes / dividends / fund metadata — its `calendarEvents` module.
+  Design calls made during the build: (1) **`earnings_calendar` is
+  an inherent `YahooProvider` method, not behind a trait** — same
+  single-source rationale as `dividends` / `fund_metadata` / `lookup`,
+  and Phase 27 (provider redundancy) is the right place to lift it if
+  a second source ever joins. (2) **Past dates come from `filings.items
+  LIKE '%2.02%'`** — Phase 14 already stores 8-K item codes, so no new
+  data source for the past timeline; one SELECT in the symbol route
+  feeds both the page list and the chart pip layer. (3) **Cadence
+  estimate clamps to 60–200 days** so a degenerate same-day gap (a
+  press release + a same-day follow-up 2.02 8-K) does not project a
+  date in the next week. (4) **Job re-runs once `next_earnings_at`
+  passes**, not only on monthly staleness — a stock whose date Yahoo
+  has not yet rolled forward is picked up the next tick after its
+  print lands, so the page is rarely showing a stale "in -2 days"
+  reading. (5) **The chart pip color reuses `--ink` at 55% opacity**
+  rather than introducing a new token: it sits naturally with the
+  warm paper world and matches the Phase 25 design Q&A's "deliberate
+  non-semantic" call. (6) **The `HistoryResponse` carries all past
+  dates** (not just the last 4); the client filters to dates that
+  match a visible candle, so a deep MAX range correctly shows every
+  past pip in scope, while 1M / 6M views only show the ones inside
+  their window. The cadence-estimate path was exercised on the local
+  dev box (Yahoo blanket-429s the WSL2 IP), and the page rendered
+  exactly as expected; Yahoo's calendar will land on the production
+  alpine box on the next sweep after deploy. Not yet deployed.
 - **2026-05-23 — Phase 17 stock health read shipped (local).** Pure
   derivation on top of data the app already carries, no schema change
   and no new network calls. The composite is fundamentals 0.55 +

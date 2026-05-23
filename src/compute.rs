@@ -1597,6 +1597,84 @@ pub fn drawdown_anomalies(closes: &[f64], dates: &[&str]) -> Vec<AnomalyEvent> {
     out
 }
 
+// ── Phase 25: earnings dates ──────────────────────────────────────────────
+
+/// Estimate the next earnings date from a stock's recent earnings cadence.
+/// Used as the fallback when Yahoo's `calendarEvents` has no upcoming date
+/// for the stock (its coverage is uneven on small caps), built from the
+/// last up-to-four 8-K item-2.02 dates the existing `filings` table already
+/// carries (Phase 14).
+///
+/// `dates` is newest-first (matching how the symbol route's `ORDER BY
+/// filed_at DESC` SELECT returns them). Returns `None` when fewer than two
+/// priors exist or the spacing reads degenerate (a same-day correction).
+/// Less reliable than Yahoo when a company moves its reporting calendar,
+/// but better than no date when Yahoo is empty.
+pub fn next_earnings_estimate(dates: &[&str]) -> Option<String> {
+    if dates.len() < 2 {
+        return None;
+    }
+    // Parse the newest-first slice into `NaiveDate`s; drop any unparsable
+    // entries (defensive — these come from SEC, but the column is TEXT).
+    let parsed: Vec<chrono::NaiveDate> = dates
+        .iter()
+        .filter_map(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        .take(4)
+        .collect();
+    if parsed.len() < 2 {
+        return None;
+    }
+    // Gaps between consecutive earnings prints, oldest-to-newest order.
+    let mut gaps: Vec<i64> = parsed
+        .windows(2)
+        .map(|w| (w[0] - w[1]).num_days())
+        .collect();
+    if gaps.iter().all(|g| *g <= 1) {
+        return None;
+    }
+    gaps.sort();
+    let median = gaps[gaps.len() / 2];
+    // Clamp the median into a sane quarterly band so a stale dataset with
+    // a few-day gap (multiple 8-Ks tagged 2.02 in one cycle) does not
+    // project a date in the next week. Most US large-caps file ~91 days
+    // apart; semi-annual filers ~182.
+    let median = median.clamp(60, 200);
+    let next = parsed[0] + chrono::Duration::days(median);
+    Some(next.format("%Y-%m-%d").to_string())
+}
+
+#[cfg(test)]
+mod phase25_tests {
+    use super::*;
+
+    #[test]
+    fn estimates_a_quarterly_cadence() {
+        // Four prints roughly 91 days apart, newest-first.
+        let dates = &["2026-05-01", "2026-02-01", "2025-10-30", "2025-08-01"];
+        let next = next_earnings_estimate(dates).unwrap();
+        // Median gap ≈ 90 days, so next ≈ 2026-07-30 (give or take a day
+        // depending on the exact gaps).
+        let parsed = chrono::NaiveDate::parse_from_str(&next, "%Y-%m-%d").unwrap();
+        let baseline = chrono::NaiveDate::parse_from_str("2026-05-01", "%Y-%m-%d").unwrap();
+        let gap = (parsed - baseline).num_days();
+        assert!((85..=95).contains(&gap), "next gap was {gap}d");
+    }
+
+    #[test]
+    fn returns_none_on_too_few_priors() {
+        assert!(next_earnings_estimate(&[]).is_none());
+        assert!(next_earnings_estimate(&["2026-05-01"]).is_none());
+    }
+
+    #[test]
+    fn handles_same_day_corrections() {
+        // Two filings on adjacent days (a press-release and a follow-up): the
+        // 1-day gap is degenerate, so the estimate is rejected.
+        let dates = &["2026-05-02", "2026-05-01"];
+        assert!(next_earnings_estimate(dates).is_none());
+    }
+}
+
 #[cfg(test)]
 mod phase28_tests {
     use super::*;

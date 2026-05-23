@@ -42,6 +42,14 @@ pub struct SymbolRow {
     /// from `universe/starter.csv` (Phase 28). The symbol page's chart
     /// shows the relative-performance overlay only when this is set.
     pub benchmark: Option<String>,
+    /// Next-expected earnings date from Yahoo's `quoteSummary.calendarEvents`
+    /// (Phase 25), epoch-ms. NULL when Yahoo has no upcoming date for this
+    /// stock or the symbol has not been swept yet; the symbol page then
+    /// falls back to a cadence estimate from past 8-K item-2.02 filings.
+    pub next_earnings_at: Option<i64>,
+    /// When this stock's Yahoo earnings-calendar snapshot was last
+    /// refreshed (Phase 25). NULL = never swept. Stocks only.
+    pub earnings_synced_at: Option<i64>,
     pub last_price: Option<f64>,
     pub prev_close: Option<f64>,
     pub last_quote_at: Option<i64>,

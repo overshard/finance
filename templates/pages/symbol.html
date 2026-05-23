@@ -204,6 +204,58 @@
   {# --- fundamentals + financials: stocks only --- #}
   {% if symbol.kind == 'stock' %}
 
+  {# --- earnings dates (Phase 25): next-expected date with provenance, days
+         since the last print, and a short list of recent past dates. Past
+         dates come from 8-K item-2.02 filings (already stored by Phase 14);
+         the next date is Yahoo's `calendarEvents` when present, otherwise a
+         cadence estimate from those past dates. --- #}
+  {% if earnings %}
+  <h2 class="section-title">Earnings{% if earnings.earnings_synced_at %}<span class="section-title__asof">calendar synced from Yahoo {{ earnings.earnings_synced_at|ago }}</span>{% endif %}</h2>
+  <section class="panel earn">
+    <dl class="earn__pair">
+      <div class="earn__cell">
+        <dt class="earn__cap">Most recent</dt>
+        {% if earnings.most_recent %}
+        <dd class="earn__val num">{{ earnings.most_recent.date|shortdate }}<span class="earn__sub">{{ earnings.most_recent.days_ago }} day{% if earnings.most_recent.days_ago != 1 %}s{% endif %} ago</span></dd>
+        {% else %}
+        <dd class="earn__val">&mdash;<span class="earn__sub">no past earnings filed</span></dd>
+        {% endif %}
+      </div>
+      <div class="earn__cell">
+        <dt class="earn__cap">Next expected</dt>
+        {% if earnings.next_date %}
+        <dd class="earn__val num">{{ earnings.next_date|shortdate }}<span class="earn__sub">
+          {%- if earnings.next_days is not none -%}
+            {%- if earnings.next_days >= 0 -%}
+              in {{ earnings.next_days }} day{% if earnings.next_days != 1 %}s{% endif %}
+            {%- else -%}
+              {{ -earnings.next_days }} day{% if -earnings.next_days != 1 %}s{% endif %} ago
+            {%- endif -%}
+          {%- endif -%}
+          {% if earnings.next_source == 'estimate' %} &middot; estimated from cadence{% endif %}
+        </span></dd>
+        {% else %}
+        <dd class="earn__val">&mdash;<span class="earn__sub">no upcoming date on file</span></dd>
+        {% endif %}
+      </div>
+    </dl>
+    {% if earnings.past %}
+    <div class="earn__past">
+      <h3 class="earn__past-title">Recent earnings dates</h3>
+      <ul class="earn__list">
+        {% for e in earnings.past %}
+        <li class="earn-row">
+          <span class="earn-row__date num">{{ e.date|shortdate }}</span>
+          <span class="earn-row__ago">{{ e.days_ago }} day{% if e.days_ago != 1 %}s{% endif %} ago</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+    <p class="earn__src">Past earnings dates come from {{ symbol.ticker }}&rsquo;s 8-K item&nbsp;2.02 filings; the next date is Yahoo&rsquo;s when available, otherwise estimated from the recent reporting cadence.</p>
+  </section>
+  {% endif %}
+
   {# --- stock health read (Phase 17): a single non-advice synthesis of the
          three signals below (fundamentals + price/growth trajectory +
          leadership stability), so the headline reads in one glance before

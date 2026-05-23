@@ -106,6 +106,16 @@ const DIVIDENDS_STALE_SECS: i64 = 7 * 24 * 3600;
 const FUND_METADATA_INTERVAL_SECS: i64 = 24 * 3600;
 const FUND_METADATA_STALE_SECS: i64 = 30 * 24 * 3600;
 
+/// Earnings calendar refresh (Phase 25). Yahoo's `calendarEvents.earnings`
+/// rolls forward one quarter at a time as each print lands, and a stock's
+/// next date is irrelevant before it shifts — so a monthly cadence is
+/// enough to land each new date within a few weeks of when Yahoo learns it.
+/// Daily due-check; one request per stock through the shared `yahoo`
+/// `EndpointGuard`. The whole sweep also re-runs once the stored
+/// `next_earnings_at` passes, so a missed roll-forward never sits stale.
+const EARNINGS_INTERVAL_SECS: i64 = 24 * 3600;
+const EARNINGS_STALE_SECS: i64 = 30 * 24 * 3600;
+
 /// Spawn the scheduler. The returned handle is normally dropped: dropping it
 /// detaches the task, which then runs for the lifetime of the process.
 pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle<()> {
@@ -159,6 +169,14 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
         // out the daily interval. Resumable; the no-stale fast path is free.
         if let Err(e) = schedule_next(&pool, "fund_metadata", now_ms()).await {
             tracing::warn!("[scheduler] bring fund_metadata job forward: {e}");
+        }
+
+        // Earnings calendar job (Phase 25): same bring-forward pattern, so a
+        // deploy adding the columns backfills the stock universe within a
+        // tick rather than the daily interval. Resumable; no-stale fast path
+        // is free.
+        if let Err(e) = schedule_next(&pool, "earnings_calendar", now_ms()).await {
+            tracing::warn!("[scheduler] bring earnings_calendar job forward: {e}");
         }
 
         // Prune's last-run time is loop-local: a restart simply re-prunes once,
@@ -235,6 +253,19 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
                 }
                 Ok(false) => {}
                 Err(e) => tracing::warn!("[scheduler] fund_metadata due-check: {e}"),
+            }
+
+            // Earnings calendar (Phase 25): sweep stocks whose next-expected
+            // earnings date has gone stale or already passed. Same Yahoo
+            // guard; one request per stock per month in steady state.
+            match is_due(&pool, "earnings_calendar", now_ms()).await {
+                Ok(true) => {
+                    if let Err(e) = run_earnings_calendar(&pool, &config, &hub).await {
+                        tracing::warn!("[scheduler] earnings_calendar: {e:#}");
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!("[scheduler] earnings_calendar due-check: {e}"),
             }
 
             // Intraday quotes: demand-driven (only symbols a browser is
@@ -1375,6 +1406,149 @@ async fn mark_fund_metadata_synced(pool: &SqlitePool, ticker: &str) -> sqlx::Res
     Ok(())
 }
 
+// ────────────── stock earnings calendar sweep (Phase 25) ──────────────────
+
+/// Sweep stocks whose next-expected earnings date has gone stale (monthly)
+/// or already passed. One request per stock through the shared `yahoo`
+/// `EndpointGuard`; mirrors `run_fund_metadata`'s shape — guard-paced,
+/// resumable, broadcast-to-/health.
+async fn run_earnings_calendar(
+    pool: &SqlitePool,
+    config: &Config,
+    hub: &Hub,
+) -> anyhow::Result<()> {
+    let started = now_ms();
+    let next = started + EARNINGS_INTERVAL_SECS * 1000;
+    let cutoff = started - EARNINGS_STALE_SECS * 1000;
+    // Refresh a stock when either its sync-timestamp has aged out OR its
+    // stored next date has already passed (the print landed; Yahoo should
+    // carry the following quarter's date by now).
+    let stale: Vec<String> = sqlx::query_scalar(
+        "SELECT ticker FROM symbols \
+         WHERE kind = 'stock' \
+           AND ( \
+                earnings_synced_at IS NULL OR earnings_synced_at < ? \
+                OR (next_earnings_at IS NOT NULL AND next_earnings_at < ?) \
+           ) \
+         ORDER BY ticker",
+    )
+    .bind(cutoff)
+    .bind(started)
+    .fetch_all(pool)
+    .await?;
+
+    if stale.is_empty() {
+        mark_ok(pool, "earnings_calendar", Some(next)).await?;
+        return Ok(());
+    }
+
+    mark_fetching(pool, "earnings_calendar").await?;
+    notify_health(hub);
+    tracing::info!(
+        "[scheduler] earnings_calendar: refreshing {} stocks",
+        stale.len()
+    );
+
+    let yahoo = YahooProvider::new(providers::http::build_client(config));
+    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    let t0 = Instant::now();
+    let mut ok = 0i64;
+    let mut empty = 0i64;
+    let mut errors = 0i64;
+    let mut stopped: Option<String> = None;
+
+    for ticker in &stale {
+        match guard.acquire().await? {
+            Permit::Granted => {}
+            Permit::Denied(why) => {
+                stopped = Some(why);
+                break;
+            }
+        }
+        match yahoo.earnings_calendar(ticker).await {
+            Ok(Some(ts_ms)) => {
+                guard.record_success().await?;
+                if let Err(e) = store_earnings_next(pool, ticker, Some(ts_ms)).await {
+                    tracing::warn!("[scheduler] earnings_calendar store {ticker}: {e:#}");
+                    errors += 1;
+                    continue;
+                }
+                ok += 1;
+            }
+            // Yahoo answered cleanly but has no upcoming date for this
+            // stock (uneven coverage). Clear the stored next date so the
+            // symbol page falls back to a cadence estimate, and stamp the
+            // sync so the next sweep does not re-fetch the same empty.
+            Ok(None) => {
+                guard.record_success().await?;
+                if let Err(e) = store_earnings_next(pool, ticker, None).await {
+                    tracing::warn!("[scheduler] earnings_calendar store {ticker}: {e:#}");
+                    errors += 1;
+                    continue;
+                }
+                empty += 1;
+            }
+            Err(e) => {
+                guard.record_failure(&e).await?;
+                errors += 1;
+                tracing::warn!("[scheduler] earnings_calendar {ticker}: {e:#}");
+            }
+        }
+    }
+
+    let dur = t0.elapsed().as_millis() as i64;
+    let detail = format!(
+        "{ok}/{} stocks ({empty} empty, {errors} errors)",
+        stale.len()
+    );
+    match stopped {
+        Some(why) => {
+            let full = format!("stopped early ({why}); {detail}");
+            tracing::warn!("[scheduler] earnings_calendar: {full}");
+            log_fetch(
+                pool, "earnings_calendar", "yahoo", "skipped",
+                Some(&full), Some(ok), dur, started,
+            )
+            .await?;
+        }
+        None => {
+            tracing::info!("[scheduler] earnings_calendar: {detail}");
+            log_fetch(
+                pool, "earnings_calendar", "yahoo", "ok",
+                Some(&detail), Some(ok), dur, started,
+            )
+            .await?;
+        }
+    }
+    mark_ok(pool, "earnings_calendar", Some(next)).await?;
+    notify_health(hub);
+    Ok(())
+}
+
+/// Write one stock's next-earnings date and stamp it as freshly synced.
+/// `next` is `None` when Yahoo has no upcoming date (the stored value is
+/// cleared so the page falls back to a cadence estimate). `pub(crate)`:
+/// the add-symbol backfill reuses it.
+pub(crate) async fn store_earnings_next(
+    pool: &SqlitePool,
+    ticker: &str,
+    next: Option<i64>,
+) -> sqlx::Result<()> {
+    let now = now_ms();
+    sqlx::query(
+        "UPDATE symbols SET next_earnings_at = ?, earnings_synced_at = ?, \
+                            updated_at = ? \
+         WHERE ticker = ?",
+    )
+    .bind(next)
+    .bind(now)
+    .bind(now)
+    .bind(ticker)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Fill in `symbols.cik` for any stock found in the bulk SEC ticker map.
 /// Returns how many were newly resolved.
 async fn resolve_ciks(pool: &SqlitePool, map: &HashMap<String, String>) -> sqlx::Result<i64> {
@@ -1776,6 +1950,13 @@ pub(crate) async fn backfill_symbol(pool: &SqlitePool, config: &Config, ticker: 
     if kind == "etf" {
         backfill_fund_metadata(pool, config, ticker).await;
     }
+    // Phase 25: stocks get their Yahoo earnings calendar pulled too — so a
+    // user-added stock's symbol page carries the next-expected earnings
+    // date the moment the add returns, rather than waiting on the next
+    // scheduler cycle.
+    if kind == "stock" {
+        backfill_earnings_calendar(pool, config, ticker).await;
+    }
 
     // SEC data covers stocks and ETFs; indexes and futures do not file. The
     // whole SEC step is skipped with no contact email configured, as `run_sec`
@@ -1812,6 +1993,27 @@ async fn backfill_fund_metadata(pool: &SqlitePool, config: &Config, ticker: &str
             let _ = mark_fund_metadata_synced(pool, ticker).await;
         }
         Some(Err(e)) => tracing::warn!("[backfill] fund_metadata {ticker}: {e:#}"),
+        None => {}
+    }
+}
+
+/// Pull and store a freshly-added stock's next-expected earnings date
+/// (Phase 25). Mirrors `backfill_dividends`: same `yahoo` guard,
+/// best-effort, no failure propagated to the add-symbol response.
+async fn backfill_earnings_calendar(pool: &SqlitePool, config: &Config, ticker: &str) {
+    let yahoo = YahooProvider::new(providers::http::build_client(config));
+    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    match guarded(&guard, yahoo.earnings_calendar(ticker)).await {
+        Some(Ok(next)) => match store_earnings_next(pool, ticker, next).await {
+            Ok(()) => {
+                tracing::info!(
+                    "[backfill] {ticker} <- earnings_calendar ({})",
+                    next.map(|_| "next set").unwrap_or("no upcoming date"),
+                );
+            }
+            Err(e) => tracing::warn!("[backfill] store earnings {ticker}: {e:#}"),
+        },
+        Some(Err(e)) => tracing::warn!("[backfill] earnings_calendar {ticker}: {e:#}"),
         None => {}
     }
 }
