@@ -30,7 +30,23 @@ and resume cleanly from this file alone, keeping token use low.
 
 ## Status
 
-_Last updated: 2026-05-23_
+_Last updated: 2026-05-25_
+
+**Follow-up fixes deployed 2026-05-25 (commits `7f82a22`, `7e33c19`,
+`8d173f1`):** three independent post-Phase-31 fixes — (1) Yahoo's v10
+`quoteSummary` is crumb-gated; the provider now does the
+`fc.yahoo.com` primer + `/v1/test/getcrumb` dance with a cached crumb
+and a 401/403-rotation retry, so `fund_metadata` / `earnings_calendar`
+/ `asset_profile` no longer 401 and trip the `yahoo` guard; cookies are
+enabled on the shared reqwest client. (2) Leadership backfill cut from
+30 to 10 ownership filings per sweep to spread the initial fill across
+more cycles without burning the SEC endpoint's 600/hr budget. (3)
+Mobile polish: home Top-picks panel stacks 1-up under `$bp-sm` (the
+2-up grid clipped the score figure at 390px) and the row carries a
+truncated company-name slot on phone; `/industries` sector index table
+reflows as a 5-column phone card grid (sector header, members ·
+industries caption, then today / 5d / 1m / 3m / 1y with eyebrow
+labels), desktop table untouched.
 
 **Polish pass deployed 2026-05-23 (commit `cd4c3e7`):** stock health
 moved from its dedicated section to a circular % donut badge in the
@@ -2508,9 +2524,50 @@ finance/
 
 ## Decisions log
 
+- **2026-05-25 — Yahoo v10 crumb auth + mobile polish + leadership cap.**
+  Three independent follow-ups after Phase 31. Deployed in commits
+  `7f82a22`, `7e33c19`, `8d173f1`.
+  - *Yahoo v10 crumb auth.* `v10/finance/quoteSummary` (the endpoint
+    powering Phase 28 `fund_metadata`, Phase 25 `earnings_calendar`,
+    and Phase 15 `asset_profile`) is crumb-gated. Without the dance,
+    every call returned 401 and tripped the `yahoo` `EndpointGuard` —
+    so on production the three jobs sat idle behind a perpetually-open
+    breaker. Fix: enable reqwest's `cookie_store`, add
+    `ensure_crumb()` to `YahooProvider` (primer GET to `fc.yahoo.com`
+    drops a session cookie; GET `query1/v1/test/getcrumb` returns the
+    plain-text crumb; both surface 429/503/401/403 as the typed
+    `RateLimited`), cache the crumb across the process lifetime, and
+    on a 401/403 from a later call drop the cached crumb and retry
+    once (Yahoo rotates crumbs). The three callers share a new
+    `quote_summary(ticker, modules)` helper that owns the dance.
+    Local verification stopped at code review + cargo check + bun
+    build clean (Yahoo rate-limits the WSL2 dev IP — the standard
+    pattern noted in PLAN); production picks up the working path on
+    the first scheduler cycle after deploy.
+  - *Leadership filings cap 30 → 10.* The Phase 14 first-sweep
+    backfill at 30 ownership filings per stock chewed through the
+    SEC endpoint's 600/hr budget during the markets-closed weekend
+    window. 10 still captures the recently-filing officers and board
+    on the first pass; the steady-state monthly refresh stays tiny
+    (only filings since `leadership_synced_at` are pulled). Smaller
+    chunks spread the initial fill across more sweeps without
+    changing the eventual roster.
+  - *Mobile polish.* (a) Home Top-picks panel was a 2-up grid at
+    every width and clipped the score figure at 390px; rebuilt as a
+    1-up grid below `$bp-sm` with a truncated `.pick__name` slot on
+    phone (helpful when each card has the full width), reinstating
+    the 2-up subgrid alignment from `$bp-sm` up where the name slot
+    yields back to the verdict badge. (b) `/industries` sector index
+    used an 8-column table that overflowed at phone widths; added a
+    `--sectors` modifier so only the index table reflows (detail-page
+    tables stay native), hid thead, laid each row out as a 5-column
+    card — sector header on row 1, "N members · N industries"
+    caption on row 2, today / 5d / 1m / 3m / 1y with eyebrow labels
+    on row 3. Desktop is untouched.
+
 - **2026-05-23 — Stock health moved to a header badge; `^VIX` moved off
   the Indexes row.** Three small polish tweaks driven by user feedback
-  on the symbol and home pages. Not yet deployed.
+  on the symbol and home pages. Deployed in commit `cd4c3e7`.
   - *Header health badge.* The Phase 17 "Stock health" panel was visually
     heavy and lived deep below the chart. Replaced with a circular % donut
     in the symbol-page header top-right; the three sub-readings
