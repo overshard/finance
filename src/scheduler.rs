@@ -84,11 +84,18 @@ const SEC_BUDGET: i64 = 600;
 /// Company-leadership refresh (Phase 14). Leadership changes slowly, so the
 /// roster is rebuilt monthly rather than on the weekly SEC cadence above. Each
 /// sweep parses at most this many of a company's most recent ownership filings
-/// (one HTTP request each): enough to capture the actively-filing officers and
-/// board on a first sweep, with later sweeps reading only the filings since,
-/// so the roster fills in and stays current at a small steady-state cost.
+/// (one HTTP request each).
+///
+/// At 10 filings per sweep, a first-time backfill of one company captures the
+/// recently-filing officers and board (a Form 3/4/5 from each active director
+/// + a handful of officer trades), while the steady-state monthly refresh is
+/// tiny — only the filings since `leadership_synced_at` are pulled. A higher
+/// chunk eagerly grabs more history but, multiplied by the few-hundred-stock
+/// universe, churned through the SEC endpoint's hourly budget during the
+/// Phase 14 backfill (markets-closed weekend burn). Smaller chunks spread
+/// that initial fill across more sweeps without changing the eventual roster.
 const LEADERSHIP_STALE_SECS: i64 = 30 * 24 * 3600;
-const LEADERSHIP_MAX_FILINGS: usize = 30;
+const LEADERSHIP_MAX_FILINGS: usize = 10;
 
 /// Dividend history refresh (Phase 26). Declared dividends are confirmed and
 /// stable once an ex-date passes, so the data changes slowly: a stock pays out
