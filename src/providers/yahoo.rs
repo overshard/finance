@@ -11,6 +11,8 @@
 //! reuses it to validate and describe a symbol the add-symbol flow (Phase 9)
 //! is about to register.
 
+use std::sync::Mutex;
+
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use reqwest::{header::RETRY_AFTER, StatusCode};
@@ -24,11 +26,75 @@ use crate::providers::{
 /// Near-real-time quotes from Yahoo Finance.
 pub struct YahooProvider {
     client: reqwest::Client,
+    /// Cached crumb token for Yahoo's v10 `quoteSummary` endpoint, which is
+    /// crumb-gated and refuses (401) without it. Lazy: only the first
+    /// `quoteSummary` call pays the round-trip, then every subsequent call
+    /// in the process replays the cached token until Yahoo invalidates it.
+    crumb: Mutex<Option<String>>,
 }
 
 impl YahooProvider {
     pub fn new(client: reqwest::Client) -> Self {
-        Self { client }
+        Self {
+            client,
+            crumb: Mutex::new(None),
+        }
+    }
+
+    /// Return a Yahoo `crumb` token, fetching one if the cache is empty.
+    /// The dance is two requests: a primer to `fc.yahoo.com` that drops a
+    /// session cookie (handled by reqwest's cookie jar — see `http.rs`),
+    /// then a GET to `/v1/test/getcrumb` that replays the cookie and
+    /// returns the crumb as a plain-text body. A failure here propagates
+    /// as a regular `RateLimited` / transport error so the caller can feed
+    /// the endpoint guard the same way as a v10 call would.
+    async fn ensure_crumb(&self) -> Result<String> {
+        if let Some(c) = self.crumb.lock().expect("crumb cache").clone() {
+            return Ok(c);
+        }
+        // Primer: any 2xx body is fine, we only want the Set-Cookie.
+        let _ = self
+            .client
+            .get("https://fc.yahoo.com/")
+            .send()
+            .await?
+            .error_for_status();
+        // The crumb endpoint returns the token as its raw body.
+        let resp = self
+            .client
+            .get("https://query1.finance.yahoo.com/v1/test/getcrumb")
+            .send()
+            .await?;
+        let status = resp.status();
+        if matches!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS
+                | StatusCode::SERVICE_UNAVAILABLE
+                | StatusCode::UNAUTHORIZED
+                | StatusCode::FORBIDDEN
+        ) {
+            let retry_after_secs = resp
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<i64>().ok());
+            return Err(anyhow::Error::new(RateLimited {
+                status: status.as_u16(),
+                retry_after_secs,
+            }));
+        }
+        let crumb = resp.error_for_status()?.text().await?.trim().to_string();
+        if crumb.is_empty() {
+            return Err(anyhow!("yahoo returned an empty crumb"));
+        }
+        *self.crumb.lock().expect("crumb cache") = Some(crumb.clone());
+        Ok(crumb)
+    }
+
+    /// Forget the cached crumb. Called on a 401 from a v10 call so the next
+    /// attempt fetches a fresh one (Yahoo crumbs rotate occasionally).
+    fn invalidate_crumb(&self) {
+        *self.crumb.lock().expect("crumb cache") = None;
     }
 }
 
@@ -294,20 +360,67 @@ impl YahooProvider {
     /// returned [`FundMetadata`] may carry only a subset of fields populated
     /// — Yahoo's coverage is uneven across small ETFs.
     pub async fn fund_metadata(&self, ticker: &str) -> Result<Option<FundMetadata>> {
-        let sym = urlencoding::encode(&yahoo_symbol(ticker)).into_owned();
         // The five modules that between them carry every Phase 28 field. A
         // module Yahoo does not recognise for this symbol is silently
         // omitted from the response (rather than failing the whole request).
+        let Some(result) = self
+            .quote_summary(
+                ticker,
+                "fundProfile,defaultKeyStatistics,summaryDetail,price,assetProfile",
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(parse_fund_metadata(result)))
+    }
+
+    /// Shared v10 `quoteSummary` fetch: ensures the crumb is cached, builds
+    /// the URL with `&crumb=...`, parses gating responses (429 / 503 / 401 /
+    /// 403) as the typed [`RateLimited`], and treats Yahoo's "unknown
+    /// symbol" replies (404 or a `quoteSummary.error` body) as a clean
+    /// `Ok(None)`. A bare 401 on a previously-good crumb is retried once
+    /// with a fresh one — Yahoo rotates crumbs and this masks the rotation
+    /// from the endpoint guard.
+    async fn quote_summary(
+        &self,
+        ticker: &str,
+        modules: &str,
+    ) -> Result<Option<QuoteSummaryResult>> {
+        let sym = urlencoding::encode(&yahoo_symbol(ticker)).into_owned();
+        // First attempt with the cached crumb (may fetch one on the first
+        // call of the process).
+        match self.quote_summary_once(&sym, modules).await {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                // A 401/403 on a request we sent a crumb with means the
+                // crumb expired. Drop it and try one more time so the
+                // caller sees a clean answer instead of a guard trip.
+                let retry = e.downcast_ref::<RateLimited>().is_some_and(|r| {
+                    matches!(r.status, 401 | 403)
+                });
+                if retry {
+                    self.invalidate_crumb();
+                    return self.quote_summary_once(&sym, modules).await;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    async fn quote_summary_once(
+        &self,
+        sym: &str,
+        modules: &str,
+    ) -> Result<Option<QuoteSummaryResult>> {
+        let crumb = self.ensure_crumb().await?;
         let url = format!(
             "https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}\
-             ?modules=fundProfile,defaultKeyStatistics,summaryDetail,price,assetProfile"
+             ?modules={modules}&crumb={c}",
+            c = urlencoding::encode(&crumb),
         );
         let resp = self.client.get(&url).send().await?;
         let status = resp.status();
-        // The v10 endpoint is occasionally crumb-gated — Yahoo returns
-        // either a plain 401 / 403 or, confusingly, a 429 from the same gate.
-        // Treat all of them as a rate-limit signal so the guard trips and
-        // we defer the sweep rather than spinning on a broken upstream.
         if matches!(
             status,
             StatusCode::TOO_MANY_REQUESTS
@@ -333,14 +446,10 @@ impl YahooProvider {
         if env.quote_summary.error.is_some() {
             return Ok(None);
         }
-        let Some(result) = env
+        Ok(env
             .quote_summary
             .result
-            .and_then(|mut r| if r.is_empty() { None } else { Some(r.remove(0)) })
-        else {
-            return Ok(None);
-        };
-        Ok(Some(parse_fund_metadata(result)))
+            .and_then(|mut r| if r.is_empty() { None } else { Some(r.remove(0)) }))
     }
 
     /// Fetch the next-expected earnings date for `ticker` from Yahoo's
@@ -356,43 +465,7 @@ impl YahooProvider {
     /// 503 / 401 / 403) surface as the typed [`RateLimited`], same defensive
     /// set as `fund_metadata`.
     pub async fn earnings_calendar(&self, ticker: &str) -> Result<Option<i64>> {
-        let sym = urlencoding::encode(&yahoo_symbol(ticker)).into_owned();
-        let url = format!(
-            "https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}\
-             ?modules=calendarEvents"
-        );
-        let resp = self.client.get(&url).send().await?;
-        let status = resp.status();
-        if matches!(
-            status,
-            StatusCode::TOO_MANY_REQUESTS
-                | StatusCode::SERVICE_UNAVAILABLE
-                | StatusCode::UNAUTHORIZED
-                | StatusCode::FORBIDDEN
-        ) {
-            let retry_after_secs = resp
-                .headers()
-                .get(RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.trim().parse::<i64>().ok());
-            return Err(anyhow::Error::new(RateLimited {
-                status: status.as_u16(),
-                retry_after_secs,
-            }));
-        }
-        if status == StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
-        let resp = resp.error_for_status()?;
-        let env: QuoteSummaryEnvelope = resp.json().await?;
-        if env.quote_summary.error.is_some() {
-            return Ok(None);
-        }
-        let Some(result) = env
-            .quote_summary
-            .result
-            .and_then(|mut r| if r.is_empty() { None } else { Some(r.remove(0)) })
-        else {
+        let Some(result) = self.quote_summary(ticker, "calendarEvents").await? else {
             return Ok(None);
         };
         // `earningsDate` is an array; Yahoo populates 1 or 2 entries — the
@@ -426,43 +499,7 @@ impl YahooProvider {
     /// 401 / 403) surface as the typed [`RateLimited`] so the endpoint
     /// guard trips at once.
     pub async fn asset_profile(&self, ticker: &str) -> Result<Option<AssetProfile>> {
-        let sym = urlencoding::encode(&yahoo_symbol(ticker)).into_owned();
-        let url = format!(
-            "https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}\
-             ?modules=assetProfile"
-        );
-        let resp = self.client.get(&url).send().await?;
-        let status = resp.status();
-        if matches!(
-            status,
-            StatusCode::TOO_MANY_REQUESTS
-                | StatusCode::SERVICE_UNAVAILABLE
-                | StatusCode::UNAUTHORIZED
-                | StatusCode::FORBIDDEN
-        ) {
-            let retry_after_secs = resp
-                .headers()
-                .get(RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.trim().parse::<i64>().ok());
-            return Err(anyhow::Error::new(RateLimited {
-                status: status.as_u16(),
-                retry_after_secs,
-            }));
-        }
-        if status == StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
-        let resp = resp.error_for_status()?;
-        let env: QuoteSummaryEnvelope = resp.json().await?;
-        if env.quote_summary.error.is_some() {
-            return Ok(None);
-        }
-        let Some(result) = env
-            .quote_summary
-            .result
-            .and_then(|mut r| if r.is_empty() { None } else { Some(r.remove(0)) })
-        else {
+        let Some(result) = self.quote_summary(ticker, "assetProfile").await? else {
             return Ok(None);
         };
         let ap = result.asset_profile.unwrap_or_default();

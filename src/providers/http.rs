@@ -12,6 +12,12 @@ pub fn build_client(config: &Config) -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent(config.user_agent.clone())
         .timeout(Duration::from_secs(25))
+        // Yahoo's v10 `quoteSummary` endpoint is crumb-gated and the crumb
+        // round-trip requires session cookies — the GET to fc.yahoo.com sets
+        // one, which the subsequent /v1/test/getcrumb call must echo. With
+        // cookies enabled here, [`YahooProvider::ensure_crumb`] does the
+        // dance and the cookies replay automatically on later requests.
+        .cookie_store(true)
         .build()
         .expect("reqwest client builds")
 }
