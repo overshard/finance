@@ -335,27 +335,20 @@
    above the fold; on desktop they spread out into one row. */
 .picks-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* Single column at the narrowest widths: a 2-up grid clipped the score
+     column on a 390px phone, and stacking buys back room for the company
+     name. 2-up reinstated at $bp-sm where each card has ~280px to work with. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
-/* Each card is a subgrid of the picks-grid, spanning three shared row
-   tracks (title, desc, list). That makes the desc row tall enough to fit
-   whichever horizon's description wraps deepest, so the list itself starts
-   at the same Y across all cards in the row. Without this the per-card
-   intrinsic heights drift and the rank-1 rows wouldn't line up. */
+/* Mobile baseline: a plain block card. Each card stacks vertically and
+   its own children flow normally so the title/desc/list sequence reads
+   top-to-bottom. The subgrid alignment kicks in at $bp-sm once we're
+   back to a multi-column layout where lining rows up matters. */
 .picks-col {
   @include card;
   padding: 10px 12px 8px;
-  display: grid;
-  /* columns subgrid so the card's single inner column matches its 1fr of
-     the parent grid (without it, the inner column auto-sized to the desc's
-     max-content and overflowed the card). Rows subgrid so the title, desc,
-     and list rows all line up across the four cards. */
-  grid-template-columns: subgrid;
-  grid-template-rows: subgrid;
-  grid-row: span 3;
-  row-gap: 4px;
   min-width: 0;
 }
 
@@ -397,14 +390,13 @@
   border-bottom: 0;
 }
 
-/* The pick row sheds the name column entirely — at desktop the 4-up
-   layout makes a useful name slice impossible (a single-character "M…"
-   reads as noise), and at smaller widths the score figure is the
-   primary read. The four tracks are pinned at fixed widths so rank-1
-   / rank-2 / ... line up cell-for-cell across the four horizon cards. */
+/* Phone baseline: the card is full-width, so the row carries the company
+   name in its own slot. At $bp-sm and up the row drops the name (no longer
+   enough horizontal room once the grid goes 2-up / 4-up) and shifts the
+   verdict badge into the flexible track instead. */
 .pick__row {
   display: grid;
-  grid-template-columns: 1.5ch minmax(4.5ch, auto) 1fr minmax(5.6ch, auto);
+  grid-template-columns: 1.5ch minmax(4.5ch, auto) minmax(0, 1fr) auto minmax(5.6ch, auto);
   align-items: center;
   gap: var(--sp-2);
   padding: 9px 2px;
@@ -431,11 +423,16 @@
   font-size: var(--fs-sm);
 }
 
-/* The name span exists in the template across all breakpoints but never
-   shows: at every width either the score fits in this slot or the badge
-   does. Reclaim the column for the badge. */
+/* The name span shows on phones, where the stacked 1-up card has room for
+   it, and is hidden once the grid steps up to 2-up and 4-up below
+   (the slot becomes too narrow for a useful name slice). */
 .pick__name {
-  display: none;
+  color: var(--ink-faint);
+  font-size: var(--fs-xs);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* center the verdict pill in its slot so Strong / Fair / Weak align
@@ -451,6 +448,31 @@
   font-size: var(--fs-sm);
   font-weight: 700;
   text-align: right;
+}
+
+/* ---------- $bp-sm: picks step up to 2-up; name yields to the badge ---------- */
+@media (min-width: $bp-sm) {
+  .picks-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* Reinstate the cross-card row alignment now that there's more than one
+     column to align across. */
+  .picks-col {
+    display: grid;
+    grid-template-columns: subgrid;
+    grid-template-rows: subgrid;
+    grid-row: span 3;
+    row-gap: 4px;
+  }
+
+  .pick__row {
+    grid-template-columns: 1.5ch minmax(4.5ch, auto) 1fr minmax(5.6ch, auto);
+  }
+
+  .pick__name {
+    display: none;
+  }
 }
 
 /* ---------- desktop layering ---------- */
