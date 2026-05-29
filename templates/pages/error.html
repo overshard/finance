@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Something broke{% endblock %}
+
+{% block main %}
+<div class="wrap">
+  <section class="empty">
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+      <polyline points="4,20 16,30 24,24 32,40" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <line x1="36" y1="44" x2="56" y2="24" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/>
+      <line x1="36" y1="24" x2="56" y2="44" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/>
+    </svg>
+    <h1>Page failed to render</h1>
+    <p>Something on this page is wrong. Head back to <a href="/">the markets dashboard</a>{% if path %}, or try the <a href="{{ path }}">previous URL</a>{% endif %}.</p>
+    {% if detail %}
+    <pre class="empty__detail">{{ detail }}</pre>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -485,6 +485,23 @@ main {
   text-underline-offset: 2px;
 }
 
+/* Render-error detail block: the raw error from the template engine,
+   shown to the single operator so a broken page is debuggable in place. */
+.empty__detail {
+  margin: 18px auto 0;
+  max-width: 60ch;
+  padding: 10px 14px;
+  background: var(--paper-edge);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ---------- page heading ---------- */
 /* The page's h1. Sits above the first section, with a strong rule below.
    The new `.section-title` is the second-tier heading; the page-head's

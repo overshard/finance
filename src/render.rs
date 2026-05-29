@@ -19,7 +19,7 @@ pub fn render_to_string(
 ) -> Result<String, Response> {
     let tmpl = state.env.get_template(template).map_err(|e| {
         tracing::error!("template '{}': {}", template, e);
-        (StatusCode::INTERNAL_SERVER_ERROR, "template error").into_response()
+        server_error(state, path, &format!("template '{template}': {e}"))
     })?;
     tmpl.render(minijinja::context! {
         request => RequestCtx { path: path.to_string() },
@@ -33,7 +33,15 @@ pub fn render_to_string(
     })
     .map_err(|e| {
         tracing::error!("render '{}': {}", template, e);
-        (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+        // minijinja's `Display` carries the bare error; the source chain carries
+        // the location and line span, which is what the operator needs to look at.
+        let mut detail = format!("render '{template}': {e}");
+        let mut source = std::error::Error::source(&e);
+        while let Some(s) = source {
+            detail.push_str(&format!("\n  caused by: {s}"));
+            source = s.source();
+        }
+        server_error(state, path, &detail)
     })
 }
 
@@ -55,4 +63,35 @@ pub fn not_found(state: &AppState) -> Response {
         minijinja::context! { title => "Not found" },
     );
     (StatusCode::NOT_FOUND, body).into_response()
+}
+
+/// The themed 500 page with the underlying error detail. Single-operator app
+/// (no public sign-up, see `PLAN.md`), so leaking the message back is fine.
+/// It is the whole point of the page. Falls back to plain text if the error
+/// page itself fails to render, so we never recurse.
+fn server_error(state: &AppState, path: &str, detail: &str) -> Response {
+    let ctx = minijinja::context! {
+        title => "Page failed to render",
+        path => path,
+        detail => detail,
+    };
+    let body = state
+        .env
+        .get_template("pages/error.html")
+        .and_then(|t| {
+            t.render(minijinja::context! {
+                request => RequestCtx { path: path.to_string() },
+                now => minijinja::context! { year => chrono::Local::now().year() },
+                site => minijinja::context! {
+                    title => &state.config.site_title,
+                    base_url => &state.config.base_url,
+                },
+                base_url => &state.config.base_url,
+                ..ctx
+            })
+        });
+    match body {
+        Ok(html) => (StatusCode::INTERNAL_SERVER_ERROR, Html(html)).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, detail.to_string()).into_response(),
+    }
 }

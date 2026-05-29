@@ -280,7 +280,7 @@
             {%- if earnings.next_days >= 0 -%}
               in {{ earnings.next_days }} day{% if earnings.next_days != 1 %}s{% endif %}
             {%- else -%}
-              {{ -earnings.next_days }} day{% if -earnings.next_days != 1 %}s{% endif %} ago
+              {{ earnings.next_days|abs }} day{% if earnings.next_days|abs != 1 %}s{% endif %} ago
             {%- endif -%}
           {%- endif -%}
           {% if earnings.next_source == 'estimate' %} &middot; estimated from cadence{% endif %}
