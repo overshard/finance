@@ -59,6 +59,26 @@
     </div>
     {% endif %}
 
+    {# Mobile health verdict line (Phase 6): the same read the donut carries on
+       desktop, flattened into a one-line "verdict · % · trajectory" band that
+       sits directly under the price where a phone reads it first. Hidden on
+       desktop, where the donut (below) is the treatment. Works for a stock
+       (`health`, with a trajectory arrow) or an ETF (`etf_quality`, no
+       trajectory); a symbol only ever has one. #}
+    {% if health or etf_quality %}
+    {% set verdict = health if health else etf_quality %}
+    <div class="sym-verdict sym-verdict--{{ verdict.overall }}">
+      <span class="sym-verdict__dot" aria-hidden="true"></span>
+      <span class="sym-verdict__text">{{ verdict.verdict }}</span>
+      <span class="sym-verdict__pct num">{{ verdict.percent }}%</span>
+      {% if health and health.trajectory != 'unknown' %}
+      <span class="sym-verdict__traj sym-verdict__traj--{{ health.trajectory }}">
+        <span class="sym-verdict__arrow" aria-hidden="true">{% if health.trajectory == 'good' %}&uarr;{% elif health.trajectory == 'bad' %}&darr;{% else %}&rarr;{% endif %}</span>{{ health.trajectory_label }}
+      </span>
+      {% endif %}
+    </div>
+    {% endif %}
+
     {# Stock health badge (Phase 17, redesigned): a circular % donut anchors
        the top-right of the header. Hovering or focusing reveals the three
        sub-readings (fundamentals / trajectory / leadership) — the previous
@@ -160,9 +180,12 @@
   {% if stats %}
   <section class="panel chart-panel">
     <div class="chart-bar">
+      {# 1D / 1W are the intraday ranges (Phase 6): today's / the week's 15m
+         bars on a minute axis, live-ticked from the quote stream. The rest are
+         daily. A hairline after 1W sets the two groups apart. #}
       <div class="range-bar">
-        {% for r in ["1M", "6M", "YTD", "1Y", "5Y", "MAX"] %}
-        <button type="button" class="range-btn{% if r == '1Y' %} is-active{% endif %}" data-range="{{ r }}">{{ r }}</button>
+        {% for r in ["1D", "1W", "1M", "6M", "YTD", "1Y", "5Y", "MAX"] %}
+        <button type="button" class="range-btn{% if r == '1W' %} range-btn--group-end{% endif %}{% if r == '1Y' %} is-active{% endif %}" data-range="{{ r }}">{{ r }}</button>
         {% endfor %}
       </div>
       {# Filled by chart.js after each load: the % / absolute move over the

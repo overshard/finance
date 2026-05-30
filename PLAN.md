@@ -34,7 +34,7 @@ commit + auto-deploy (`git push server master`) and a clean breakpoint.
 
 ## Status
 
-_Last updated: 2026-05-30 (Phase 5 done + deployed at `656e21d`)_
+_Last updated: 2026-05-30 (Phase 6 done on dev; commit + deploy pending)_
 
 **Major refactor in progress (the "distill + ETF-first" rewrite).** This plan
 was fully rewritten 2026-05-30 from a sprawling 3,700-line resume doc into this
@@ -55,8 +55,50 @@ focused roadmap. The decisions driving it are in the Decisions log under
   desktop) design while keeping the futuristic-clean "Paper Ledger" look.
 
 **Current work:** Phases 1–5 are **done, committed, and deployed** (Phase 5 is
-live at `656e21d`; production verified rendering the hero, breadth, and ETF
-bands). Next: **Phase 6 (symbol-page distillation + live intraday on chart).**
+live at `656e21d`). **Phase 6 is done on dev** (symbol-page distillation + live
+intraday); commit + deploy pending. Next: **Phase 7 (health/systems page
+distillation + footer expansion + final polish).**
+
+Phase 6 outcome (symbol-page distillation + live intraday on chart):
+- **1D / 1W intraday range buttons.** Two new ranges at the front of the chart's
+  range bar serve today's / the week's 15-minute bars from `intraday_bars` on a
+  minute axis (the rest stay daily). `history_api` branches to `intraday_history`
+  for them: bars are stored as epoch-**ms** so each `ts` is ÷1000 to the UNIX
+  *seconds* lightweight-charts wants; a new `BarTime` untagged enum lets the
+  `candles` field carry either a `YYYY-MM-DD` string (daily) or a number
+  (intraday). 1D resolves the most recent NY trading day present (so a weekend
+  shows Friday); 1W is a rolling 7 days (well inside the 14-day retention). The
+  daily-only overlays (SMA/EMA/RSI/benchmark) come back empty and their toggles
+  hide on intraday — only Volume stays. A dashed **prev-close** reference line
+  (the latest daily close) anchors the session move.
+- **Live, without a second connection.** `stream.js` now re-broadcasts each SSE
+  quote as a `finance:quote` window event; `chart.js` listens and, while an
+  intraday range is shown, ticks the trailing bar's close/high/low in place. A
+  60s background re-fetch (local DB only, no Yahoo call) folds in newly-stored
+  15m bars so new bars appear without a click. (The live tick itself couldn't be
+  exercised on dev — today is a closed-market weekend so no quotes stream; the
+  wiring is structurally verified, like Phase 4's NAV fetch. It runs first in
+  prod during market hours.)
+- **Mobile above-the-fold reorder.** Per the user's call: the full interactive
+  chart is **promoted** above the fold (no separate mini-chart), and the
+  top-right health/quality **donut is desktop-only** — on mobile a flattened
+  full-width **verdict line** sits right under the price (`● Verdict · NN% ·
+  ↑ trajectory`, coloured by overall grade; the trajectory clause shows for a
+  stock, not an ETF). So the phone order is price/change → verdict → chart.
+- **Fixed a latent bug in passing:** `.ind-btn { display: inline-flex }` was
+  overriding the `[hidden]` attribute, so the benchmark toggle never actually
+  hid on benchmark-less symbols (and wouldn't hide the daily-only toggles on
+  intraday). Added an `.ind-btn[hidden] { display: none }` re-assert.
+- **Verified on dev:** `cargo build` + `vite build` clean; `/api/.../history?
+  range=1D|1W` returns `intraday:true` with numeric times + empty overlays +
+  prev_close, while `range=1Y` is unchanged (`intraday:false`, SMAs populated).
+  Screenshots reviewed (then deleted) at mobile (390) + desktop (1280): stock +
+  ETF; 1D shows intraday candles, the prev-close line, a "over 16 hours" span
+  caption, and only the Volume toggle; switching back to a daily range restores
+  the toggles; the mobile verdict line reads correctly (stock with trajectory,
+  ETF without) with the donut hidden, and desktop shows the donut with the
+  verdict line hidden. No new console errors (only the benign restart/stream
+  chunked-encoding noise).
 
 Phase 5 outcome (dashboard redesign → "how is the market doing TODAY"):
 - **Hero verdict.** A two-line plain read at the top blending the broad index
@@ -340,11 +382,18 @@ Kill the rate-limit problem at the root.
 - ✅ Clearly labeled bands, dual-first density: Hero · Indexes · Breadth · ETFs ·
   Stock movers · Industries · Risk & commodities · Quality leaderboard.
 
-### Phase 6 — Symbol-page distillation + live intraday on chart
-- Mobile above-the-fold order: price/change → health verdict → mini chart →
-  trajectory. Desktop denser; health read is the clear hero.
-- A viewed fund during market hours shows today's real-time intraday on its
-  chart (current day), stitched onto the daily series.
+### Phase 6 — Symbol-page distillation + live intraday on chart  ✅ DONE on dev (commit + deploy pending)
+- ✅ Live intraday surfaced as **1D / 1W range buttons** (the user's call over a
+  single stitched-on candle): 15m bars from `intraday_bars` on a minute axis,
+  daily-only overlays/toggles suppressed, a dashed prev-close reference line.
+- ✅ Live tick of the trailing bar via a re-broadcast `finance:quote` event +
+  a 60s local-DB re-fetch — no second EventSource. (Live path runs first in
+  prod; a closed-market weekend can't stream quotes on dev.)
+- ✅ Mobile above-the-fold reorder: full chart **promoted** (no separate mini
+  chart, user's call); donut is desktop-only and a flattened full-width
+  **verdict line** (verdict · % · trajectory) sits under the price on mobile.
+  Order: price/change → verdict → chart.
+- ✅ Fixed a latent `.ind-btn[hidden]` override bug found in passing.
 
 ### Phase 7 — Health/systems page distillation + final polish pass
 - Distill `/health` and overall cross-page cohesion; one closing UI polish pass.
@@ -404,6 +453,30 @@ Kill the rate-limit problem at the root.
 ---
 
 ## Decisions log
+
+**2026-05-30 — Phase 6 (symbol-page distillation + live intraday).** Answered 3
+design forks before building:
+1. **Intraday = dedicated 1D + 1W range buttons** (not a single live candle
+   stitched onto every daily range, and not both). 15m bars on their own minute
+   axis, the conventional Yahoo/Google shape; the daily ranges stay daily. The
+   plan's "stitched onto the daily series" wording was reconciled this way —
+   15m granularity is invisible on a 1Y view, so a separate intraday tab is the
+   honest surface, with a prev-close reference line tying it to the daily basis.
+2. **Mobile = promote the full chart** above the fold (no separate mini chart),
+   so there is one chart with its range/indicator controls, just lifted higher.
+3. **Mobile health = a full-width verdict line** under the price (`● Verdict ·
+   NN% · trajectory ↑`); the donut ring stays the desktop treatment. Works for a
+   stock (with the trajectory clause) or an ETF (without).
+Implementation notes worth keeping: `intraday_bars.ts` is epoch-**ms**, so it is
+÷1000 for lightweight-charts' UNIX-**seconds** intraday axis; a `BarTime`
+untagged enum lets one `candles` field serialise a date string (daily) or a
+number (intraday). The live tick reuses the existing SSE quotes via a
+re-broadcast `finance:quote` window event — no second connection — plus a 60s
+local-DB re-fetch for new bars. Found + fixed in passing: `.ind-btn`'s
+`display: inline-flex` was beating the `[hidden]` attribute, so neither the
+benchmark toggle (on benchmark-less symbols) nor the daily-only toggles (on
+intraday) actually hid; an `.ind-btn[hidden]` rule re-asserts it. The live tick
+couldn't be exercised on a closed-market weekend; it runs first in prod.
 
 **2026-05-30 — Phase 5 (dashboard redesign).** Answered 4 design forks before
 building:

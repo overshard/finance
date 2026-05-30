@@ -110,6 +110,64 @@
   margin-left: 2px;
 }
 
+/* ---------- mobile health verdict line (Phase 6) ----------
+   The donut's read, flattened to a single "● Verdict · NN% · trajectory ↑"
+   row sitting directly under the price, where a phone reads it first. Hidden
+   at $bp-md, where the donut (below) is the desktop treatment. Coloured by the
+   overall grade; works for a stock (with a trajectory clause) or an ETF. */
+.sym-verdict {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px var(--sp-3);
+  margin-top: -2px;
+  font-size: var(--fs-sm);
+}
+
+.sym-verdict__dot {
+  align-self: center;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+.sym-verdict--good .sym-verdict__dot { background: var(--up); }
+.sym-verdict--ok   .sym-verdict__dot { background: var(--warn); }
+.sym-verdict--bad  .sym-verdict__dot { background: var(--down); }
+
+.sym-verdict__text {
+  @include eyebrow;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--ink-dim);
+}
+.sym-verdict--good .sym-verdict__text { color: var(--up); }
+.sym-verdict--ok   .sym-verdict__text { color: var(--warn); }
+.sym-verdict--bad  .sym-verdict__text { color: var(--down); }
+
+.sym-verdict__pct {
+  @include mono;
+  font-weight: 700;
+  color: var(--ink-dim);
+}
+
+/* trajectory clause: a quiet annotation, divided off like .sym-head__asof */
+.sym-verdict__traj {
+  font-size: var(--fs-xs);
+  color: var(--ink-faint);
+  padding-left: var(--sp-3);
+  border-left: 1px solid var(--rule);
+}
+.sym-verdict__traj--good { color: var(--up); }
+.sym-verdict__traj--bad  { color: var(--down); }
+
+.sym-verdict__arrow {
+  @include mono;
+  margin-right: 3px;
+  font-weight: 700;
+}
+
 /* ---------- header health badge (Phase 17 redesign) ----------
    A circular % donut anchors the header's top-right. The previous
    full-width Stock health section is gone; the three sub-readings
@@ -125,6 +183,9 @@
   align-self: center;
   justify-self: end;
   position: relative;
+  /* Phase 6: on phones the flattened .sym-verdict line carries the read; the
+     donut is the desktop treatment, switched back on at $bp-md below. */
+  display: none;
 }
 
 .health-badge {
@@ -310,7 +371,24 @@
 .range-bar {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--sp-1);
+}
+
+/* Phase 6: a hairline after 1W sets the intraday ranges (1D / 1W) apart from
+   the daily ones without a heavier divider element. */
+.range-btn--group-end {
+  margin-right: var(--sp-2);
+  position: relative;
+}
+.range-btn--group-end::after {
+  content: "";
+  position: absolute;
+  right: calc(var(--sp-1) * -1);
+  top: 50%;
+  transform: translateY(-50%);
+  height: 60%;
+  border-right: 1px solid var(--rule-strong);
 }
 
 /* the range-change chip: % and absolute move over the whole visible range */
@@ -379,6 +457,14 @@
   font-weight: 500;
   cursor: pointer;
   transition: color 0.13s, border-color 0.13s;
+}
+
+/* `display: inline-flex` above would override the [hidden] attribute's
+   display:none, so re-assert it. Without this the benchmark toggle (hidden on
+   symbols with no benchmark) and the daily-only toggles (hidden on the 1D / 1W
+   intraday ranges, Phase 6) would still show. */
+.ind-btn[hidden] {
+  display: none;
 }
 
 .ind-btn:hover {
@@ -1670,9 +1756,15 @@ a.anomaly__link:hover .anomaly__body {
       grid-column: 1;
     }
     .sym-head__health {
+      display: block;
       grid-row: 1 / span 3;
       align-self: start;
     }
+  }
+
+  /* Desktop carries the donut, so the flattened mobile verdict line hides. */
+  .sym-verdict {
+    display: none;
   }
 
   .range-btn,

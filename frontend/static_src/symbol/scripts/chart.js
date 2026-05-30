@@ -66,13 +66,45 @@ function fmtMoney(n) {
   return `${sign}$${Math.abs(n).toFixed(2)}`;
 }
 
+// A bar's `time` is a `YYYY-MM-DD` string on the daily ranges and a UNIX-
+// seconds number on the intraday ranges (1D / 1W). `barMs` returns epoch-ms
+// for either, and `fmtBarTime` a human label — a plain date for daily bars, a
+// New-York date+time for intraday ones (so the measure readout reads sensibly
+// in both worlds).
+function barMs(t) {
+  return typeof t === "number" ? t * 1000 : Date.parse(t);
+}
+function fmtBarTime(t) {
+  if (typeof t !== "number") return t;
+  return new Date(t * 1000).toLocaleString("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 /**
  * A human caption for a visible span, e.g. "over 6 months", "over 8 years".
- * Derived from the actual dates shown rather than the range button, so a
- * deep MAX history clamped to what fits is described honestly.
+ * Derived from the actual bars shown rather than the range button, so a deep
+ * MAX history clamped to what fits is described honestly. Handles both the
+ * daily date strings and the intraday UNIX-seconds times, scaling its unit
+ * from hours (an intraday session) up to years.
  */
-function spanLabel(fromISO, toISO) {
-  const months = (Date.parse(toISO) - Date.parse(fromISO)) / 2.6298e9; // 30.44d
+function spanLabel(from, to) {
+  const ms = barMs(to) - barMs(from);
+  const hours = ms / 3.6e6;
+  if (hours < 20) {
+    const h = Math.max(1, Math.round(hours));
+    return `over ${h} hour${h === 1 ? "" : "s"}`;
+  }
+  const days = ms / 8.64e7;
+  if (days < 11) {
+    const d = Math.round(days);
+    return `over ${d} day${d === 1 ? "" : "s"}`;
+  }
+  const months = ms / 2.6298e9; // 30.44d
   if (months < 1.6) return "over 1 month";
   if (months < 11.5) return `over ${Math.round(months)} months`;
   const years = months / 12;
@@ -145,6 +177,31 @@ export function initChart() {
 
   let bars = []; // loaded candles, ascending by time
   let latest = null; // last loaded payload, kept so RSI can attach on demand
+
+  // Prior-close reference line (Phase 6). The intraday ranges draw the previous
+  // daily close as a dashed guide so the session's move is legible at a glance;
+  // the daily ranges carry no `prev_close`, so the line is cleared on those.
+  let prevCloseLine = null;
+  function setPrevCloseLine(price) {
+    if (prevCloseLine) {
+      series.removePriceLine(prevCloseLine);
+      prevCloseLine = null;
+    }
+    if (price == null) return;
+    prevCloseLine = series.createPriceLine({
+      price,
+      color: "rgba(33,31,26,0.42)",
+      lineWidth: 1,
+      lineStyle: 2,
+      axisLabelVisible: true,
+      title: "prev close",
+    });
+  }
+
+  // The moving-average, RSI and benchmark overlays are all derived from the
+  // daily series, so they are meaningless on the intraday ranges. Their toggle
+  // buttons hide there (benchmark hides on its own when the payload has none).
+  const DAILY_ONLY_INDS = ["sma50", "sma200", "ema21", "rsi"];
 
   // RSI lives in its own pane below the price pane and is created only while
   // toggled on, so an empty second pane never lingers when it is off.
@@ -255,7 +312,7 @@ export function initChart() {
       `<span class="chart-readout__pct">${up ? "▲" : "▼"} ` +
       `${up ? "+" : ""}${pct.toFixed(2)}%</span>` +
       `<span class="chart-readout__sub">${fmtMoney(absChange)} · ` +
-      `${bars[a].time} → ${bars[b].time}</span>`;
+      `${fmtBarTime(bars[a].time)} → ${fmtBarTime(bars[b].time)}</span>`;
     readout.hidden = false;
 
     // Center the readout over the band, clamped to the chart's width.
@@ -377,6 +434,20 @@ export function initChart() {
       }))
       .sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
     earningsMarkers.setMarkers(markers);
+
+    // Phase 6: intraday ranges (1D / 1W) draw the prior close and drop the
+    // daily-only overlays + their toggles. Returning to a daily range restores
+    // them (RSI rebuilds its pane only if its toggle is still on).
+    setPrevCloseLine(d.intraday ? (d.prev_close ?? null) : null);
+    DAILY_ONLY_INDS.forEach((key) => {
+      const btn = document.querySelector(`[data-ind="${key}"]`);
+      if (btn) btn.hidden = !!d.intraday;
+    });
+    if (d.intraday) {
+      destroyRsi();
+    } else if (document.querySelector('[data-ind="rsi"]')?.classList.contains("is-active")) {
+      buildRsi();
+    }
   }
 
   // ── indicator toggles ──────────────────────────────────────────────────
@@ -412,12 +483,13 @@ export function initChart() {
   });
 
   // ── range buttons ──────────────────────────────────────────────────────
-  let loaded = null;
-  async function load(range) {
-    if (loaded === range) return;
-    loaded = range;
-    clearSelection();
-    el.classList.add("is-loading");
+  const isIntraday = (range) => range === "1D" || range === "1W";
+
+  // Fetch a range and paint it. `quiet` is the 60s intraday refresh: it skips
+  // the loading dim and keeps any measure selection, since it is just folding
+  // in newly-stored bars rather than answering a click.
+  async function reload(range, quiet) {
+    if (!quiet) el.classList.add("is-loading");
     try {
       const res = await fetch(
         `/api/symbols/${encodeURIComponent(ticker)}/history?range=${range}`,
@@ -427,12 +499,64 @@ export function initChart() {
       chart.timeScale().fitContent();
       renderRangeSummary();
     } catch (err) {
-      loaded = null;
+      if (!quiet) loaded = null;
       console.error("chart load failed", err);
     } finally {
-      el.classList.remove("is-loading");
+      if (!quiet) el.classList.remove("is-loading");
     }
   }
+
+  // While an intraday range is shown, re-pull every 60s so freshly-stored 15m
+  // bars appear without a click. The fetch only touches the local DB (no Yahoo
+  // call), and the live quote stream keeps the trailing bar moving in between.
+  let refreshTimer = null;
+  function stopRefresh() {
+    if (refreshTimer) {
+      clearInterval(refreshTimer);
+      refreshTimer = null;
+    }
+  }
+
+  let loaded = null;
+  async function load(range) {
+    if (loaded === range) return;
+    loaded = range;
+    clearSelection();
+    stopRefresh();
+    await reload(range, false);
+    if (isIntraday(range)) {
+      refreshTimer = setInterval(() => reload(range, true), 60000);
+    }
+  }
+
+  // Live-tick the trailing intraday bar from the shared quote stream (Phase 6):
+  // stream.js re-broadcasts each quote as a `finance:quote` event, so the chart
+  // moves the last bar's close/high/low in place without a second EventSource.
+  window.addEventListener("finance:quote", (e) => {
+    const q = e.detail;
+    if (!q || q.ticker !== ticker || q.price == null) return;
+    if (!latest || !latest.intraday || !bars.length) return;
+    const last = bars[bars.length - 1];
+    last.close = q.price;
+    if (q.price > last.high) last.high = q.price;
+    if (q.price < last.low) last.low = q.price;
+    series.update({
+      time: last.time,
+      open: last.open,
+      high: last.high,
+      low: last.low,
+      close: last.close,
+    });
+    volumeSeries.update({
+      time: last.time,
+      value: last.volume,
+      color: last.close >= last.open ? VOLUME_UP : VOLUME_DOWN,
+    });
+    renderRangeSummary();
+    if (anchorIdx !== null && curIdx !== null) renderSelection();
+  });
+
+  window.addEventListener("pagehide", stopRefresh);
 
   const buttons = Array.from(document.querySelectorAll("[data-range]"));
   buttons.forEach((btn) => {

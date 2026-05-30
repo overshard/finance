@@ -154,6 +154,11 @@ function applyQuote(q) {
     }
   });
 
+  // Re-broadcast the quote as a window event (Phase 6) so the symbol chart can
+  // live-tick its last intraday bar without opening a second EventSource. The
+  // chart filters by ticker and only reacts while an intraday range is shown.
+  window.dispatchEvent(new CustomEvent("finance:quote", { detail: q }));
+
   // A dashboard sparkline card just took a live quote, so its section's
   // freshness caption ("prices as of …") is now current (Phase 22). Both live
   // sections poll together each cycle, so refreshing them as one is honest.

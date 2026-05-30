@@ -1535,10 +1535,22 @@ struct HistoryQuery {
     range: Option<String>,
 }
 
-/// One OHLCV point shaped for lightweight-charts (a `YYYY-MM-DD` `time`).
-#[derive(sqlx::FromRow, Serialize)]
+/// A bar's time on the chart axis. Daily bars are calendar dates
+/// (`YYYY-MM-DD`); intraday bars (the 1D / 1W ranges) are UNIX seconds, which
+/// is the other form lightweight-charts accepts for an intraday time scale.
+/// `#[serde(untagged)]` so each variant serialises as a bare string or number
+/// — no tag wrapper the chart would have to unpick.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum BarTime {
+    Date(String),
+    Unix(i64),
+}
+
+/// One OHLCV point shaped for lightweight-charts.
+#[derive(Serialize)]
 struct Candle {
-    time: String,
+    time: BarTime,
     open: f64,
     high: f64,
     low: f64,
@@ -1591,6 +1603,15 @@ struct HistoryResponse {
     /// a small ink dot above each matching bar. Stocks only; empty otherwise.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     earnings: Vec<EarningsMarker>,
+    /// The prior daily close (Phase 6). Carried only for the intraday ranges,
+    /// where the chart draws it as a dashed reference line so the day's move is
+    /// legible against where the symbol opened the session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prev_close: Option<f64>,
+    /// True when `candles` carry intraday (UNIX-seconds) times rather than
+    /// daily dates (Phase 6). The chart switches its axis/labels accordingly
+    /// and suppresses the daily-only overlays.
+    intraday: bool,
 }
 
 /// Earliest `YYYY-MM-DD` to *show* for a range button. `None` means no limit.
@@ -1620,6 +1641,15 @@ async fn history_api(
 ) -> Response {
     let ticker = ticker.to_uppercase();
     let range = q.range.unwrap_or_else(|| "1Y".to_string());
+
+    // The 1D / 1W ranges (Phase 6) draw today's real-time 15-minute bars on an
+    // intraday axis, live-ticked by the quote stream — a different data source
+    // (`intraday_bars`) and time format from the daily candles, so they take
+    // their own path and the daily indicator machinery never runs for them.
+    if range == "1D" || range == "1W" {
+        return intraday_history(&state.pool, &ticker, &range).await;
+    }
+
     let display_cutoff = range_cutoff(&range);
 
     // Indicators need history *before* the visible window or their first
@@ -1632,10 +1662,14 @@ async fn history_api(
             .unwrap_or_else(|_| c.to_string())
     });
 
-    let candles: Vec<Candle> = match &fetch_cutoff {
+    // Daily rows as tuples (date, OHLCV). The indicator maths and the benchmark
+    // overlay key off the date strings, so they are kept in a parallel `dates`
+    // vec and the `Candle`s (whose `time` is now the `BarTime` enum) are built
+    // from the same rows at the end.
+    let rows: Vec<(String, f64, f64, f64, f64, i64)> = match &fetch_cutoff {
         Some(cutoff) => {
             sqlx::query_as(
-                "SELECT d AS time, open, high, low, close, volume FROM daily_prices \
+                "SELECT d, open, high, low, close, volume FROM daily_prices \
                  WHERE ticker = ? AND d >= ? ORDER BY d ASC",
             )
             .bind(&ticker)
@@ -1645,7 +1679,7 @@ async fn history_api(
         }
         None => {
             sqlx::query_as(
-                "SELECT d AS time, open, high, low, close, volume FROM daily_prices \
+                "SELECT d, open, high, low, close, volume FROM daily_prices \
                  WHERE ticker = ? ORDER BY d ASC",
             )
             .bind(&ticker)
@@ -1655,17 +1689,19 @@ async fn history_api(
     }
     .unwrap_or_default();
 
+    let dates: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
+    let closes: Vec<f64> = rows.iter().map(|r| r.4).collect();
+
     // First bar inside the visible window; everything before it is lookback,
     // fetched only so the indicators are correct from the very first shown bar.
     let start = match &display_cutoff {
-        Some(c) => candles
+        Some(c) => dates
             .iter()
-            .position(|b| b.time.as_str() >= c.as_str())
-            .unwrap_or(candles.len()),
+            .position(|d| d.as_str() >= c.as_str())
+            .unwrap_or(dates.len()),
         None => 0,
     };
 
-    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
     // Zip a raw indicator series to its bar dates, dropping warm-up `None`s
     // and the lookback bars, leaving only points inside the visible window.
     let line = |series: Vec<Option<f64>>| -> Vec<LinePoint> {
@@ -1675,7 +1711,7 @@ async fn history_api(
             .skip(start)
             .filter_map(|(i, v)| {
                 v.map(|value| LinePoint {
-                    time: candles[i].time.clone(),
+                    time: dates[i].clone(),
                     value,
                 })
             })
@@ -1696,9 +1732,9 @@ async fn history_api(
     .ok()
     .flatten()
     .flatten();
-    let benchmark = match (&benchmark_ticker, candles.get(start)) {
-        (Some(bench), Some(first_visible)) => {
-            load_benchmark_series(&state.pool, bench, &candles[start..], first_visible.close).await
+    let benchmark = match (&benchmark_ticker, dates.get(start)) {
+        (Some(bench), Some(_)) => {
+            load_benchmark_series(&state.pool, bench, &dates[start..], closes[start]).await
         }
         _ => Vec::new(),
     };
@@ -1727,17 +1763,124 @@ async fn history_api(
         sma200: line(compute::sma(&closes, 200)),
         ema21: line(compute::ema(&closes, 21)),
         rsi14: line(compute::rsi(&closes, 14)),
-        candles: candles.into_iter().skip(start).collect(),
+        candles: rows
+            .into_iter()
+            .skip(start)
+            .map(|(d, open, high, low, close, volume)| Candle {
+                time: BarTime::Date(d),
+                open,
+                high,
+                low,
+                close,
+                volume,
+            })
+            .collect(),
         benchmark,
         benchmark_ticker,
         earnings,
+        prev_close: None,
+        intraday: false,
+    };
+
+    Json(resp).into_response()
+}
+
+/// Calendar days of intraday history the 1W range shows. `intraday_bars` is
+/// pruned to a 14-day window (see `INTRADAY_RETENTION_DAYS`), so a week sits
+/// comfortably inside what is stored.
+const INTRADAY_WEEK_DAYS: i64 = 7;
+
+/// Serve the 1D / 1W intraday ranges (Phase 6) from `intraday_bars`. The bars
+/// are stored as UTC epoch-*milliseconds*; lightweight-charts wants UNIX
+/// *seconds* for an intraday axis, so each `ts` is divided by 1000. 1D shows
+/// the most recent trading day present (so a weekend correctly shows Friday);
+/// 1W shows a rolling seven days. None of the daily-only overlays apply, so the
+/// indicator series come back empty and the chart hides their toggles.
+async fn intraday_history(pool: &sqlx::SqlitePool, ticker: &str, range: &str) -> Response {
+    use chrono::{TimeZone as _, Utc};
+    use chrono_tz::America::New_York;
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let cutoff_ms: i64 = if range == "1W" {
+        now_ms - INTRADAY_WEEK_DAYS * 86_400_000
+    } else {
+        // 1D: the New-York midnight that opens the most recent day with bars,
+        // so the view is exactly that session (and weekends show Friday).
+        let latest: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(ts) FROM intraday_bars WHERE ticker = ?")
+                .bind(ticker)
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten();
+        match latest {
+            Some(ms) => Utc
+                .timestamp_millis_opt(ms)
+                .single()
+                .map(|dt| {
+                    let day = dt.with_timezone(&New_York).date_naive();
+                    New_York
+                        .from_local_datetime(&day.and_hms_opt(0, 0, 0).unwrap())
+                        .single()
+                        .map(|midnight| midnight.timestamp_millis())
+                        .unwrap_or(ms)
+                })
+                .unwrap_or(now_ms),
+            None => now_ms,
+        }
+    };
+
+    let rows: Vec<(i64, f64, f64, f64, f64, i64)> = sqlx::query_as(
+        "SELECT ts, open, high, low, close, volume FROM intraday_bars \
+         WHERE ticker = ? AND ts >= ? ORDER BY ts ASC",
+    )
+    .bind(ticker)
+    .bind(cutoff_ms)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    let candles = rows
+        .into_iter()
+        .map(|(ts, open, high, low, close, volume)| Candle {
+            time: BarTime::Unix(ts / 1000),
+            open,
+            high,
+            low,
+            close,
+            volume,
+        })
+        .collect();
+
+    // The prior daily close anchors the session reference line. During a live
+    // session today's bar is not yet in `daily_prices`, so the most recent row
+    // is genuinely the previous close.
+    let prev_close: Option<f64> =
+        sqlx::query_scalar("SELECT close FROM daily_prices WHERE ticker = ? ORDER BY d DESC LIMIT 1")
+            .bind(ticker)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+
+    let resp = HistoryResponse {
+        candles,
+        sma50: Vec::new(),
+        sma200: Vec::new(),
+        ema21: Vec::new(),
+        rsi14: Vec::new(),
+        benchmark: Vec::new(),
+        benchmark_ticker: None,
+        earnings: Vec::new(),
+        prev_close,
+        intraday: true,
     };
 
     Json(resp).into_response()
 }
 
 /// Load a benchmark index's daily closes across the same date span as
-/// `visible` (the fund's visible candle slice), then scale each close so the
+/// `visible_dates` (the fund's visible candle dates), then scale each close so the
 /// series starts at `fund_anchor` — the fund's first visible close — and
 /// only the *relative* movement past that point is plotted. An empty
 /// benchmark history or no overlap returns an empty vec, which the
@@ -1745,20 +1888,20 @@ async fn history_api(
 async fn load_benchmark_series(
     pool: &sqlx::SqlitePool,
     benchmark: &str,
-    visible: &[Candle],
+    visible_dates: &[String],
     fund_anchor: f64,
 ) -> Vec<LinePoint> {
-    let Some(first) = visible.first() else {
+    let Some(first) = visible_dates.first() else {
         return Vec::new();
     };
-    let last = visible.last().unwrap_or(first);
+    let last = visible_dates.last().unwrap_or(first);
     let rows: Vec<(String, f64)> = sqlx::query_as(
         "SELECT d, close FROM daily_prices \
          WHERE ticker = ? AND d >= ? AND d <= ? ORDER BY d ASC",
     )
     .bind(benchmark)
-    .bind(&first.time)
-    .bind(&last.time)
+    .bind(first)
+    .bind(last)
     .fetch_all(pool)
     .await
     .unwrap_or_default();
