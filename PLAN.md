@@ -54,7 +54,13 @@ focused roadmap. The decisions driving it are in the Decisions log under
 - **Everything gets distilled** into a fast-scannable, dual-first (mobile +
   desktop) design while keeping the futuristic-clean "Paper Ledger" look.
 
-**Current work:** Phase 1 (Yahoo-only data layer). Roadmap below.
+**Current work:** Phase 1 (Yahoo-only data layer) is **complete, verified, and
+deployed to production** 2026-05-30 (commit `76f38f4`). Verified end to end on
+the dev box: a fresh add-symbol backfilled DocuSign to 424 daily bars from
+Yahoo (`range=max`) with correct IPO-dated history (first bar 2018-04-23),
+`history_first_date`/`last_date` set correctly, charts render, `/api/health`
+shows only `yahoo` + `sec` (the `stooq` guard row is deleted on boot). Next:
+**Phase 2 (universe curation)**.
 
 **Dev server:** kept running in the background via `make` during sessions so
 the user can review progress live.
@@ -167,7 +173,7 @@ ends verified + committed + deployed. Pain-point mapping to the user's brief:
 data/guardrails → P1; ETFs first-class → P4; distill/cohesion → P3,P5,P7;
 drop short-horizon → P3; live intraday for viewed fund → P6.
 
-### Phase 1 — Yahoo-only data layer  ⟵ IN PROGRESS
+### Phase 1 — Yahoo-only data layer  ✅ DONE (deployed 2026-05-30, `76f38f4`)
 Kill the rate-limit problem at the root.
 - Remove the Stooq provider, the `stooq` `EndpointGuard`, `STOOQ_APIKEY`
   config, the per-symbol Stooq history job, and the seed's Stooq backfill path.
