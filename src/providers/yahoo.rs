@@ -441,6 +441,23 @@ impl YahooProvider {
         Ok(Some(parse_fund_metadata(result)))
     }
 
+    /// Fetch just the ETF's latest NAV (net asset value per share) via the v10
+    /// `quoteSummary` `summaryDetail` / `price` modules — the two that carry
+    /// `navPrice`. The Phase 4 daily NAV refresh calls this so the price-vs-NAV
+    /// premium behind the ETF quality read's tracking factor stays current,
+    /// without re-pulling the static fields the 30-day `fund_metadata` sweep
+    /// owns. `Ok(None)` is a clean empty (unknown symbol or no NAV reported);
+    /// gating responses (429 / 503 / 401 / 403) surface as the typed
+    /// [`RateLimited`], the same defensive set as `fund_metadata`.
+    pub async fn fund_nav(&self, ticker: &str) -> Result<Option<f64>> {
+        let Some(result) = self.quote_summary(ticker, "summaryDetail,price").await? else {
+            return Ok(None);
+        };
+        let sd = result.summary_detail.unwrap_or_default();
+        let price = result.price.unwrap_or_default();
+        Ok(sd.nav_price.or(price.nav_price).map(|v| v.0))
+    }
+
     /// Shared v10 `quoteSummary` fetch: ensures the crumb is cached, builds
     /// the URL with `&crumb=...`, parses gating responses (429 / 503 / 401 /
     /// 403) as the typed [`RateLimited`], and treats Yahoo's "unknown

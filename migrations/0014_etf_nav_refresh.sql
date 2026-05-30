@@ -1,0 +1,11 @@
+-- Phase 4: a separate freshness stamp for the ETF's NAV.
+--
+-- The 30-day fund_metadata sweep (Phase 28) refreshes the slow static fields
+-- (expense ratio, category, inception, ...) and carries a NAV too, but a
+-- monthly NAV is far too stale to compute a meaningful price-vs-NAV premium —
+-- the signal the ETF quality read's "tracking" factor needs. A dedicated daily
+-- fund_nav job (Phase 4) now refreshes nav_price on its own cadence; this
+-- column records when, so the symbol page can gate the tracking factor on a
+-- fresh NAV (and drop it cleanly when the NAV is stale) without disturbing the
+-- fund_metadata_synced_at stamp the 30-day sweep owns.
+ALTER TABLE fund_metadata ADD COLUMN nav_synced_at INTEGER;

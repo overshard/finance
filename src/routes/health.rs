@@ -248,6 +248,12 @@ fn job_meta(job: &str) -> (&str, &str) {
             "Yahoo quoteSummary snapshot for each ETF — expense ratio, yield, \
              NAV, inception, category, fund family, strategy. Refreshed monthly.",
         ),
+        "fund_nav" => (
+            "ETF NAV",
+            "Yahoo quoteSummary NAV for each ETF, refreshed daily — keeps the \
+             price-vs-NAV premium behind the ETF quality read's tracking factor \
+             current (the monthly metadata sweep's NAV is too stale for that).",
+        ),
         "earnings_calendar" => (
             "Earnings calendar",
             "Yahoo quoteSummary `calendarEvents` for each stock — the next \
@@ -270,11 +276,12 @@ fn job_rank(job: &str) -> u8 {
         "history" => 1,
         "sec" => 2,
         "fund_metadata" => 3,
-        "asset_profile" => 4,
-        "earnings_calendar" => 5,
-        "dividends" => 6,
-        "intraday" => 7,
-        "daily_close" => 8,
+        "fund_nav" => 4,
+        "asset_profile" => 5,
+        "earnings_calendar" => 6,
+        "dividends" => 7,
+        "intraday" => 8,
+        "daily_close" => 9,
         _ => 10,
     }
 }

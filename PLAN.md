@@ -34,7 +34,7 @@ commit + auto-deploy (`git push server master`) and a clean breakpoint.
 
 ## Status
 
-_Last updated: 2026-05-30 (Phase 3 complete + deployed)_
+_Last updated: 2026-05-30 (Phase 4 done on dev — commit + deploy pending)_
 
 **Major refactor in progress (the "distill + ETF-first" rewrite).** This plan
 was fully rewritten 2026-05-30 from a sprawling 3,700-line resume doc into this
@@ -54,8 +54,11 @@ focused roadmap. The decisions driving it are in the Decisions log under
 - **Everything gets distilled** into a fast-scannable, dual-first (mobile +
   desktop) design while keeping the futuristic-clean "Paper Ledger" look.
 
-**Current work:** Phases 1–3 are **done and deployed.** Next: **Phase 4 (ETFs
-as true first-class citizens)**.
+**Current work:** Phases 1–3 are **done and deployed.** Phase 4 (ETFs as
+first-class citizens) is **done on dev, pending commit + deploy** — quality
+score + distinct ETF symbol-page identity shipped; the dashboard ETF band was
+deferred to Phase 5 (user's call). Next after deploy: **Phase 5 (dashboard
+redesign)**.
 
 Phase 3 outcome (drop short-horizon prediction → quality leaderboard):
 - **The whole picker is gone.** Removed the four horizon rankers
@@ -259,13 +262,34 @@ Kill the rate-limit problem at the root.
 - Note: the leaderboard's home-page placement is intentionally provisional —
   Phase 5 rebuilds the dashboard (hero + bands) around it.
 
-### Phase 4 — ETFs as true first-class citizens
-- A blended ETF **quality score** (cost / diversification / size / tracking)
-  mirroring the stock health donut, with its own sub-readings.
-- Distinct ETF symbol-page identity: own header treatment + badge + section set
-  (holdings, expense/yield, NAV/premium, sector/geo, trailing returns vs
-  benchmark) instead of stock fundamentals.
-- Distinct ETF band on the dashboard.
+### Phase 4 — ETFs as true first-class citizens  ✅ DONE on dev (commit + deploy pending)
+- ✅ Blended ETF **quality score** (`compute::etf_quality`): cost-weighted blend
+  of cost (40%) / tracking (25%) / diversification (20%) / size (15%), composite
+  −1..1 → percent, four sub-reading chips — structurally mirrors the stock
+  `health_read` donut. Renormalises over gradeable factors (commodity trusts
+  with no holdings drop diversification cleanly); shows only with ≥2 factors.
+- ✅ Distinct ETF symbol-page identity: the quality donut anchors the header
+  top-right (reusing the `health-badge` styling), hover reveals the four
+  sub-readings + non-advice note. The ETF already shows fund sections (holdings,
+  expense/yield, NAV/premium, sector/geo, trailing returns vs benchmark) and no
+  stock fundamentals — so the badge + `ETF` tag complete the distinct identity.
+- ✅ **Tracking now backed by a real daily NAV.** Discovered the 30-day metadata
+  cadence made premium/discount unreliable; added a dedicated daily `fund_nav`
+  scheduler job + `nav_synced_at` column (migration `0014`) so NAV is current,
+  and a freshness gate that drops the tracking factor to `—` when NAV is stale
+  rather than assert a bogus premium. (See Decisions log for the full story.)
+- ⏸ **Distinct ETF band on the dashboard — deferred to Phase 5** (user's call):
+  the dashboard is fully redesigned in P5, so the ETF band is built there once
+  rather than built twice.
+- **Verified on dev:** `cargo build` clean; migration `0014` applies on boot;
+  `/health` lists the new "ETF NAV" job; every ETF page renders the quality
+  donut (VOO 89% Strong, GLD 64% with diversification correctly `—`, BND 100%
+  on its two graded factors); the freshness gate correctly drops tracking to
+  `—` while NAV is stale (screenshot reviewed). **One runtime path still
+  unverified live:** the daily `fund_nav` Yahoo fetch — the dev `yahoo` guard's
+  breaker was open (normal post-deploy back-off) so the job stopped early 0/43;
+  the fetch reuses the proven `quoteSummary` NAV parse, and prod exercises it on
+  first deploy once its guard is healthy.
 
 ### Phase 5 — Dashboard redesign: "how is the market doing TODAY"
 - Hero: one-line plain-language market verdict + index strip + **breadth**
@@ -281,11 +305,23 @@ Kill the rate-limit problem at the root.
 
 ### Phase 7 — Health/systems page distillation + final polish pass
 - Distill `/health` and overall cross-page cohesion; one closing UI polish pass.
-- Add a discreet data-attribution line ("Market data via Yahoo Finance ·
-  Fundamentals via SEC EDGAR") in the footer / on `/health`. Yahoo's chart
-  endpoint is unofficial (no published ToS or attribution requirement to
-  satisfy), but a tasteful credit is honest, costs nothing, and suits the
-  professional face the user wants. (Captured 2026-05-30 from a user note.)
+- **Expand the footer to match the sibling-project pattern.** Finance currently
+  has a single-line footer; the user wants it grown "a lot" to match how the
+  other apps do footers. The house pattern (analytics, status, blog, repos) is a
+  **two-tier footer**: a multi-column upper `<footer>` (columns like About /
+  Pages / Links — nav links, cross-project links, Portfolio/GitHub/LinkedIn, and
+  a "Source" link to `github.com/overshard/finance`) over a slim `.footer-bar`
+  with `© {{ now.year }} Isaac Bythewood · Some rights reserved` + a GitHub icon
+  link. `repos`'s `footer__grid` with `// LABEL` column headers is the closest
+  fit for the Paper Ledger aesthetic — model finance's on that. Fold the data
+  attribution below into one of the columns.
+- **Data-attribution (partially done early):** the stale **Stooq** credit was a
+  factual bug (Stooq removed Phase 1), so the one-line footer was corrected
+  on 2026-05-30 to "Market data via Yahoo Finance · Fundamentals via SEC EDGAR ·
+  not investment advice" ahead of schedule. The full footer build above still
+  belongs to this polish pass. Yahoo's chart endpoint is unofficial (no
+  published ToS/attribution requirement), but a tasteful credit is honest and
+  suits the professional face the user wants.
 
 ### Backlog / parked
 - Watchlists (tables exist, unused — user wants an opinionated no-customization
@@ -298,10 +334,78 @@ Kill the rate-limit problem at the root.
 - Deep pre-2000 history (lost with Stooq; revisit only if charts feel thin).
   Note: index/futures daily history via Yahoo caps at ~10y (the `range=10y`
   fallback); ^SPX/^DJI/^NDX still carry deep daily history from before.
+- **Scrub Claude/Anthropic trailers from git history (cross-repo, force-push).**
+  User wants every `Co-Authored-By: Claude`, `🤖 Generated with [Claude Code]`,
+  and any Anthropic ad line removed from *all* commit messages in *all* repos.
+  **Survey 2026-05-30: history is already clean** — a strict scan across all 9
+  `~/code` repos (analytics, blog, darkfurrow, finance, isaacbythewood, repos,
+  status, taproot, timelite) found **zero** such trailers; the only "claude"
+  hits are legitimate references to the `CLAUDE.md` *filename* in commit
+  messages, which must NOT be scrubbed. So this is a no-op today and only
+  matters if a trailer ever slips in. Procedure if needed (do it as its own
+  focused session — it is irreversible):
+  1. Per repo, rewrite history dropping the offending trailer lines, e.g.
+     `git filter-repo --message-callback` (preferred) or a `filter-branch`
+     fallback, stripping only `Co-Authored-By: Claude*`, `🤖 Generated with*`,
+     and `Generated with [Claude Code]*` lines — never the `CLAUDE.md` mentions.
+  2. `git push --force-with-lease` to **every** remote (GitHub `origin` *and*
+     the deploy remote `server`).
+  3. **Server fixup:** the deploy is a bare repo + post-receive hook that builds
+     into the project dir. After a history rewrite the server's checkout will be
+     on an orphaned commit, so SSH to the alpine host (`taproot` manages it) and
+     reset the bare repo's `master` + re-run the deploy (`docker compose up
+     --build --detach`) so `/srv` tracks the rewritten history; verify the
+     container is healthy and reattached to `bythewood-edge`. Coordinate via the
+     `taproot` repo (its CLAUDE.md is off-limits to auto-edits per user rule).
 
 ---
 
 ## Decisions log
+
+**2026-05-30 — Phase 4 build + the NAV-staleness discovery.** Built the ETF
+quality read (`compute::etf_quality`, mirroring `health_read`) and the
+symbol-page quality donut. **Mid-build discovery:** the tracking factor
+(premium/discount to NAV, the option the user picked) was reading "Wide gap" on
+funds that track perfectly (VOO, IVV) because Yahoo's NAV is only refreshed
+every 30 days (`FUND_METADATA_STALE_SECS`) — so a live price compared to a
+weeks-old NAV showed a bogus premium. This broke the premise behind the user's
+tracking choice. Surfaced it and asked; user chose **refresh NAV daily** so
+tracking becomes a true daily read. Implemented as:
+- a dedicated daily `fund_nav` scheduler job (separate from the 30-day static
+  metadata sweep so the slow fields keep their cadence) that fetches NAV only
+  (`YahooProvider::fund_nav`, two `quoteSummary` modules) through the `yahoo`
+  guard — ~43 req/day, negligible vs the 1000/hr budget;
+- a `nav_synced_at` column (migration `0014`) the daily job stamps;
+- a **freshness gate** on the symbol page: the tracking factor is graded only
+  when NAV was synced ≤3 days ago, else it drops to `—` and the cost/div/size
+  blend renormalises — so a stale NAV never drives a false tracking verdict.
+Also deferred the **dashboard ETF band to Phase 5** (it rebuilds the dashboard
+anyway) and corrected the footer's stale Stooq credit early (a factual bug).
+The `fund_nav` live fetch wasn't exercised on dev (the guard's breaker was open
+post-deploy), but it reuses the proven NAV parse and runs on first prod deploy.
+
+**2026-05-30 — Phase 4 (ETFs as first-class citizens) design forks resolved.**
+Answered 3 clarifying questions before building:
+1. **ETF quality score = cost-weighted, all four factors.** Cost (expense ratio)
+   ~40%, Tracking ~25%, Diversification ~20%, Size (AUM) ~15%. Composite in
+   [-1,1] → percent, with four sub-reading chips — structurally mirrors the
+   stock `health_read` donut. Weights renormalize over whichever factors are
+   gradeable (commodity trusts like GLD/SLV/IBIT have no holdings, so
+   diversification drops out and the rest reweight). Show the badge only when
+   ≥2 factors are gradeable.
+2. **Tracking factor = premium/discount to NAV**, reusing the existing
+   `compute::premium_discount_pct` + `premium_grade` (price vs Yahoo NAV). No
+   new compute, no benchmark-alignment work. (True tracking error vs benchmark
+   was considered and parked.)
+3. **Dashboard ETF band deferred to Phase 5.** Phase 4 ships the quality score +
+   the distinct ETF symbol-page identity (own quality donut + sub-readings in
+   the header, alongside the fund sections that already exist). The dashboard
+   ETF band gets built into the Phase 5 dashboard redesign rather than built
+   twice.
+Grading bands (initial, tune later): cost cheap ≤0.10% / pricey >0.50%;
+tracking via `premium_grade` (±0.25% tight, ±1% wide); diversification on top-10
+holdings concentration (≤~25% broad, >~50% concentrated); size on log10(AUM)
+centered ~ $2B ok, ≥ $20B large.
 
 **2026-05-30 — Phase 3 (drop short-horizon prediction → quality leaderboard).**
 Executed the kickoff decision to drop prediction. Resolved the one open design
@@ -405,6 +509,14 @@ from this doc to keep it scannable.
   a new upstream-backed job; it recovers via the half-open probe.
 - **Chart indicator lines use a non-semantic palette on purpose** — green/amber/
   red are reserved for good/ok/bad; candles own green/red.
+- **Yahoo NAV is only as fresh as you keep it.** The 30-day `fund_metadata`
+  sweep (`FUND_METADATA_STALE_SECS`) carries a NAV, but comparing a live price
+  to a weeks-old NAV yields a meaningless premium/discount — it reads as a huge
+  fake "premium" on funds that actually track to the basis point. NAV is struck
+  once per trading day; anything that reads a price-vs-NAV premium (the ETF
+  quality read's tracking factor) must run off the daily `fund_nav` refresh and
+  gate on `nav_synced_at` freshness. Don't trust the metadata sweep's NAV for
+  any real-time comparison.
 - **`cargo` isn't on PATH in this dev container** — use `~/.cargo/bin/cargo`,
   and run the dev binary with `FINANCE_ROOT=/home/dev/code/finance` (or from the
   project dir so paths resolve from cwd).

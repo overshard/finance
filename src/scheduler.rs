@@ -121,6 +121,18 @@ const DIVIDENDS_STALE_SECS: i64 = 7 * 24 * 3600;
 const FUND_METADATA_INTERVAL_SECS: i64 = 24 * 3600;
 const FUND_METADATA_STALE_SECS: i64 = 30 * 24 * 3600;
 
+/// ETF NAV refresh (Phase 4). NAV is struck once per trading day, and the
+/// price-vs-NAV premium behind the ETF quality read's "tracking" factor is only
+/// meaningful against a *fresh* NAV — so unlike the 30-day `fund_metadata`
+/// sweep (which owns the slow static fields, NAV included but far too stale to
+/// read a premium against), this job refreshes *only* nav_price, daily. One
+/// lightweight `quoteSummary` request per ETF (~43/day) through the shared
+/// `yahoo` `EndpointGuard` — negligible against the hourly budget. The 20h
+/// staleness window (< the 24h interval) means every ETF refreshes once per
+/// daily run.
+const FUND_NAV_INTERVAL_SECS: i64 = 24 * 3600;
+const FUND_NAV_STALE_SECS: i64 = 20 * 3600;
+
 /// Earnings calendar refresh (Phase 25). Yahoo's `calendarEvents.earnings`
 /// rolls forward one quarter at a time as each print lands, and a stock's
 /// next date is irrelevant before it shifts — so a monthly cadence is
@@ -190,6 +202,14 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
         // out the daily interval. Resumable; the no-stale fast path is free.
         if let Err(e) = schedule_next(&pool, "fund_metadata", now_ms()).await {
             tracing::warn!("[scheduler] bring fund_metadata job forward: {e}");
+        }
+
+        // Fund-NAV job (Phase 4): same bring-forward pattern, so a deploy adding
+        // the daily NAV refresh populates fresh NAVs — and thus the ETF quality
+        // read's tracking factor — within a tick rather than waiting out the
+        // daily interval. Resumable; the no-stale fast path is free.
+        if let Err(e) = schedule_next(&pool, "fund_nav", now_ms()).await {
+            tracing::warn!("[scheduler] bring fund_nav job forward: {e}");
         }
 
         // Earnings calendar job (Phase 25): same bring-forward pattern, so a
@@ -280,6 +300,19 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
                 }
                 Ok(false) => {}
                 Err(e) => tracing::warn!("[scheduler] fund_metadata due-check: {e}"),
+            }
+
+            // ETF NAV (Phase 4): refresh every ETF's NAV daily so the
+            // price-vs-NAV premium behind the quality read's tracking factor
+            // stays current. Same Yahoo guard; one lightweight request per ETF.
+            match is_due(&pool, "fund_nav", now_ms()).await {
+                Ok(true) => {
+                    if let Err(e) = run_fund_nav(&pool, &config, &hub).await {
+                        tracing::warn!("[scheduler] fund_nav: {e:#}");
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!("[scheduler] fund_nav due-check: {e}"),
             }
 
             // Earnings calendar (Phase 25): sweep stocks whose next-expected
@@ -1481,6 +1514,130 @@ pub(crate) async fn store_fund_metadata(
     .bind(&m.fund_family)
     .bind(&m.strategy_summary)
     .bind(now_ms())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+// ─────────────────────── ETF NAV daily refresh (Phase 4) ──────────────────
+
+/// Refresh every ETF's NAV daily so the price-vs-NAV premium behind the ETF
+/// quality read's "tracking" factor (Phase 4) stays current. NAV is struck once
+/// per trading day; the 30-day `fund_metadata` sweep carries a NAV too but far
+/// too stale to read a premium against, so this job owns the daily nav_price +
+/// nav_synced_at on its own cadence, leaving the slow static fields alone. One
+/// lightweight `quoteSummary` request per ETF through the shared `yahoo` guard.
+/// Mirrors `run_fund_metadata`'s shape — guard-paced, resumable, /health-aware.
+async fn run_fund_nav(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Result<()> {
+    let started = now_ms();
+    let next = started + FUND_NAV_INTERVAL_SECS * 1000;
+    let cutoff = started - FUND_NAV_STALE_SECS * 1000;
+    let stale: Vec<String> = sqlx::query_scalar(
+        "SELECT s.ticker FROM symbols s \
+         LEFT JOIN fund_metadata m ON m.ticker = s.ticker \
+         WHERE s.kind = 'etf' \
+           AND (m.nav_synced_at IS NULL OR m.nav_synced_at < ?) \
+         ORDER BY s.ticker",
+    )
+    .bind(cutoff)
+    .fetch_all(pool)
+    .await?;
+
+    if stale.is_empty() {
+        // Fast path: every ETF's NAV is fresh. No fetching banner, no log row.
+        mark_ok(pool, "fund_nav", Some(next)).await?;
+        return Ok(());
+    }
+
+    mark_fetching(pool, "fund_nav").await?;
+    notify_health(hub);
+    tracing::info!("[scheduler] fund_nav: refreshing {} ETFs", stale.len());
+
+    let yahoo = YahooProvider::new(providers::http::build_client(config));
+    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
+    let t0 = Instant::now();
+    let mut ok = 0i64;
+    let mut empty = 0i64;
+    let mut errors = 0i64;
+    let mut stopped: Option<String> = None;
+
+    for ticker in &stale {
+        match guard.acquire().await? {
+            Permit::Granted => {}
+            Permit::Denied(why) => {
+                stopped = Some(why);
+                break;
+            }
+        }
+        match yahoo.fund_nav(ticker).await {
+            Ok(nav) => {
+                guard.record_success().await?;
+                // `nav` may be None (Yahoo knows the symbol but carries no NAV
+                // today): still stamp nav_synced_at so we do not re-fetch the
+                // same empty next tick — the freshness gate then simply finds no
+                // premium and the tracking factor drops out.
+                if let Err(e) = store_fund_nav(pool, ticker, nav).await {
+                    tracing::warn!("[scheduler] fund_nav store {ticker}: {e:#}");
+                    errors += 1;
+                    continue;
+                }
+                if nav.is_some() {
+                    ok += 1;
+                } else {
+                    empty += 1;
+                }
+            }
+            Err(e) => {
+                guard.record_failure(&e).await?;
+                errors += 1;
+                tracing::warn!("[scheduler] fund_nav {ticker}: {e:#}");
+            }
+        }
+    }
+
+    let dur = t0.elapsed().as_millis() as i64;
+    let detail = format!("{ok}/{} ETFs ({empty} no NAV, {errors} errors)", stale.len());
+    match stopped {
+        Some(why) => {
+            let full = format!("stopped early ({why}); {detail}");
+            tracing::warn!("[scheduler] fund_nav: {full}");
+            log_fetch(
+                pool, "fund_nav", "yahoo", "skipped",
+                Some(&full), Some(ok), dur, started,
+            ).await?;
+        }
+        None => {
+            tracing::info!("[scheduler] fund_nav: {detail}");
+            log_fetch(
+                pool, "fund_nav", "yahoo", "ok",
+                Some(&detail), Some(ok), dur, started,
+            ).await?;
+        }
+    }
+    mark_ok(pool, "fund_nav", Some(next)).await?;
+    notify_health(hub);
+    Ok(())
+}
+
+/// Upsert one ETF's freshly-fetched NAV + its sync stamp, touching only the NAV
+/// columns so the static fields the 30-day `fund_metadata` sweep owns are left
+/// intact. Inserts a NAV-only row if the metadata sweep has not reached this
+/// ETF yet (the other columns fill in on its next run). A `None` nav clears any
+/// prior NAV — honest: we have no fresh value to read a premium against.
+async fn store_fund_nav(pool: &SqlitePool, ticker: &str, nav: Option<f64>) -> sqlx::Result<()> {
+    let now = now_ms();
+    sqlx::query(
+        "INSERT INTO fund_metadata (ticker, nav_price, nav_synced_at, updated_at) \
+         VALUES (?, ?, ?, ?) \
+         ON CONFLICT(ticker) DO UPDATE SET \
+           nav_price = excluded.nav_price, \
+           nav_synced_at = excluded.nav_synced_at, \
+           updated_at = excluded.updated_at",
+    )
+    .bind(ticker)
+    .bind(nav)
+    .bind(now)
+    .bind(now)
     .execute(pool)
     .await?;
     Ok(())

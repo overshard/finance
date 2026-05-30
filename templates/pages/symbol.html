@@ -33,7 +33,7 @@
 
 {% block main %}
 <div class="wrap">
-  <header class="sym-head{% if health %} sym-head--has-health{% endif %}">
+  <header class="sym-head{% if health or etf_quality %} sym-head--has-health{% endif %}">
     <div class="sym-head__id">
       <h1 class="sym-head__ticker">{{ symbol.ticker }}</h1>
       <span class="sym-head__tag">{{ symbol.kind }}</span>
@@ -104,6 +104,51 @@
           </li>
         </ul>
         <p class="health-pop__src">A read across fundamentals, recent price &amp; growth trajectory, and leadership stability. For fun and reading at a glance, not investment advice.</p>
+      </div>
+    </div>
+    {% endif %}
+
+    {# ETF quality badge (Phase 4): the fund-side sibling of the stock health
+       donut. Same glanceable % ring, but the four sub-readings are the wrapper's
+       quality — cost, tracking (price vs NAV), diversification, size. Reuses the
+       `health-badge` / `health-pop` styling; a symbol is either a stock or an
+       ETF, so only one of the two badges ever renders. #}
+    {% if etf_quality %}
+    <div class="sym-head__health sym-head__health--etf">
+      <button type="button" class="health-badge health-badge--{{ etf_quality.overall }}"
+              aria-label="ETF quality: {{ etf_quality.verdict }}, {{ etf_quality.percent }}%"
+              aria-describedby="etf-quality-pop">
+        <svg class="health-badge__ring" viewBox="0 0 36 36" aria-hidden="true">
+          <circle class="health-badge__track" cx="18" cy="18" r="15.9155" fill="none"/>
+          <circle class="health-badge__fill"  cx="18" cy="18" r="15.9155" fill="none"
+                  stroke-dasharray="{{ etf_quality.percent }}, 100"/>
+        </svg>
+        <span class="health-badge__num num">
+          <span class="health-badge__pct">{{ etf_quality.percent }}</span><span class="health-badge__unit">%</span>
+        </span>
+        <span class="health-badge__caption">{{ etf_quality.verdict }}</span>
+      </button>
+      <div class="health-pop" id="etf-quality-pop" role="tooltip">
+        <p class="health-pop__head">ETF quality <strong class="health-pop__verdict health-pop__verdict--{{ etf_quality.overall }}">{{ etf_quality.verdict }}</strong> &middot; <span class="num">{{ etf_quality.percent }}%</span></p>
+        <ul class="health-pop__rows">
+          <li class="health-pop__row health-pop__row--{{ etf_quality.cost }}">
+            <span class="health-pop__label">Cost</span>
+            <span class="health-pop__value">{{ etf_quality.cost_label }}</span>
+          </li>
+          <li class="health-pop__row health-pop__row--{{ etf_quality.tracking }}">
+            <span class="health-pop__label">Tracking</span>
+            <span class="health-pop__value">{{ etf_quality.tracking_label }}</span>
+          </li>
+          <li class="health-pop__row health-pop__row--{{ etf_quality.diversification }}">
+            <span class="health-pop__label">Diversification</span>
+            <span class="health-pop__value">{{ etf_quality.diversification_label }}</span>
+          </li>
+          <li class="health-pop__row health-pop__row--{{ etf_quality.size }}">
+            <span class="health-pop__label">Size</span>
+            <span class="health-pop__value">{{ etf_quality.size_label }}</span>
+          </li>
+        </ul>
+        <p class="health-pop__src">A read on the fund wrapper: cost, how tightly it tracks NAV, diversification, and size. For reading at a glance, not investment advice.</p>
       </div>
     </div>
     {% endif %}

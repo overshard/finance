@@ -568,6 +568,10 @@ struct FundMetadataRow {
     category: Option<String>,
     fund_family: Option<String>,
     strategy_summary: Option<String>,
+    /// When the daily `fund_nav` job last refreshed `nav_price` (Phase 4). The
+    /// quality read's tracking factor is only graded against a fresh NAV; a
+    /// stale one drops the factor rather than asserting a bogus premium.
+    nav_synced_at: Option<i64>,
 }
 
 /// The "About this fund" section of the ETF symbol page. Every field is
@@ -1320,6 +1324,16 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         Vec::new()
     };
 
+    // Raw ETF figures captured as the fund / metadata blocks build them, then
+    // rolled into the Phase 4 quality read below. Kept as scalars so the read
+    // can be computed once both SEC (profile/holdings) and Yahoo (metadata)
+    // sources are loaded, without re-querying.
+    let mut etf_net_assets: Option<f64> = None;
+    let mut etf_top10_pct: Option<f64> = None;
+    let mut etf_expense_ratio: Option<f64> = None;
+    let mut etf_nav: Option<f64> = None;
+    let mut etf_nav_synced_at: Option<i64> = None;
+
     // The ETF fund profile, when the SEC sweep has reached this symbol.
     let fund = if is_etf {
         let profile = sqlx::query_as::<_, FundProfileRow>(
@@ -1342,6 +1356,14 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
                 .fetch_all(&state.pool)
                 .await
                 .unwrap_or_default();
+                etf_net_assets = profile.net_assets;
+                // Top-10 concentration for the diversification factor: the
+                // summed weight of the ten largest holdings (rows are rank-
+                // ordered, `pct` already in percent units). `None` when the
+                // fund reported no holdings (a commodity trust), so that factor
+                // drops out of the blend rather than reading as zero.
+                let top10: f64 = holdings.iter().take(10).filter_map(|h| h.pct).sum();
+                etf_top10_pct = (top10 > 0.0).then_some(top10);
                 Some(build_fund(profile, holdings))
             }
             None => None,
@@ -1355,17 +1377,49 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
     // job has swept this symbol. An unswept ETF shows the section's
     // "pending" note in the template.
     let fund_meta = if is_etf {
-        sqlx::query_as::<_, FundMetadataRow>(
+        let row = sqlx::query_as::<_, FundMetadataRow>(
             "SELECT expense_ratio, yield_pct, trailing_yield_pct, nav_price, \
-                    inception_date, category, fund_family, strategy_summary \
+                    inception_date, category, fund_family, strategy_summary, \
+                    nav_synced_at \
              FROM fund_metadata WHERE ticker = ?",
         )
         .bind(&ticker)
         .fetch_optional(&state.pool)
         .await
         .ok()
-        .flatten()
-        .map(|r| build_fund_meta(r, price))
+        .flatten();
+        match row {
+            Some(row) => {
+                etf_expense_ratio = row.expense_ratio;
+                etf_nav = row.nav_price;
+                etf_nav_synced_at = row.nav_synced_at;
+                Some(build_fund_meta(row, price))
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+
+    // Phase 4 — ETF quality read: cost-weighted blend of cost, tracking (price
+    // vs NAV premium), diversification (top-10 concentration), and size (AUM).
+    // Mirrors the stock health donut. `None` until ≥2 factors grade, so a fund
+    // the sweeps have barely reached gets no badge rather than a hollow one.
+    let etf_quality = if is_etf {
+        // Only read a price-vs-NAV premium (the tracking factor) against a
+        // *fresh* NAV: NAV is struck daily, so a stale one makes the premium
+        // meaningless. We let the factor drop out rather than assert a bogus
+        // tracking verdict. The daily `fund_nav` job keeps NAV current; when it
+        // is behind (fresh deploy, guard tripped), tracking simply reads "—".
+        const NAV_FRESH_MS: i64 = 3 * 24 * 3600 * 1000;
+        let nav_fresh =
+            etf_nav_synced_at.is_some_and(|t| crate::db::now_ms() - t <= NAV_FRESH_MS);
+        let premium_pct = if nav_fresh {
+            price.and_then(|p| compute::premium_discount_pct(p, etf_nav))
+        } else {
+            None
+        };
+        compute::etf_quality(etf_expense_ratio, premium_pct, etf_top10_pct, etf_net_assets)
     } else {
         None
     };
@@ -1463,6 +1517,7 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         health => health,
         fund => fund,
         fund_meta => fund_meta,
+        etf_quality => etf_quality,
         returns => returns,
         leadership => leadership,
         dividends => dividends,

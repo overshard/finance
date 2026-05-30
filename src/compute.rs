@@ -1260,6 +1260,207 @@ pub fn premium_grade(premium_pct: f64) -> Grade {
     }
 }
 
+// ───────────────────────── ETF quality read (Phase 4) ──────────────────────
+//
+// An ETF's quality read mirrors the stock health donut: four graded factors —
+// cost, tracking, diversification, size — rolled into one good/ok/bad verdict
+// with a 0-100 badge percent and the four sub-readings behind it. It reads the
+// quality of the *wrapper* (is it cheap, does it hug fair value, is it broad,
+// is it durable), explicitly not a buy/sell call. Pure: derives only from the
+// fund's expense ratio, price/NAV premium, top-holdings concentration, and net
+// assets — all already loaded for the ETF symbol page.
+
+/// Cost-weighted blend (a user steer). Cost is the one guaranteed, perpetual
+/// drag so it carries the most weight; tracking next, then diversification,
+/// then size. The composite renormalises over whichever factors graded, so a
+/// commodity trust with no holdings is read on the other three, not penalised.
+const ETF_W_COST: f64 = 0.40;
+const ETF_W_TRACKING: f64 = 0.25;
+const ETF_W_DIVERSIFICATION: f64 = 0.20;
+const ETF_W_SIZE: f64 = 0.15;
+
+/// At least this many of the four factors must grade before the badge shows, so
+/// a fund we know almost nothing about gets no read rather than a hollow one.
+const ETF_MIN_GRADED: usize = 2;
+
+/// An ETF's quality read: an overall strong / fair / weak verdict, the
+/// composite score, the 0-100 badge percent, and the four sub-components behind
+/// it so the symbol page can show the breakdown. Structurally a sibling of
+/// [`HealthRead`] (stocks), with ETF-appropriate factors.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct EtfQuality {
+    /// CSS hook for the overall badge: `good` | `ok` | `bad`.
+    pub overall: Grade,
+    /// Badge text derived from `overall`: `Strong` | `Fair` | `Weak`.
+    pub verdict: &'static str,
+    /// Composite score in [-1, 1].
+    pub score: f64,
+    /// `score` mapped linearly to a 0-100 percent for the header badge.
+    pub percent: u8,
+    pub cost: Grade,
+    pub cost_label: &'static str,
+    pub tracking: Grade,
+    pub tracking_label: &'static str,
+    pub diversification: Grade,
+    pub diversification_label: &'static str,
+    pub size: Grade,
+    pub size_label: &'static str,
+    /// How many of the four factors carried a grade (the rest dropped out of
+    /// the blend). Not displayed; useful for debugging a thin read.
+    pub graded: usize,
+}
+
+/// Cost sub-score from the expense ratio (a decimal, e.g. `0.0003` = 0.03%).
+/// Cheaper is better: ≤0.05% saturates at +1, ≥0.75% at −1, linear between.
+/// Bands suit the curated iShares/Vanguard roster (core funds ~0.03-0.10%; the
+/// priciest commodity/thematic ones ~0.40-0.75%). `None` when not reported.
+fn etf_cost_score(expense_ratio: Option<f64>) -> Option<f64> {
+    let pct = expense_ratio? * 100.0;
+    if pct < 0.0 {
+        return None;
+    }
+    const CHEAP: f64 = 0.05;
+    const PRICEY: f64 = 0.75;
+    Some((1.0 - (pct - CHEAP) / (PRICEY - CHEAP) * 2.0).clamp(-1.0, 1.0))
+}
+
+/// Tracking sub-score from the price's premium/discount to NAV (a signed
+/// percent). Reuses the page's [`premium_grade`] bands mapped to a numeric:
+/// tight ≤±0.25% ≈ +1, wide ≥±1% ≈ −1, linear in the absolute gap. `None` when
+/// NAV is unknown (no premium to read).
+fn etf_tracking_score(premium_pct: Option<f64>) -> Option<f64> {
+    let abs = premium_pct?.abs();
+    const TIGHT: f64 = 0.25;
+    const WIDE: f64 = 1.00;
+    Some((1.0 - (abs - TIGHT) / (WIDE - TIGHT) * 2.0).clamp(-1.0, 1.0))
+}
+
+/// Diversification sub-score from the top-10 holdings' combined weight (a
+/// percent, e.g. `27.5` = 27.5%). Lower concentration is broader/safer: ≤20%
+/// saturates at +1, ≥60% at −1. `None` for funds with no reported holdings
+/// (commodity trusts), dropping the factor from the blend.
+fn etf_diversification_score(top10_pct: Option<f64>) -> Option<f64> {
+    let c = top10_pct?;
+    if c <= 0.0 {
+        return None;
+    }
+    const BROAD: f64 = 20.0;
+    const CONCENTRATED: f64 = 60.0;
+    Some((1.0 - (c - BROAD) / (CONCENTRATED - BROAD) * 2.0).clamp(-1.0, 1.0))
+}
+
+/// Size sub-score from net assets (AUM, USD), on a log scale: small funds carry
+/// closure / liquidity risk, large ones are durable. Each 10× in AUM is ±1
+/// centred on ~$2B (so ~$200M ≈ −1, ~$2B ≈ 0, ≥~$20B ≈ +1). `None` when AUM is
+/// unknown or non-positive.
+fn etf_size_score(net_assets: Option<f64>) -> Option<f64> {
+    let aum = net_assets?;
+    if aum <= 0.0 {
+        return None;
+    }
+    const MID_LOG: f64 = 9.3; // log10($2B) ≈ 9.30
+    Some((aum.log10() - MID_LOG).clamp(-1.0, 1.0))
+}
+
+fn etf_cost_label(g: Grade) -> &'static str {
+    match g {
+        Grade::Good => "Cheap",
+        Grade::Ok => "Moderate",
+        Grade::Bad => "Pricey",
+        Grade::Unknown => "—",
+    }
+}
+
+fn etf_tracking_label(g: Grade) -> &'static str {
+    match g {
+        Grade::Good => "Tight",
+        Grade::Ok => "Slight drift",
+        Grade::Bad => "Wide gap",
+        Grade::Unknown => "—",
+    }
+}
+
+fn etf_diversification_label(g: Grade) -> &'static str {
+    match g {
+        Grade::Good => "Broad",
+        Grade::Ok => "Moderate",
+        Grade::Bad => "Concentrated",
+        Grade::Unknown => "—",
+    }
+}
+
+fn etf_size_label(g: Grade) -> &'static str {
+    match g {
+        Grade::Good => "Large",
+        Grade::Ok => "Mid-size",
+        Grade::Bad => "Small",
+        Grade::Unknown => "—",
+    }
+}
+
+/// Roll an ETF's four factors into a single [`EtfQuality`]. `expense_ratio` is a
+/// decimal; `premium_pct` is the signed price-vs-NAV percent (from
+/// [`premium_discount_pct`]); `top10_pct` is the summed weight of the ten
+/// largest holdings (percent), `None` for a fund with no holdings; `net_assets`
+/// is AUM in USD. Returns `None` until at least [`ETF_MIN_GRADED`] factors
+/// grade, so a barely-known fund gets no badge rather than a hollow one. The
+/// composite renormalises over the factors that landed.
+pub fn etf_quality(
+    expense_ratio: Option<f64>,
+    premium_pct: Option<f64>,
+    top10_pct: Option<f64>,
+    net_assets: Option<f64>,
+) -> Option<EtfQuality> {
+    let cost_raw = etf_cost_score(expense_ratio);
+    let tracking_raw = etf_tracking_score(premium_pct);
+    let div_raw = etf_diversification_score(top10_pct);
+    let size_raw = etf_size_score(net_assets);
+
+    let factors = [
+        (cost_raw, ETF_W_COST),
+        (tracking_raw, ETF_W_TRACKING),
+        (div_raw, ETF_W_DIVERSIFICATION),
+        (size_raw, ETF_W_SIZE),
+    ];
+    let graded = factors.iter().filter(|(r, _)| r.is_some()).count();
+    if graded < ETF_MIN_GRADED {
+        return None;
+    }
+    let (mut weighted, mut total) = (0.0, 0.0);
+    for (r, w) in factors {
+        if let Some(v) = r {
+            weighted += w * v;
+            total += w;
+        }
+    }
+    let score = weighted / total;
+    let overall = score_grade(score);
+    let percent = (((score + 1.0) / 2.0 * 100.0).round() as i32).clamp(0, 100) as u8;
+
+    let cost = cost_raw.map_or(Grade::Unknown, score_grade);
+    let tracking = tracking_raw.map_or(Grade::Unknown, score_grade);
+    let diversification = div_raw.map_or(Grade::Unknown, score_grade);
+    let size = size_raw.map_or(Grade::Unknown, score_grade);
+
+    Some(EtfQuality {
+        overall,
+        // `overall` is never Unknown (score_grade only yields Good/Ok/Bad), so
+        // Grade::verdict's Strong/Fair/Weak reads cleanly as a quality grade.
+        verdict: overall.verdict(),
+        score,
+        percent,
+        cost,
+        cost_label: etf_cost_label(cost),
+        tracking,
+        tracking_label: etf_tracking_label(tracking),
+        diversification,
+        diversification_label: etf_diversification_label(diversification),
+        size,
+        size_label: etf_size_label(size),
+        graded,
+    })
+}
+
 // ── Phase 16: per-ticker anomaly feed ─────────────────────────────────────
 
 /// One row in the symbol-page anomaly feed. Built either here (price events,
