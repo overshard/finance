@@ -169,6 +169,68 @@ function renderLog(list) {
   return `<div class="log"><ul class="logrows">${rows.join("")}</ul></div>`;
 }
 
+// The top systems verdict (Phase 7): distil the whole snapshot into one plain
+// read — overall tone, a headline, and a supporting clause. Tone is the worst
+// thing on the page: a tripped breaker or an errored job is bad; a recovering
+// breaker or a stale job is working; otherwise all-clear. A mid-fetch job is
+// normal and does not darken the tone (the live banner below names it).
+function renderVerdict(snap) {
+  const el = $('[data-role="verdict"]');
+  if (!el) return;
+  const eps = snap.endpoints || [];
+  const jobs = snap.jobs || [];
+  const log = snap.log || [];
+
+  const epOpen = eps.filter((e) => e.state === "open").length;
+  const epHalf = eps.filter((e) => e.state === "half_open").length;
+  const epHealthy = eps.filter((e) => e.state === "closed").length;
+  const jobErr = jobs.filter((j) => j.state === "error").length;
+  const jobStale = jobs.filter((j) => j.state === "stale").length;
+  const fetching = jobs.filter((j) => j.state === "fetching").length;
+
+  let tone, head;
+  if (epOpen || jobErr) {
+    tone = "bad";
+    head = "Data flow degraded";
+  } else if (epHalf || jobStale) {
+    tone = "warn";
+    head = "Recovering";
+  } else {
+    tone = "ok";
+    head = "All systems normal";
+  }
+
+  // Sources clause: "both data sources healthy" reads best at the usual two
+  // (Yahoo + SEC), with a fraction when any is down.
+  let srcPart;
+  if (!eps.length) {
+    srcPart = "no sources contacted yet";
+  } else if (epHealthy === eps.length) {
+    srcPart = eps.length === 2 ? "both data sources healthy" : `all ${eps.length} data sources healthy`;
+  } else {
+    srcPart = `${epHealthy}/${eps.length} data sources healthy`;
+  }
+
+  // Jobs clause: how many are on schedule (anything not errored or stale).
+  let jobPart;
+  if (!jobs.length) {
+    jobPart = "no jobs yet";
+  } else if (jobErr || jobStale) {
+    jobPart = `${jobs.length - jobErr - jobStale}/${jobs.length} jobs on schedule`;
+  } else {
+    jobPart = `${jobs.length} jobs on schedule`;
+  }
+
+  const parts = [srcPart, jobPart];
+  if (fetching) parts.push("fetching now");
+  else if (log.length) parts.push(`last fetch ${ago(log[0].started_at)}`);
+
+  el.dataset.tone = tone;
+  el.hidden = false;
+  $('[data-role="verdict-head"]').textContent = head;
+  $('[data-role="verdict-detail"]').textContent = parts.join(` ${DASH} `);
+}
+
 function renderBanner(jobs) {
   const banner = $('[data-role="banner"]');
   if (!banner) return;
@@ -194,6 +256,7 @@ export function initHealth() {
 
   function render(snap) {
     current = snap;
+    renderVerdict(snap);
     $('[data-role="endpoints"]').innerHTML = renderEndpoints(snap.endpoints);
     $('[data-role="jobs"]').innerHTML = renderJobs(snap.jobs);
     $('[data-role="log"]').innerHTML = renderLog(snap.log);

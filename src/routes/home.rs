@@ -17,6 +17,7 @@ use crate::compute::{self, Sparkline};
 use crate::market;
 use crate::models;
 use crate::render::render;
+use crate::summary::{market_verdict, vix_tone};
 use crate::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -465,79 +466,6 @@ fn breadth(stocks: &[StockRow]) -> Breadth {
         b.flat_w = (100.0 - b.up_w - b.down_w).max(0.0);
     }
     b
-}
-
-/// A VIX level read into one plain word. The bands suit the ^VIX cash gauge:
-/// sub-14 is a placid tape, the teens are normal, the low-20s start to show
-/// stress, and 28+ is outright fear.
-fn vix_tone(level: f64) -> &'static str {
-    match level {
-        v if v < 14.0 => "calm",
-        v if v < 20.0 => "steady",
-        v if v < 28.0 => "elevated",
-        _ => "stressed",
-    }
-}
-
-/// Blend the broad-market move, breadth, and the VIX read into the hero's
-/// two-line verdict. `broad_pct` is the lead index card's day change (the cash
-/// S&P during the regular session, its future outside it); `green_pct` the
-/// share of curated stocks green; `vix_level` / `vix_pct` the volatility gauge
-/// and its move. Returns `(lead, detail)`. A descriptive read of the tape, not
-/// a forecast — direction comes from the broad move, falling back to breadth
-/// when the index is flat; width and risk tone colour the wording.
-fn market_verdict(
-    broad_pct: Option<f64>,
-    green_pct: Option<u8>,
-    vix_level: Option<f64>,
-    vix_pct: Option<f64>,
-) -> (String, String) {
-    // Direction: the broad index move is the headline truth, so the verdict's
-    // direction tracks its sign — never the opposite of the "S&P +x%" figure
-    // shown beside it. A near-flat index (|move| < 0.05%) reads as mixed even if
-    // breadth skews, since that is genuinely a directionless tape. Breadth only
-    // sets direction when there is no index price at all (e.g. it never quoted).
-    // 1 up / -1 down / 0 flat.
-    let dir = match broad_pct {
-        Some(p) if p > 0.05 => 1,
-        Some(p) if p < -0.05 => -1,
-        Some(_) => 0,
-        None => match green_pct {
-            Some(g) if g >= 55 => 1,
-            Some(g) if g <= 45 => -1,
-            _ => 0,
-        },
-    };
-    // Breadth width: 2 broad / 1 split / 0 narrow.
-    let width = match green_pct {
-        Some(g) if g >= 60 => 2,
-        Some(g) if g <= 40 => 0,
-        _ => 1,
-    };
-    let vix_rising = vix_pct.is_some_and(|p| p > 4.0);
-    let vix_elevated = vix_level.is_some_and(|v| v >= 20.0);
-
-    let lead = match (dir, width) {
-        (1, 2) if !vix_elevated => "Risk-on, and broad.",
-        (1, 2) => "Higher across the board.",
-        (1, 0) => "Higher, but narrow.",
-        (1, _) => "Modestly higher.",
-        (-1, _) if vix_rising || vix_elevated => "Risk-off.",
-        (-1, 0) => "Broadly lower.",
-        (-1, _) => "Softer today.",
-        _ => "Quiet, mixed tape.",
-    };
-    let move_word = match dir {
-        1 => "higher",
-        -1 => "lower",
-        _ => "little changed",
-    };
-    let part_word = match width {
-        2 => "wide participation",
-        0 => "narrow participation",
-        _ => "mixed participation",
-    };
-    (lead.to_string(), format!("Markets {move_word} with {part_word}."))
 }
 
 /// Assemble the hero from the already-loaded index + commodity cards and the

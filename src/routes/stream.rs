@@ -99,6 +99,9 @@ async fn stream(
                 Ok(StreamEvent::Market { session }) => {
                     yield Ok(sse_market(&session));
                 }
+                Ok(StreamEvent::Summary(s)) => {
+                    yield Ok(sse_summary(&s));
+                }
                 Ok(StreamEvent::Health) => {
                     yield Ok(sse_health());
                 }
@@ -165,6 +168,14 @@ fn sse_market(session: &str) -> Event {
     Event::default()
         .event("market")
         .data(format!("{{\"session\":\"{session}\"}}"))
+}
+
+/// The recomputed dashboard market summary (Phase 7). An open `/` page patches
+/// its hero verdict + headline figures + breadth from this payload.
+fn sse_summary(s: &crate::summary::MarketSummary) -> Event {
+    Event::default()
+        .event("summary")
+        .data(serde_json::to_string(s).unwrap_or_default())
 }
 
 /// A content-free nudge: an open `/health` page answers it by pulling a fresh

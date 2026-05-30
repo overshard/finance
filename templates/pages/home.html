@@ -24,16 +24,18 @@
 
   {# Hero (Phase 5): a one-line plain read of the day — the broad move, breadth,
      and the VIX risk tone blended into a verdict — over a compact index strip.
-     A page-load snapshot: the verdict is descriptive, not a forecast, so the
-     non-advice note rides with it. #}
-  <section class="hero">
+     Rendered at page load, then kept live (Phase 7): the scheduler pushes a
+     recomputed `summary` over the stream as the indexes tick, and home.js
+     patches the verdict, the figures, and the breadth band below in place. The
+     data-role hooks are those patch targets. #}
+  <section class="hero" data-role="hero">
     <div class="hero__read">
-      <p class="hero__verdict">{{ hero.verdict }}</p>
-      <p class="hero__detail">{{ hero.detail }}</p>
+      <p class="hero__verdict" data-role="hero-verdict">{{ hero.verdict }}</p>
+      <p class="hero__detail" data-role="hero-detail">{{ hero.detail }}</p>
       <p class="hero__stats">
-        {% if hero.broad_pct is not none %}<span class="hero__stat">S&amp;P <span class="num {{ 'is-up' if hero.broad_pct >= 0 else 'is-down' }}">{{ hero.broad_pct|pct }}</span></span>{% endif %}
-        {% if hero.green_pct is not none %}<span class="hero__stat"><span class="num">{{ hero.green_pct }}%</span> of the S&amp;P green</span>{% endif %}
-        {% if hero.vix_label %}<span class="hero__stat">VIX {{ hero.vix_label }}</span>{% endif %}
+        {% if hero.broad_pct is not none %}<span class="hero__stat">S&amp;P <span class="num {{ 'is-up' if hero.broad_pct >= 0 else 'is-down' }}" data-role="hero-broad">{{ hero.broad_pct|pct }}</span></span>{% endif %}
+        {% if hero.green_pct is not none %}<span class="hero__stat"><span class="num" data-role="hero-green">{{ hero.green_pct }}%</span> of the S&amp;P green</span>{% endif %}
+        {% if hero.vix_label %}<span class="hero__stat">VIX <span data-role="hero-vix">{{ hero.vix_label }}</span></span>{% endif %}
       </p>
       <p class="hero__note">A plain read of today&rsquo;s tape &mdash; not investment advice.</p>
     </div>
@@ -64,18 +66,18 @@
   <h2 class="section-title">Breadth{% if movers_asof %}<span class="section-title__asof">prices as of {{ movers_asof|asof }}</span>{% endif %}</h2>
   <p class="section-note">How many of the curated large-cap stocks are advancing
      versus declining today, and the share trading green.</p>
-  <div class="breadth">
+  <div class="breadth" data-role="breadth">
     <div class="breadth__stats">
-      <span class="breadth__stat breadth__stat--up"><span class="breadth__num num">{{ breadth.advancers }}</span> advancing</span>
-      <span class="breadth__stat breadth__stat--down"><span class="breadth__num num">{{ breadth.decliners }}</span> declining</span>
-      {% if breadth.unchanged %}<span class="breadth__stat breadth__stat--flat"><span class="breadth__num num">{{ breadth.unchanged }}</span> flat</span>{% endif %}
-      {% if breadth.pct_green is not none %}<span class="breadth__pct num">{{ breadth.pct_green }}% green</span>{% endif %}
+      <span class="breadth__stat breadth__stat--up"><span class="breadth__num num" data-role="breadth-adv">{{ breadth.advancers }}</span> advancing</span>
+      <span class="breadth__stat breadth__stat--down"><span class="breadth__num num" data-role="breadth-dec">{{ breadth.decliners }}</span> declining</span>
+      {% if breadth.unchanged %}<span class="breadth__stat breadth__stat--flat"><span class="breadth__num num" data-role="breadth-flat">{{ breadth.unchanged }}</span> flat</span>{% endif %}
+      {% if breadth.pct_green is not none %}<span class="breadth__pct num" data-role="breadth-pct">{{ breadth.pct_green }}% green</span>{% endif %}
     </div>
-    <div class="breadth__bar" role="img"
+    <div class="breadth__bar" role="img" data-role="breadth-bar"
          aria-label="{{ breadth.advancers }} advancing, {{ breadth.decliners }} declining of {{ breadth.total }} stocks">
-      <span class="breadth__seg breadth__seg--up" style="width: {{ breadth.up_w }}%"></span>
-      <span class="breadth__seg breadth__seg--flat" style="width: {{ breadth.flat_w }}%"></span>
-      <span class="breadth__seg breadth__seg--down" style="width: {{ breadth.down_w }}%"></span>
+      <span class="breadth__seg breadth__seg--up" style="width: {{ breadth.up_w }}%" data-role="breadth-up"></span>
+      <span class="breadth__seg breadth__seg--flat" style="width: {{ breadth.flat_w }}%" data-role="breadth-flat-seg"></span>
+      <span class="breadth__seg breadth__seg--down" style="width: {{ breadth.down_w }}%" data-role="breadth-down"></span>
     </div>
   </div>
   {% endif %}
@@ -201,3 +203,5 @@
   {% endif %}
 </div>
 {% endblock %}
+
+{% block extra_js %}<script type="module" src="{{ vite_asset('static_src/home/index.js') }}"></script>{% endblock %}

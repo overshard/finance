@@ -437,22 +437,111 @@ main {
   flex: 1 0 auto;
 }
 
+/* Two-tier footer (Phase 7): a multi-column upper block (About / Pages /
+   Elsewhere) over a slim copyright bar. Mirrors the sibling apps' shape in
+   Paper Ledger tokens — warm-paper wash, hairline rules, `// LABEL` mono
+   column headers. */
 .footer {
   border-top: 1px solid var(--rule);
   background: var(--paper-edge);
-  margin-top: 52px;
-  /* the extra bottom room clears the fixed bottom nav on phones; the
-     desktop block below trims it back since desktop has no bottom nav */
-  padding: 22px 16px calc(22px + 64px + env(safe-area-inset-bottom));
-  color: var(--ink-faint);
-  font-size: 0.8rem;
-  text-align: center;
+  margin-top: 56px;
+  padding-top: 40px;
+  padding-bottom: 36px;
 }
 
-.footer a {
-  color: var(--ink-dim);
-  text-decoration: underline;
-  text-underline-offset: 2px;
+.footer__grid {
+  display: grid;
+  gap: 36px;
+  grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1fr);
+
+  @media (max-width: 640px) {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 28px 24px;
+  }
+}
+
+.footer__label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 14px;
+}
+
+.footer__about {
+  /* the lede column spans the full width before the link columns wrap under it */
+  @media (max-width: 640px) {
+    grid-column: 1 / -1;
+  }
+
+  p {
+    color: var(--ink-dim);
+    font-size: var(--fs-sm);
+    line-height: 1.65;
+    margin: 0 0 12px;
+    max-width: 52ch;
+  }
+}
+
+.footer__attrib {
+  color: var(--ink-faint);
+  font-size: var(--fs-xs);
+
+  span { color: var(--ink-dim); }
+  strong { color: var(--ink-dim); font-weight: 600; }
+}
+
+.footer__col {
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  li { margin-bottom: 9px; }
+
+  a {
+    color: var(--ink-dim);
+    font-size: var(--fs-sm);
+    text-decoration: none;
+    transition: color 150ms ease;
+
+    &:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+  }
+}
+
+/* Slim copyright bar, like blog/status/analytics/repos. It is the last element
+   before the fixed mobile bottom-nav, so it carries the nav clearance on
+   phones; the desktop block below trims it back. */
+.footer-bar {
+  border-top: 1px solid var(--rule);
+  background: var(--paper-edge);
+  padding: 14px 0 calc(14px + 64px + env(safe-area-inset-bottom));
+  color: var(--ink-faint);
+  font-size: var(--fs-xs);
+}
+
+.footer-bar__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+
+  @media (max-width: 480px) {
+    flex-direction: column;
+    gap: 10px;
+    text-align: center;
+  }
+}
+
+.footer-bar__link {
+  display: inline-flex;
+  color: var(--ink-faint);
+  transition: color 150ms ease;
+
+  &:hover { color: var(--ink); }
 }
 
 /* ---------- empty state ---------- */
@@ -766,9 +855,9 @@ button:focus-visible {
     display: none;
   }
 
-  /* no bottom nav on desktop, so the footer needs no clearance for it */
-  .footer {
-    padding-bottom: 22px;
+  /* no bottom nav on desktop, so the copyright bar needs no clearance for it */
+  .footer-bar {
+    padding-bottom: 14px;
   }
 
   .wrap {

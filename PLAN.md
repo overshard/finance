@@ -34,7 +34,7 @@ commit + auto-deploy (`git push server master`) and a clean breakpoint.
 
 ## Status
 
-_Last updated: 2026-05-30 (Phase 6 done on dev; commit + deploy pending)_
+_Last updated: 2026-05-30 (Phase 7 done on dev; commit + deploy pending)_
 
 **Major refactor in progress (the "distill + ETF-first" rewrite).** This plan
 was fully rewritten 2026-05-30 from a sprawling 3,700-line resume doc into this
@@ -54,10 +54,56 @@ focused roadmap. The decisions driving it are in the Decisions log under
 - **Everything gets distilled** into a fast-scannable, dual-first (mobile +
   desktop) design while keeping the futuristic-clean "Paper Ledger" look.
 
-**Current work:** Phases 1–5 are **done, committed, and deployed** (Phase 5 is
-live at `656e21d`). **Phase 6 is done on dev** (symbol-page distillation + live
-intraday); commit + deploy pending. Next: **Phase 7 (health/systems page
-distillation + footer expansion + final polish).**
+**Current work:** Phases 1–6 are **done, committed, and deployed** (Phase 6 is
+live at `aa8c5f3`). **Phase 7 is done on dev** (health verdict + two-tier footer
++ live market summary); commit + deploy pending. With Phase 7 the roadmap is
+**complete** — remaining items are all in Backlog / parked.
+
+Phase 7 outcome (health distillation + footer + live breadth):
+- **Systems verdict on `/health`.** A one-line plain read distilling the whole
+  page — `● All systems normal · both data sources healthy · N jobs on schedule
+  · last fetch 4m ago` — sits above the Endpoints/Jobs/Log detail. Built
+  client-side in `health.js` (`renderVerdict`) from the same snapshot that drives
+  the detail, so it stays live and never disagrees with it. Tone is the worst
+  thing on the page: a tripped breaker or errored job → bad (red); a recovering
+  breaker or stale job → warn (amber, pulsing dot); else ok (green). A mid-fetch
+  job is normal and doesn't darken the tone (the existing "Fetching now —" banner
+  names it). Verified on dev: reads green "All systems normal · both data sources
+  healthy · 10 jobs on schedule · fetching now" at desktop + mobile.
+- **Two-tier footer (Paper Ledger).** Replaced the single-line footer with the
+  house pattern: a `footer__grid` (About + data attribution / Pages / Elsewhere,
+  `// LABEL` mono headers) over a slim `.footer-bar` (`© {{ now.year }} Isaac
+  Bythewood · Some rights reserved` + a GitHub icon link to
+  `github.com/overshard/finance`). Modeled on `repos` but in Paper Ledger tokens
+  (warm-paper wash, hairline rules, ink text). The stale-Stooq attribution (fixed
+  early in Phase 4) folds into the About column as "Market data via Yahoo Finance
+  · fundamentals & filings via SEC EDGAR · prices are delayed · not investment
+  advice." The `.footer-bar` now carries the mobile bottom-nav clearance (it's the
+  last element before the fixed nav); the desktop block trims it back. Verified:
+  3-up at desktop, About-spans-full + 2-up links at mobile, copyright bar clears
+  the bottom nav.
+- **Live market summary (the Phase-5 deferral).** The hero verdict + headline
+  figures + breadth were page-load snapshots; now a new `src/summary.rs` owns the
+  verdict vocabulary (`market_verdict` + `vix_tone`, moved out of `home.rs` so the
+  page render and the live push share one wording) and a cheap
+  `market_summary(pool, session)` (two aggregate reads: breadth over the curated
+  stocks + the lead index / VIX, resolving last-vs-prev exactly as the home
+  queries do). A new `StreamEvent::Summary` carries it; the scheduler publishes it
+  after an intraday sweep that touched a **pulse ticker** (the broad index or
+  ^VIX — the curated stocks behind breadth only move at the daily close, so a
+  sweep that hit only a viewed stock page is skipped), after `daily_close`, and on
+  a session flip (the lead index swaps cash↔future). `base/stream.js`
+  re-broadcasts it as a `finance:summary` window event; a new `home.js` patches
+  the hero verdict/detail/figures + breadth counts/bar in place — no second
+  EventSource. **The live push couldn't be exercised on dev** (closed-market
+  weekend, no quotes stream — same caveat as Phase 6's live tick); it runs first
+  in prod during market hours. The patcher itself was verified structurally by
+  dispatching a synthetic `finance:summary`: the verdict, all three figures, the
+  breadth counts, and the proportion-bar widths all updated correctly.
+- **Verified on dev:** `cargo build` + `vite build` clean; home + health render at
+  desktop (1280) and mobile (390) with no console errors; the new footer and
+  health verdict read correctly; the synthetic-summary patch updates every hero +
+  breadth node (screenshots reviewed, then deleted).
 
 Phase 6 outcome (symbol-page distillation + live intraday on chart):
 - **1D / 1W intraday range buttons.** Two new ranges at the front of the chart's
@@ -395,7 +441,18 @@ Kill the rate-limit problem at the root.
   Order: price/change → verdict → chart.
 - ✅ Fixed a latent `.ind-btn[hidden]` override bug found in passing.
 
-### Phase 7 — Health/systems page distillation + final polish pass
+### Phase 7 — Health/systems page distillation + final polish pass  ✅ DONE on dev (commit + deploy pending)
+- ✅ **`/health` distilled with a top systems verdict** (the chosen shape): a
+  one-line plain read above the existing detail, computed live in `health.js`.
+- ✅ **Two-tier footer built** (`footer__grid` + `.footer-bar`, Paper Ledger), data
+  attribution folded into the About column.
+- ✅ **Live market summary** (the Phase-5 hero/breadth deferral): `src/summary.rs`
+  + `StreamEvent::Summary` + scheduler publishes + `home.js` patches. Live path
+  runs first in prod (closed-market weekend can't stream on dev).
+- Light cohesion only (per the scope decision); no full cross-page audit.
+- See Status + the 2026-05-30 Phase 7 decisions log for the full outcome.
+
+Original Phase 7 brief (kept for reference):
 - Distill `/health` and overall cross-page cohesion; one closing UI polish pass.
 - **Expand the footer to match the sibling-project pattern.** Finance currently
   has a single-line footer; the user wants it grown "a lot" to match how the
@@ -453,6 +510,32 @@ Kill the rate-limit problem at the root.
 ---
 
 ## Decisions log
+
+**2026-05-30 — Phase 7 (health distillation + footer + live breadth) design forks
+resolved.** Answered 3 clarifying questions before building:
+1. **/health distillation = add a top "verdict" summary** (like the dashboard
+   hero): a one-line plain-language systems read at the top (`● All systems
+   normal · both data sources healthy · N jobs on schedule · last fetch 4m ago`),
+   keeping the existing Endpoints / Background jobs / Activity-log detail below.
+   Computed client-side in `health.js` from the snapshot so it stays live.
+2. **Build live breadth now** (not parked). The Phase-5 hero verdict + breadth
+   were page-load snapshots; add a server-pushed market-summary event on the
+   stream hub so the verdict sentence, the headline figures, and the breadth
+   counts/bar recompute intraday instead of going stale beside the live-ticking
+   index chips. (Runs first in prod during market hours — a closed-market weekend
+   can't stream quotes on dev, like Phase 6's live tick.)
+3. **Polish scope = footer + health properly, light cohesion only.** Build the
+   two-tier footer (modeled on `repos`' `footer__grid`, adapted to Paper Ledger)
+   and the health verdict; do a light spacing/heading cohesion sweep only where
+   quick, rather than a full cross-page audit.
+Implementation shape: a new `src/summary.rs` owns the verdict vocabulary
+(`market_verdict` + `vix_tone`, moved out of `home.rs` so page-load and live push
+share one wording) and a cheap `market_summary(pool, session)` (two aggregate
+reads: breadth over curated stocks + the lead index / VIX). A new
+`StreamEvent::Summary` carries it; the scheduler publishes it after an intraday
+sweep that touched a pulse ticker (the broad index or ^VIX) and after daily_close.
+`base/stream.js` re-broadcasts it as a `finance:summary` window event; a new
+`home.js` patches the hero + breadth DOM in place.
 
 **2026-05-30 — Phase 6 (symbol-page distillation + live intraday).** Answered 3
 design forks before building:

@@ -40,6 +40,7 @@ use crate::providers::{
     PortfolioData, Quote, QuoteProvider,
 };
 use crate::stream::{Hub, QuoteUpdate, StreamEvent};
+use crate::summary;
 use crate::{seed, Config};
 
 /// How often the loop wakes to check whether a job is due. The jobs themselves
@@ -248,6 +249,12 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
                 hub.publish(StreamEvent::Market {
                     session: session.as_str().to_string(),
                 });
+                // The lead index swaps between the cash S&P and its future on a
+                // session change, so the verdict's basis moves — push a fresh
+                // summary so an open dashboard re-reads against the new lead.
+                hub.publish(StreamEvent::Summary(
+                    summary::market_summary(&pool, session).await,
+                ));
                 last_session = Some(session);
             }
 
@@ -742,6 +749,19 @@ async fn run_intraday(
         }
         mark_ok(pool, "intraday", None).await?;
     }
+
+    // If this sweep touched a symbol that moves the dashboard verdict (the broad
+    // index or ^VIX), recompute and push the market summary so an open dashboard
+    // re-reads its hero + figures live. The curated stocks behind breadth don't
+    // move intraday (they only price at the daily close), so a sweep that hit
+    // only a viewed stock page leaves the summary unchanged and we skip it.
+    if ok > 0 {
+        let pulse = summary::pulse_tickers(session);
+        if targets.iter().any(|t| pulse.contains(&t.as_str())) {
+            hub.publish(StreamEvent::Summary(summary::market_summary(pool, session).await));
+        }
+    }
+
     notify_health(hub);
     Ok(())
 }
@@ -860,6 +880,16 @@ async fn run_daily_close_if_due(
             mark_ok(pool, "daily_close", None).await?;
         }
     }
+
+    // The close just re-priced the whole universe, so breadth and the verdict
+    // have moved — push a fresh summary for any dashboard still open after the
+    // bell. Use the live session so the lead index resolves the same way the
+    // page would (the close runs just after 16:00 ET, in the post session).
+    if ok > 0 {
+        let session = market::session_at(chrono::Utc::now());
+        hub.publish(StreamEvent::Summary(summary::market_summary(pool, session).await));
+    }
+
     notify_health(hub);
     Ok(())
 }

@@ -14,6 +14,65 @@
   font-size: 0.6rem;
 }
 
+/* ---------- systems verdict (Phase 7) ----------
+   The distilled top read: a coloured dot + headline + one-line clause. Tones
+   reuse the semantic good/ok/bad tokens; filled live by the page script. */
+.health-verdict {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 18px 0 6px;
+  padding: 14px 16px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.health-verdict[hidden] {
+  display: none;
+}
+
+.health-verdict__dot {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+
+.health-verdict__head {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.health-verdict__detail {
+  margin: 2px 0 0;
+  color: var(--ink-dim);
+  font-size: 0.85rem;
+}
+
+.health-verdict[data-tone="ok"] {
+  border-color: var(--up-soft);
+
+  .health-verdict__dot { background: var(--up); }
+}
+
+.health-verdict[data-tone="warn"] {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+
+  .health-verdict__dot { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+}
+
+.health-verdict[data-tone="bad"] {
+  border-color: var(--down);
+  background: var(--down-soft);
+
+  .health-verdict__dot { background: var(--down); }
+}
+
 /* ---------- "fetching now" banner ---------- */
 .health-banner {
   display: flex;
