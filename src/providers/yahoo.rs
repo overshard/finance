@@ -260,7 +260,10 @@ impl YahooProvider {
     /// Error / "unknown symbol" semantics match [`Self::fetch_chart`].
     async fn fetch_daily(&self, ticker: &str, since: Option<&str>) -> Result<Option<ChartResult>> {
         let sym = urlencoding::encode(&yahoo_symbol(ticker)).into_owned();
-        let window = match since {
+        let chart_url = |window: &str| {
+            format!("https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&{window}")
+        };
+        match since {
             Some(d) => {
                 // Re-fetch from the day before `since` to "now + 1 day" (epoch
                 // seconds). The day-before back-step and the day-ahead end
@@ -273,14 +276,29 @@ impl YahooProvider {
                     .map(|dt| dt.and_utc().timestamp())
                     .unwrap_or(0);
                 let p2 = chrono::Utc::now().timestamp() + 86_400;
-                format!("period1={p1}&period2={p2}")
+                self.request_chart(&chart_url(&format!("period1={p1}&period2={p2}")))
+                    .await
             }
-            None => "range=max".to_string(),
-        };
-        let url = format!(
-            "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&{window}"
-        );
-        self.request_chart(&url).await
+            None => {
+                // Deep backfill: ask for the full history. Yahoo honours
+                // `interval=1d` at `range=max` for most symbols (full daily
+                // history, e.g. ^SPX back to the 1700s), but silently
+                // downsamples it to monthly / quarterly bars for some index and
+                // futures symbols (^RUT, ^VIX, the `=F` futures) even though a
+                // daily interval was requested. When that happens, refetch a
+                // bounded 10-year window, which Yahoo *does* serve at daily
+                // granularity — far better for a daily chart than coarse
+                // max-range bars. (Costs one extra request for those few
+                // symbols, once per deep backfill.)
+                let res = self.request_chart(&chart_url("range=max")).await?;
+                match &res {
+                    Some(r) if is_downsampled(r) => {
+                        self.request_chart(&chart_url("range=10y")).await
+                    }
+                    _ => Ok(res),
+                }
+            }
+        }
     }
 
     /// GET a v8 chart URL and parse it into at most one [`ChartResult`].
@@ -862,6 +880,29 @@ fn chart_to_quote_data(ticker: &str, result: ChartResult) -> Result<QuoteData> {
     }
 
     Ok(QuoteData { quote, bars })
+}
+
+/// True when a supposedly-daily chart response is actually coarser than daily.
+///
+/// Yahoo silently downsamples `interval=1d&range=max` to monthly / quarterly
+/// bars for some index and futures symbols (^RUT, ^VIX, the `=F` futures),
+/// ignoring the requested interval. Detect it from the *median* spacing of the
+/// returned timestamps: the *median* gap of a genuine daily series is 1 day
+/// (consecutive trading days; only weekends and holidays stretch it to 3-4),
+/// while a weekly series medians ~7 days and a monthly one ~30. A median over
+/// four days therefore means the series is coarser than daily. Fewer than three
+/// bars carries no usable spacing, so it is treated as fine.
+fn is_downsampled(result: &ChartResult) -> bool {
+    let Some(ts) = result.timestamp.as_ref() else {
+        return false;
+    };
+    if ts.len() < 3 {
+        return false;
+    }
+    let mut gaps: Vec<i64> = ts.windows(2).map(|w| w[1] - w[0]).collect();
+    gaps.sort_unstable();
+    let median = gaps[gaps.len() / 2];
+    median > 4 * 86_400
 }
 
 /// Turn a parsed `interval=1d` chart result into daily bars, oldest first.

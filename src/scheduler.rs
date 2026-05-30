@@ -367,6 +367,18 @@ async fn reset_states_on_boot(pool: &SqlitePool) -> sqlx::Result<()> {
 /// boot, the handful of symbols the seed just touched.
 async fn run_boot_seed(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Result<()> {
     if get_meta(pool, "seed_completed").await?.as_deref() == Some("1") {
+        // The full backfill is done, but still reconcile the curated list each
+        // boot so a CSV edit (symbols added to or dropped from the universe)
+        // takes effect on deploy without a manual re-seed. This is local-only
+        // and cheap; any newly-added symbol's history is backfilled by the
+        // incremental `run_history` job (it picks up `history_synced_at IS NULL`).
+        match seed::sync_universe(pool, config).await {
+            Ok(r) if r.pruned > 0 => {
+                tracing::info!("[scheduler] universe sync: {} symbols, {} pruned", r.total, r.pruned)
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("[scheduler] universe sync: {e:#}"),
+        }
         return Ok(());
     }
     tracing::info!("[scheduler] seed_completed unset: running first-run seed");
@@ -416,6 +428,29 @@ async fn run_boot_seed(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow:
 /// appends each symbol's bar (and stamps `history_synced_at`), so nothing is
 /// stale here. It still earns its keep for symbols missed while the server was
 /// down at the close, weekends, and freshly added tickers.
+/// True when a stored daily series is actually coarser than daily, judged from
+/// its *recent* density: `recent_bars` is the number of bars in the trailing 90
+/// days of the series, which is ~63 for a genuine daily series (trading days),
+/// ~13 for weekly and ~3 for monthly — so under 30 means coarser than daily.
+/// Only judged once the series spans more than 180 days, so a young-but-daily
+/// symbol is not flagged for merely having a short history. Mirrors the SQL test
+/// in [`run_history`]'s selection query.
+fn is_coarser_than_daily(first: &Option<String>, last: &Option<String>, recent_bars: i64) -> bool {
+    let (Some(f), Some(l)) = (first, last) else {
+        return false;
+    };
+    if f == l {
+        return false;
+    }
+    let (Ok(fd), Ok(ld)) = (
+        chrono::NaiveDate::parse_from_str(f, "%Y-%m-%d"),
+        chrono::NaiveDate::parse_from_str(l, "%Y-%m-%d"),
+    ) else {
+        return false;
+    };
+    (ld - fd).num_days() > 180 && recent_bars < 30
+}
+
 async fn run_history(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Result<()> {
     let started = now_ms();
     let next = started + HISTORY_INTERVAL_SECS * 1000;
@@ -427,11 +462,40 @@ async fn run_history(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::R
     // exactly as a seeded one does. (The seed itself stays curated-list-only;
     // it is the only job that keys on `is_seeded`.) Futures are included now —
     // Yahoo serves `=F` daily history, unlike the Stooq source this replaced.
+    // A symbol is refreshed when any of these hold:
+    //   - its history has gone stale (the normal incremental case);
+    //   - it holds a single stored bar (`history_first_date = history_last_date`)
+    //     — a symbol added after the initial seed whose `history_last_date` was
+    //     stamped by a `daily_close` snapshot before any range=max backfill ran,
+    //     so the incremental window can never reach its deep history;
+    //   - its stored history is coarser than daily. Yahoo silently downsamples
+    //     `interval=1d` to weekly / monthly bars when a range spans many years
+    //     (see `YahooProvider::is_downsampled`), so a symbol first backfilled via
+    //     range=max can hold monthly bars. Detect it by *recent* density — the
+    //     bar count in the trailing 90 days of the series: a daily series carries
+    //     ~63 (trading days), a weekly one ~13, a monthly one ~3, so fewer than
+    //     30 means coarser than daily. The trailing window (rather than whole-
+    //     span density) is what keeps a deep symbol with a sparse pre-modern tail
+    //     — e.g. ^SPX, daily for decades but with century-old gaps — from being
+    //     misread as coarse. Only judged once a symbol spans over 180 days, so a
+    //     young-but-daily symbol is not flagged for its short history.
+    // The last two are selected regardless of staleness so the heal is not gated
+    // behind the stale cutoff; both are repaired with a full daily re-fetch (the
+    // `deep` branch below). `recent_bars` rides along so the same test can pick
+    // the fetch window without a second query.
     let cutoff = started - HISTORY_STALE_SECS * 1000;
-    let stale: Vec<(String, Option<String>)> = sqlx::query_as(
-        "SELECT ticker, history_last_date FROM symbols \
-         WHERE history_synced_at IS NULL OR history_synced_at < ? \
-         ORDER BY ticker",
+    let stale: Vec<(String, Option<String>, Option<String>, i64)> = sqlx::query_as(
+        "SELECT s.ticker, s.history_first_date, s.history_last_date, \
+                (SELECT COUNT(*) FROM daily_prices d WHERE d.ticker = s.ticker \
+                   AND d.d >= date(s.history_last_date, '-90 days')) AS recent_bars \
+         FROM symbols s \
+         WHERE s.history_synced_at IS NULL OR s.history_synced_at < ? \
+            OR s.history_first_date = s.history_last_date \
+            OR (s.history_last_date IS NOT NULL \
+                AND julianday(s.history_last_date) - julianday(s.history_first_date) > 180 \
+                AND (SELECT COUNT(*) FROM daily_prices d WHERE d.ticker = s.ticker \
+                       AND d.d >= date(s.history_last_date, '-90 days')) < 30) \
+         ORDER BY s.ticker",
     )
     .bind(cutoff)
     .fetch_all(pool)
@@ -459,7 +523,7 @@ async fn run_history(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::R
     let mut total_bars = 0i64;
     let mut stopped: Option<String> = None;
 
-    for (ticker, last_date) in &stale {
+    for (ticker, first_date, last_date, recent_bars) in &stale {
         match guard.acquire().await? {
             Permit::Granted => {}
             Permit::Denied(why) => {
@@ -467,9 +531,28 @@ async fn run_history(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::R
                 break;
             }
         }
-        match yahoo.daily(ticker, last_date.as_deref()).await {
+        // Decide the fetch window. A symbol with no full daily history yet —
+        // none stored, a single bar, or a coarser-than-daily series — needs a
+        // deep re-fetch, so ask for range=max (`None`); the provider re-asks a
+        // bounded window when Yahoo downsamples it. Everything else just wants
+        // the incremental window since its last stored bar.
+        let single_bar = first_date.is_some() && first_date == last_date;
+        let coarse = is_coarser_than_daily(first_date, last_date, *recent_bars);
+        let deep = last_date.is_none() || single_bar || coarse;
+        let since = if deep { None } else { last_date.as_deref() };
+        match yahoo.daily(ticker, since).await {
             Ok(bars) if !bars.is_empty() => {
                 guard.record_success().await?;
+                // A coarse series is replaced, not merged: drop its weekly /
+                // monthly bars so the fresh daily ones do not interleave with
+                // leftover old-granularity bars. Done only once we have new
+                // bars in hand, so the symbol is never left empty.
+                if coarse {
+                    sqlx::query("DELETE FROM daily_prices WHERE ticker = ?")
+                        .bind(ticker)
+                        .execute(pool)
+                        .await?;
+                }
                 total_bars += bars.len() as i64;
                 seed::store_daily(pool, ticker, &bars).await?;
                 ok += 1;

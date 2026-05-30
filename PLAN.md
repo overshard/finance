@@ -34,7 +34,7 @@ commit + auto-deploy (`git push server master`) and a clean breakpoint.
 
 ## Status
 
-_Last updated: 2026-05-30_
+_Last updated: 2026-05-30 (Phase 2 complete on dev)_
 
 **Major refactor in progress (the "distill + ETF-first" rewrite).** This plan
 was fully rewritten 2026-05-30 from a sprawling 3,700-line resume doc into this
@@ -54,13 +54,39 @@ focused roadmap. The decisions driving it are in the Decisions log under
 - **Everything gets distilled** into a fast-scannable, dual-first (mobile +
   desktop) design while keeping the futuristic-clean "Paper Ledger" look.
 
-**Current work:** Phase 1 (Yahoo-only data layer) is **complete, verified, and
-deployed to production** 2026-05-30 (commit `76f38f4`). Verified end to end on
-the dev box: a fresh add-symbol backfilled DocuSign to 424 daily bars from
-Yahoo (`range=max`) with correct IPO-dated history (first bar 2018-04-23),
-`history_first_date`/`last_date` set correctly, charts render, `/api/health`
-shows only `yahoo` + `sec` (the `stooq` guard row is deleted on boot). Next:
-**Phase 2 (universe curation)**.
+**Current work:** Phase 2 (universe curation) is **complete and verified on the
+dev box**; commit + deploy pending. Next: **Phase 3 (drop short-horizon
+prediction → quality leaderboard)**.
+
+Phase 2 outcome:
+- **Stocks reconciled to the current S&P 500.** Fetched the live Wikipedia
+  constituent list (503) and diffed against ours: an exact match, zero changes
+  needed — the stock list was already current.
+- **ETF roster curated to iShares + Vanguard (43 ETFs).** Dropped the
+  other-issuer thematic/sector funds (SMH, ARKK, SCHD, XLK/XLF/XLE/XLV); kept
+  the SPY/QQQ/DIA/GLD/SLV proxies; added the most-common Vanguard + iShares
+  funds incl. the core holdings IAU, IBIT, VBIL. Issuer/category tags come from
+  the existing Yahoo `fund_metadata` (no new schema) per the user's choice.
+- **Seed now reconciles on every boot.** `seed::sync_universe` (upsert + prune)
+  runs each boot via `run_boot_seed`, so a CSV edit (symbols added or dropped)
+  takes effect on deploy without a manual re-seed. Pruning is `is_seeded = 1 AND
+  ticker NOT IN (csv)`, cascading cleanly; user-added symbols (`is_seeded = 0`)
+  are never touched. This also swept up 7 stale rows an older non-pruning seed
+  had left behind (MSTR, NET, RIVN, SHOP, SNOW, SOFI, MRVL — popular names from
+  a pre-S&P-narrowing universe; none are current S&P 500 members). **If the user
+  wants those back, that's a separate "popular non-S&P watchlist" decision (see
+  backlog).**
+- **Fixed a Phase-1 data-quality bug: Yahoo `range=max` downsampling.** Yahoo
+  silently returns weekly/monthly bars for `interval=1d&range=max` on symbols
+  with long histories (all the futures, ^RUT/^VIX, and every freshly-backfilled
+  multi-year ETF were monthly; some were 1-bar). Two-part fix: the provider
+  refetches a bounded `range=10y` window (which Yahoo serves at true daily
+  granularity) when it detects a downsampled response; and `run_history`
+  self-heals stored coarse/single-bar series (recent-density test) by replacing
+  them with a clean daily re-fetch — so **prod self-heals on deploy**. Verified:
+  every seeded symbol now holds genuine daily bars (median gap 1 day), no
+  symbol is 1-bar, ^SPX's deep daily history (back to 1789) is preserved, and
+  the density test flags zero false positives across all 562 symbols.
 
 **Dev server:** kept running in the background via `make` during sessions so
 the user can review progress live.
@@ -186,14 +212,17 @@ Kill the rate-limit problem at the root.
 - Verify: guard never trips during a full backfill; `daily_prices` populates;
   charts render; `/health` shows no stooq endpoint.
 
-### Phase 2 — Universe curation (S&P 500 + indexes + commodities + iShares/Vanguard ETFs)
-- Reconcile the ~503 stocks to the current S&P 500 constituents.
-- Curate ETFs to iShares + Vanguard families, guaranteeing the user's core
-  holdings (VTI, VXUS, IAU, IBIT, VBIL, …). Tag each ETF with issuer/family and
-  a category for the dashboard separation.
-- Confirm major indexes; decide index-futures (ES/NQ/YM) vs pure commodities
-  (CL/BZ/GC/SI/HG/NG) — user said "major commodities," lean to commodities.
-- Re-seed; confirm history backfills cleanly via the Phase 1 Yahoo path.
+### Phase 2 — Universe curation  ✅ DONE on dev (commit + deploy pending)
+- ✅ Reconciled the 503 stocks to the current S&P 500 (fetch + diff: exact match).
+- ✅ Curated ETFs to iShares + Vanguard (43 total): dropped other-issuer
+  thematic/sector funds, kept SPY/QQQ/DIA/GLD/SLV proxies, added the
+  most-common Vanguard + iShares funds incl. core holdings IAU/IBIT/VBIL.
+  Issuer/category tags reuse the Yahoo `fund_metadata` (no new schema).
+- ✅ Kept the 6 indexes and all 10 futures (4 index-futures + 6 commodities).
+- ✅ `seed::sync_universe` now reconciles (upsert + prune) on every boot, so CSV
+  edits take effect on deploy. Pruned 7 stale non-S&P leftovers in passing.
+- ✅ Fixed Yahoo `range=max` downsampling (provider 10y fallback + `run_history`
+  self-heal); every seeded symbol now holds true daily bars.
 
 ### Phase 3 — Drop short-horizon prediction → quality leaderboard + home de-dup
 - Remove Day/Week picks and the short-horizon backtest machinery.
@@ -233,12 +262,33 @@ Kill the rate-limit problem at the root.
 ### Backlog / parked
 - Watchlists (tables exist, unused — user wants an opinionated no-customization
   view for now).
+- **Popular non-S&P watchlist.** Phase 2 narrowed stocks to exactly the S&P 500,
+  which dropped some popular names the universe used to carry (MSTR, NET, RIVN,
+  SHOP, SNOW, SOFI, MRVL). Add them back as an opt-in "popular / most-watched"
+  band if the user wants them.
 - Issuer-direct ETF feeds (iShares/Vanguard) if Yahoo/SEC prove thin.
 - Deep pre-2000 history (lost with Stooq; revisit only if charts feel thin).
+  Note: index/futures daily history via Yahoo caps at ~10y (the `range=10y`
+  fallback); ^SPX/^DJI/^NDX still carry deep daily history from before.
 
 ---
 
 ## Decisions log
+
+**2026-05-30 — Phase 2 (universe curation).** Answered 4 clarifying questions:
+1. **ETF roster:** keep iShares + Vanguard + the SPY/QQQ/DIA/GLD/SLV proxies;
+   drop other-issuer thematic/sector funds; add the most-common Vanguard +
+   iShares funds. Landed at 43 ETFs.
+2. **Core holdings:** "get the most common Vanguard and iShares funds" (not just
+   the named IAU/IBIT/VBIL) — drove the broadened ETF set above.
+3. **ETF tags:** reuse Yahoo `fund_metadata.category` / `fund_family` for the
+   dashboard band separation; no new schema/migration.
+4. **S&P 500 recon:** fetch the live constituent list and diff to match exactly
+   (result: already an exact match).
+Plus, surfaced and fixed during verification: the seed never reconciled on
+re-boot (now does, via `sync_universe`), and Yahoo `range=max` silently
+downsamples `interval=1d` to weekly/monthly for long-history symbols (fixed in
+the provider + a `run_history` self-heal). See Status for the full outcome.
 
 **2026-05-30 — The "distill + ETF-first" refactor kickoff.** User steered a
 broad refactor; answered 10 clarifying questions. Decisions:
@@ -283,6 +333,21 @@ from this doc to keep it scannable.
 
 ## Hard-won lessons (don't relearn these)
 
+- **Yahoo `range=max` silently downsamples `interval=1d`.** For symbols with
+  long histories (futures, ^RUT/^VIX, multi-year ETFs) the v8 chart endpoint
+  returns weekly/monthly bars even when a daily interval is asked for — and for
+  some it returned a single bar. A *bounded* window (`range=10y`, or explicit
+  `period1`/`period2`) is served at true daily granularity. The provider detects
+  a downsampled `range=max` response (median timestamp gap > 4 days) and refetches
+  10y; `run_history` self-heals already-stored coarse/single-bar series (it flags
+  a symbol with < 30 bars in its trailing 90 days, replacing them with a daily
+  re-fetch). Detect coarseness from *recent* spacing, not whole-span density —
+  ^SPX has daily data for decades but a sparse pre-1900 tail, and a whole-span
+  test wrongly flags it.
+- **The seed must reconcile on every boot, not only first-run.** `seed_completed`
+  gates the history *backfill*, but `sync_universe` (upsert + prune) runs each
+  boot so a `starter.csv` edit (symbols added or dropped) takes effect on deploy.
+  Pruning keys on `is_seeded = 1` so user-added symbols are safe.
 - **Yahoo `quoteSummary` is crumb-gated.** Must prime `fc.yahoo.com` + fetch
   `/v1/test/getcrumb` with cookies, cache the crumb, rotate on 401/403. Already
   implemented in `src/providers/yahoo.rs`.

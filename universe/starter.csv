@@ -5,34 +5,49 @@ ticker,name,kind,exchange,benchmark
 ^NDQ,Nasdaq Composite,index,,
 ^RUT,Russell 2000,index,,
 ^VIX,CBOE Volatility Index,index,,
-SPY,SPDR S&P 500 ETF Trust,etf,NYSEARCA,^SPX
-VOO,Vanguard S&P 500 ETF,etf,NYSEARCA,^SPX
-IVV,iShares Core S&P 500 ETF,etf,NYSEARCA,^SPX
-VTI,Vanguard Total Stock Market ETF,etf,NYSEARCA,^SPX
-QQQ,Invesco QQQ Trust,etf,NASDAQ,^NDX
-DIA,SPDR Dow Jones Industrial Average ETF,etf,NYSEARCA,^DJI
-IWM,iShares Russell 2000 ETF,etf,NYSEARCA,^RUT
-VEA,Vanguard FTSE Developed Markets ETF,etf,NYSEARCA,
-VWO,Vanguard FTSE Emerging Markets ETF,etf,NYSEARCA,
-VUG,Vanguard Growth ETF,etf,NYSEARCA,^SPX
-VTV,Vanguard Value ETF,etf,NYSEARCA,^SPX
-SCHD,Schwab US Dividend Equity ETF,etf,NYSEARCA,^SPX
-VIG,Vanguard Dividend Appreciation ETF,etf,NYSEARCA,^SPX
-VYM,Vanguard High Dividend Yield ETF,etf,NYSEARCA,^SPX
-VXUS,Vanguard Total International Stock ETF,etf,NASDAQ,
-BND,Vanguard Total Bond Market ETF,etf,NASDAQ,
-AGG,iShares Core US Aggregate Bond ETF,etf,NYSEARCA,
-TLT,iShares 20+ Year Treasury Bond ETF,etf,NASDAQ,
-GLD,SPDR Gold Shares,etf,NYSEARCA,
-SLV,iShares Silver Trust,etf,NYSEARCA,
-XLK,Technology Select Sector SPDR Fund,etf,NYSEARCA,^SPX
-XLF,Financial Select Sector SPDR Fund,etf,NYSEARCA,^SPX
-XLE,Energy Select Sector SPDR Fund,etf,NYSEARCA,^SPX
-XLV,Health Care Select Sector SPDR Fund,etf,NYSEARCA,^SPX
-SMH,VanEck Semiconductor ETF,etf,NASDAQ,^NDX
-ARKK,ARK Innovation ETF,etf,NYSEARCA,^NDX
-EFA,iShares MSCI EAFE ETF,etf,NYSEARCA,
-EEM,iShares MSCI Emerging Markets ETF,etf,NYSEARCA,
+SPY,SPDR S&P 500 ETF Trust,etf,,^SPX
+VOO,Vanguard S&P 500 ETF,etf,,^SPX
+IVV,iShares Core S&P 500 ETF,etf,,^SPX
+VTI,Vanguard Total Stock Market ETF,etf,,^SPX
+ITOT,iShares Core S&P Total U.S. Stock Market ETF,etf,,^SPX
+QQQ,Invesco QQQ Trust,etf,,^NDX
+DIA,SPDR Dow Jones Industrial Average ETF,etf,,^DJI
+VUG,Vanguard Growth ETF,etf,,^SPX
+VTV,Vanguard Value ETF,etf,,^SPX
+IWF,iShares Russell 1000 Growth ETF,etf,,^SPX
+IWD,iShares Russell 1000 Value ETF,etf,,^SPX
+VIG,Vanguard Dividend Appreciation ETF,etf,,^SPX
+VYM,Vanguard High Dividend Yield ETF,etf,,^SPX
+VO,Vanguard Mid-Cap ETF,etf,,^SPX
+IJH,iShares Core S&P Mid-Cap ETF,etf,,^SPX
+VB,Vanguard Small-Cap ETF,etf,,^RUT
+IJR,iShares Core S&P Small-Cap ETF,etf,,^RUT
+IWM,iShares Russell 2000 ETF,etf,,^RUT
+VGT,Vanguard Information Technology ETF,etf,,^SPX
+VNQ,Vanguard Real Estate ETF,etf,,^SPX
+VXUS,Vanguard Total International Stock ETF,etf,,
+IXUS,iShares Core MSCI Total International Stock ETF,etf,,
+VEA,Vanguard FTSE Developed Markets ETF,etf,,
+IEFA,iShares Core MSCI EAFE ETF,etf,,
+EFA,iShares MSCI EAFE ETF,etf,,
+VWO,Vanguard FTSE Emerging Markets ETF,etf,,
+IEMG,iShares Core MSCI Emerging Markets ETF,etf,,
+EEM,iShares MSCI Emerging Markets ETF,etf,,
+VT,Vanguard Total World Stock ETF,etf,,
+BND,Vanguard Total Bond Market ETF,etf,,
+AGG,iShares Core US Aggregate Bond ETF,etf,,
+BNDX,Vanguard Total International Bond ETF,etf,,
+LQD,iShares iBoxx $ Investment Grade Corporate Bond ETF,etf,,
+HYG,iShares iBoxx $ High Yield Corporate Bond ETF,etf,,
+TIP,iShares TIPS Bond ETF,etf,,
+IEF,iShares 7-10 Year Treasury Bond ETF,etf,,
+TLT,iShares 20+ Year Treasury Bond ETF,etf,,
+SHY,iShares 1-3 Year Treasury Bond ETF,etf,,
+VBIL,Vanguard 0-3 Month Treasury Bill ETF,etf,,
+GLD,SPDR Gold Shares,etf,,
+IAU,iShares Gold Trust,etf,,
+SLV,iShares Silver Trust,etf,,
+IBIT,iShares Bitcoin Trust,etf,,
 MMM,3M,stock,,
 AOS,A. O. Smith,stock,,
 ABT,Abbott Laboratories,stock,,
