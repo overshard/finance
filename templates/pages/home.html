@@ -15,12 +15,39 @@
        starter list and its deep price history. This dashboard fills in once data lands.</p>
   </section>
   {% else %}
-  {% from "includes/macros.html" import spark_card, mover_row, health_row %}
+  {% from "includes/macros.html" import spark_card, etf_card, etf_pill, mover_row, health_row %}
 
   <div class="page-head">
     <h1>Markets</h1>
     <a class="page-head__link" href="/search">Browse all {{ total }} symbols</a>
   </div>
+
+  {# Hero (Phase 5): a one-line plain read of the day — the broad move, breadth,
+     and the VIX risk tone blended into a verdict — over a compact index strip.
+     A page-load snapshot: the verdict is descriptive, not a forecast, so the
+     non-advice note rides with it. #}
+  <section class="hero">
+    <div class="hero__read">
+      <p class="hero__verdict">{{ hero.verdict }}</p>
+      <p class="hero__detail">{{ hero.detail }}</p>
+      <p class="hero__stats">
+        {% if hero.broad_pct is not none %}<span class="hero__stat">S&amp;P <span class="num {{ 'is-up' if hero.broad_pct >= 0 else 'is-down' }}">{{ hero.broad_pct|pct }}</span></span>{% endif %}
+        {% if hero.green_pct is not none %}<span class="hero__stat"><span class="num">{{ hero.green_pct }}%</span> of the S&amp;P green</span>{% endif %}
+        {% if hero.vix_label %}<span class="hero__stat">VIX {{ hero.vix_label }}</span>{% endif %}
+      </p>
+      <p class="hero__note">A plain read of today&rsquo;s tape &mdash; not investment advice.</p>
+    </div>
+    {% if hero.chips %}
+    <div class="hero__chips">
+      {% for c in hero.chips %}
+      <a class="hero__chip {{ 'is-up' if c.up else 'is-down' }}" href="/s/{{ c.ticker|urlencode }}">
+        <span class="hero__chip-sym">{{ c.ticker }}</span>
+        <span class="hero__chip-chg num">{{ c.change_pct|pct }}</span>
+      </a>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
 
   {# The sparkline-card sections stream live, so their freshness time rides in
      a data-field the stream client refreshes as quotes land (Phase 22). The
@@ -31,10 +58,52 @@
     {% for c in index_cards %}{{ spark_card(c) }}{% endfor %}
   </div>
 
-  <h2 class="section-title">Risk &amp; commodities{% if commodity_asof %}<span class="section-title__asof">prices as of <span data-field="spark-asof">{{ commodity_asof|asof }}</span></span>{% endif %}</h2>
-  <div class="spark-grid">
-    {% for c in commodity_cards %}{{ spark_card(c) }}{% endfor %}
+  {# Breadth band (Phase 5): how many curated S&P stocks are up vs down today,
+     the share green, and a proportion bar of the split. A page-load snapshot. #}
+  {% if breadth.total %}
+  <h2 class="section-title">Breadth{% if movers_asof %}<span class="section-title__asof">prices as of {{ movers_asof|asof }}</span>{% endif %}</h2>
+  <p class="section-note">How many of the curated large-cap stocks are advancing
+     versus declining today, and the share trading green.</p>
+  <div class="breadth">
+    <div class="breadth__stats">
+      <span class="breadth__stat breadth__stat--up"><span class="breadth__num num">{{ breadth.advancers }}</span> advancing</span>
+      <span class="breadth__stat breadth__stat--down"><span class="breadth__num num">{{ breadth.decliners }}</span> declining</span>
+      {% if breadth.unchanged %}<span class="breadth__stat breadth__stat--flat"><span class="breadth__num num">{{ breadth.unchanged }}</span> flat</span>{% endif %}
+      {% if breadth.pct_green is not none %}<span class="breadth__pct num">{{ breadth.pct_green }}% green</span>{% endif %}
+    </div>
+    <div class="breadth__bar" role="img"
+         aria-label="{{ breadth.advancers }} advancing, {{ breadth.decliners }} declining of {{ breadth.total }} stocks">
+      <span class="breadth__seg breadth__seg--up" style="width: {{ breadth.up_w }}%"></span>
+      <span class="breadth__seg breadth__seg--flat" style="width: {{ breadth.flat_w }}%"></span>
+      <span class="breadth__seg breadth__seg--down" style="width: {{ breadth.down_w }}%"></span>
+    </div>
   </div>
+  {% endif %}
+
+  {# ETF band (Phase 5): curated quality cards spanning the asset classes, then
+     a compact gainers / losers strip across the whole curated ETF set. #}
+  <h2 class="section-title">ETFs{% if etf_asof %}<span class="section-title__asof">prices as of <span data-field="spark-asof">{{ etf_asof|asof }}</span></span>{% endif %}<span class="section-title__asof"><a href="/search?kind=etf">All ETFs &rarr;</a></span></h2>
+  <p class="section-note">A quality read per fund &mdash; cost, tracking,
+     diversification, and size, blended. Hover the verdict for the breakdown.</p>
+  {% if etf_cards %}
+  <div class="spark-grid">
+    {% for e in etf_cards %}{{ etf_card(e) }}{% endfor %}
+  </div>
+  {% else %}
+  <p class="movers__empty">No curated ETFs yet.</p>
+  {% endif %}
+  {% if etf_gainers or etf_losers %}
+  <div class="etf-movers">
+    <div class="etf-movers__group etf-movers__group--up">
+      <span class="etf-movers__label">Gainers</span>
+      {% for m in etf_gainers %}{{ etf_pill(m) }}{% endfor %}
+    </div>
+    <div class="etf-movers__group etf-movers__group--down">
+      <span class="etf-movers__label">Losers</span>
+      {% for m in etf_losers %}{{ etf_pill(m) }}{% endfor %}
+    </div>
+  </div>
+  {% endif %}
 
   <h2 class="section-title">Today&rsquo;s movers{% if movers_asof %}<span class="section-title__asof">prices as of {{ movers_asof|asof }}</span>{% endif %}</h2>
   <div class="movers">
@@ -96,6 +165,11 @@
       <p class="movers__empty">No sector classifications synced yet.</p>
       {% endif %}
     </section>
+  </div>
+
+  <h2 class="section-title">Risk &amp; commodities{% if commodity_asof %}<span class="section-title__asof">prices as of <span data-field="spark-asof">{{ commodity_asof|asof }}</span></span>{% endif %}</h2>
+  <div class="spark-grid">
+    {% for c in commodity_cards %}{{ spark_card(c) }}{% endfor %}
   </div>
 
   <h2 class="section-title">Quality leaderboard{% if health_asof %}<span class="section-title__asof">last sync {{ health_asof|ago }}</span>{% endif %}</h2>

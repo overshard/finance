@@ -52,6 +52,48 @@
 </a>
 {% endmacro %}
 
+{# `etf_card` renders one curated ETF tile (Phase 5): the same intraday
+   sparkline + live price as `spark_card`, plus the Phase-4 quality verdict as a
+   small pill in the head so the fund's quality reads at a glance beside its
+   move. `e.card` is a SparkCard; `e.quality` an EtfQuality (None until ≥2
+   factors grade). #}
+{% macro etf_card(e) %}
+<a class="spark-card{% if e.card.up %} is-up-card{% else %} is-down-card{% endif %}"
+   href="/s/{{ e.card.ticker|urlencode }}" data-ticker="{{ e.card.ticker }}">
+  <div class="spark-card__head">
+    <span class="spark-card__sym">{{ e.card.ticker }}</span>
+    <span class="spark-card__name">{{ e.card.name }}</span>
+    {% if e.quality %}<span class="qchip qchip--{{ e.quality.overall }}" title="ETF quality {{ e.quality.percent }}% — cost {{ e.quality.cost_label }}, tracking {{ e.quality.tracking_label }}, diversification {{ e.quality.diversification_label }}, size {{ e.quality.size_label }}">{{ e.quality.verdict }}</span>{% endif %}
+  </div>
+  {% if e.card.spark %}
+  <svg class="spark" viewBox="0 0 100 36" preserveAspectRatio="none"
+       data-lo="{{ e.card.spark.lo }}" data-hi="{{ e.card.spark.hi }}" aria-hidden="true">
+    <polygon class="spark__area" points="{{ e.card.spark.area }}"/>
+    {% if e.card.spark.baseline is not none %}
+    <line class="spark__base" x1="0" x2="100" y1="{{ e.card.spark.baseline }}" y2="{{ e.card.spark.baseline }}"/>
+    {% endif %}
+    <polyline class="spark__line" points="{{ e.card.spark.line }}"/>
+  </svg>
+  {% else %}
+  <div class="spark spark--empty">no intraday data</div>
+  {% endif %}
+  <div class="spark-card__foot">
+    <span class="spark-card__price num" data-field="price">{{ e.card.price|money }}</span>
+    <span class="spark-card__chg num{% if e.card.change_pct is none %} is-flat{% elif e.card.change_pct >= 0 %} is-up{% else %} is-down{% endif %}" data-field="change_pct">{{ e.card.change_pct|pct }}</span>
+  </div>
+</a>
+{% endmacro %}
+
+{# `etf_pill` renders one compact ETF mover (Phase 5): ticker + day move, with a
+   small quality dot tinting the pill by the fund's overall grade. #}
+{% macro etf_pill(m) %}
+<a class="etf-pill {{ 'is-up' if m.change_pct >= 0 else 'is-down' }}" href="/s/{{ m.ticker|urlencode }}">
+  {% if m.quality %}<span class="etf-pill__dot etf-pill__dot--{{ m.quality.overall }}" aria-hidden="true"></span>{% endif %}
+  <span class="etf-pill__sym">{{ m.ticker }}</span>
+  <span class="etf-pill__chg num">{{ m.change_pct|pct }}</span>
+</a>
+{% endmacro %}
+
 {# `mover_row` renders one gainer/loser row. The `--bar` custom property sizes
    a soft magnitude tint behind the row, scaled by the route. The badge cell
    is always present (empty for a stock without a synced standing) so the

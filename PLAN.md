@@ -34,7 +34,7 @@ commit + auto-deploy (`git push server master`) and a clean breakpoint.
 
 ## Status
 
-_Last updated: 2026-05-30 (Phase 4 done on dev — commit + deploy pending)_
+_Last updated: 2026-05-30 (Phase 5 done on dev — commit + deploy pending)_
 
 **Major refactor in progress (the "distill + ETF-first" rewrite).** This plan
 was fully rewritten 2026-05-30 from a sprawling 3,700-line resume doc into this
@@ -54,11 +54,49 @@ focused roadmap. The decisions driving it are in the Decisions log under
 - **Everything gets distilled** into a fast-scannable, dual-first (mobile +
   desktop) design while keeping the futuristic-clean "Paper Ledger" look.
 
-**Current work:** Phases 1–3 are **done and deployed.** Phase 4 (ETFs as
-first-class citizens) is **done on dev, pending commit + deploy** — quality
-score + distinct ETF symbol-page identity shipped; the dashboard ETF band was
-deferred to Phase 5 (user's call). Next after deploy: **Phase 5 (dashboard
-redesign)**.
+**Current work:** Phases 1–4 are **done, committed, and deployed** (Phase 4 is
+live at `19d0b14`). **Phase 5 (dashboard redesign) is done on dev, pending commit
++ deploy.** Next after deploy: **Phase 6 (symbol-page distillation + live
+intraday on chart).**
+
+Phase 5 outcome (dashboard redesign → "how is the market doing TODAY"):
+- **Hero verdict.** A two-line plain read at the top blending the broad index
+  move, breadth, and the VIX risk tone into a lead + clause (e.g. "Higher, but
+  narrow." / "Markets higher with narrow participation."), over a compact
+  index-chip strip, with the headline figures (S&P %, % green, VIX tone) and a
+  non-advice note. `build_hero` + `market_verdict` + `vix_tone` in
+  `src/routes/home.rs`, fed by the already-loaded index/commodity cards + breadth
+  (zero extra queries). **The verdict's direction tracks the broad index's sign**
+  so it never contradicts the "S&P +x%" shown beside it; breadth only sets
+  direction when no index price exists. A near-flat index reads "mixed" even when
+  breadth skews. (Found + fixed during review: a +0.12% S&P with weak breadth had
+  read "Broadly lower" — a direct contradiction; the deadband was tightened from
+  ±0.15% to ±0.05% and the breadth fallback narrowed.)
+- **Breadth band.** Advancers / decliners counts + % green over a single
+  up/flat/down proportion bar. `breadth()` reuses the `load_stocks` scan (no
+  extra query); a stock without a computable change is excluded so a missing
+  quote never reads as "flat".
+- **ETF band (the Phase-4 deferral, now built).** Five curated quality cards
+  (`VOO`, `VTI`, `QQQ`, `BND`, `GLD`) — intraday sparkline + day move + the
+  Phase-4 quality verdict pill — over a compact gainers/losers strip across the
+  whole curated ETF set, each pill dotted by quality grade. `load_etfs` rolls
+  every seeded ETF (price + Yahoo metadata + SEC AUM + top-10 concentration) into
+  the `etf_quality` read, reusing the same NAV-freshness gate as the symbol page.
+- **Band order:** Hero · Indexes · Breadth · ETFs · Stock movers · Industries ·
+  Risk & commodities · Quality leaderboard. The existing Industries (sector
+  up/down) panel was **kept as its own band** (user's call), not folded into
+  breadth.
+- **Verified on dev:** `cargo build` + `vite build` clean; home renders all bands
+  at desktop (1280) and mobile (390) with no console errors; hero reads
+  consistently with the figures beside it; breadth counts reconcile
+  (197 adv / 306 dec = 39% green); ETF cards show quality pills and the movers
+  strip ranks correctly (screenshots reviewed, then deleted). Because today is a
+  weekend the index cards correctly resolve to futures (ES=F, …) and breadth
+  dates to the prior close.
+- **Known limitation (Phase 7 polish candidate):** the hero verdict and breadth
+  are page-load snapshots — the sparkline cards still stream live, but the
+  verdict sentence + breadth counts do not recompute intraday. Live breadth would
+  need a server-pushed breadth event on the stream hub.
 
 Phase 3 outcome (drop short-horizon prediction → quality leaderboard):
 - **The whole picker is gone.** Removed the four horizon rankers
@@ -262,7 +300,7 @@ Kill the rate-limit problem at the root.
 - Note: the leaderboard's home-page placement is intentionally provisional —
   Phase 5 rebuilds the dashboard (hero + bands) around it.
 
-### Phase 4 — ETFs as true first-class citizens  ✅ DONE on dev (commit + deploy pending)
+### Phase 4 — ETFs as true first-class citizens  ✅ DONE (deployed 2026-05-30, `19d0b14`)
 - ✅ Blended ETF **quality score** (`compute::etf_quality`): cost-weighted blend
   of cost (40%) / tracking (25%) / diversification (20%) / size (15%), composite
   −1..1 → percent, four sub-reading chips — structurally mirrors the stock
@@ -291,11 +329,17 @@ Kill the rate-limit problem at the root.
   the fetch reuses the proven `quoteSummary` NAV parse, and prod exercises it on
   first deploy once its guard is healthy.
 
-### Phase 5 — Dashboard redesign: "how is the market doing TODAY"
-- Hero: one-line plain-language market verdict + index strip + **breadth**
-  (advancers/decliners, % of S&P green, sector leaders/laggards).
-- Clearly labeled bands: Indexes · Breadth · ETFs · Stock movers · Commodities ·
-  Quality leaderboard. Dual-first density.
+### Phase 5 — Dashboard redesign: "how is the market doing TODAY"  ✅ DONE on dev (commit + deploy pending)
+- ✅ Hero: two-line plain-language verdict (blended index move + breadth + VIX
+  tone) + compact index strip + headline figures + non-advice note. Direction
+  tracks the broad index sign so it never contradicts the figure shown.
+- ✅ Breadth band: advancers/decliners + % S&P green + a proportion bar. (Sector
+  leaders/laggards stay in their **own** Industries band, per the user's call —
+  not folded into breadth.)
+- ✅ ETF band (the Phase-4 deferral): 5 curated quality cards + a gainers/losers
+  strip, each carrying the Phase-4 quality verdict.
+- ✅ Clearly labeled bands, dual-first density: Hero · Indexes · Breadth · ETFs ·
+  Stock movers · Industries · Risk & commodities · Quality leaderboard.
 
 ### Phase 6 — Symbol-page distillation + live intraday on chart
 - Mobile above-the-fold order: price/change → health verdict → mini chart →
@@ -361,6 +405,30 @@ Kill the rate-limit problem at the root.
 ---
 
 ## Decisions log
+
+**2026-05-30 — Phase 5 (dashboard redesign).** Answered 4 design forks before
+building:
+1. **Hero verdict = blended + a touch more.** A two-line read: a punchy lead
+   ("Higher, but narrow.") plus a clause ("Markets higher with narrow
+   participation."), blending the broad index move, breadth (% green), and the
+   VIX risk tone, with the headline figures and a non-advice note beneath.
+2. **Sectors stay separate.** Breadth band = advancers/decliners + % green only;
+   the existing Industries (sector up/down) panel keeps its own band rather than
+   folding "sector leaders/laggards" into breadth.
+3. **ETF band = both.** Curated quality cards (VOO/VTI/QQQ/BND/GLD) *and* a
+   compact ETF gainers/losers strip — this is the Phase-4 deferral, now built.
+4. **Breadth viz = stat strip + proportion bar** (advancers/decliners counts, %
+   green, one up/flat/down bar), not a distribution histogram.
+Implemented entirely in `src/routes/home.rs` + `home.html`/`macros.html` +
+`home.scss`, reusing the already-loaded card/stock scans so the hero and breadth
+add **zero** extra queries (only the ETF band adds two: the ETF roll-up and a
+top-10-holdings window query). Found + fixed during the screenshot review: the
+verdict could contradict the figure beside it — a +0.12% S&P with weak breadth
+read "Broadly lower" because the ±0.15% direction deadband swallowed the move and
+let breadth flip the sign. Fixed by tightening the deadband to ±0.05% and making
+direction track the broad index's sign, with breadth breaking ties only when no
+index price exists. Deferred live updates for the hero/breadth (page-load
+snapshots) to the Phase 7 polish pass.
 
 **2026-05-30 — Phase 4 build + the NAV-staleness discovery.** Built the ETF
 quality read (`compute::etf_quality`, mirroring `health_read`) and the

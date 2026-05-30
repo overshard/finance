@@ -26,6 +26,280 @@
   text-underline-offset: 2px;
 }
 
+/* ============================================================================
+   Hero (Phase 5)
+
+   The dashboard's "how is the market doing TODAY" read: a one-line verdict
+   blending the broad move, breadth, and the VIX tone, over a compact index
+   strip. A page-load snapshot, so it reads as a plain description, not a feed.
+   ========================================================================== */
+.hero {
+  @include card;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin-top: var(--sp-4);
+  padding: var(--sp-4) var(--sp-4) var(--sp-5);
+}
+
+.hero__verdict {
+  @include serif;
+  font-size: var(--fs-2xl);
+  line-height: 1.15;
+  color: var(--ink);
+}
+
+.hero__detail {
+  margin-top: var(--sp-1);
+  font-size: var(--fs-md);
+  color: var(--ink-dim);
+}
+
+/* the headline figures behind the verdict — a quiet middot-separated row */
+.hero__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px var(--sp-3);
+  margin-top: var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--ink-dim);
+}
+
+.hero__stat {
+  @include mono;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+/* a thin middot between stats, drawn so it does not need markup */
+.hero__stat + .hero__stat::before {
+  content: "\00b7"; /* · */
+  margin-right: var(--sp-3);
+  color: var(--ink-faint);
+}
+
+.hero__note {
+  margin-top: var(--sp-3);
+  font-size: var(--fs-xs);
+  font-style: italic;
+  color: var(--ink-faint);
+}
+
+/* the compact index strip: clickable chips with ticker + day move */
+.hero__chips {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-2);
+}
+
+.hero__chip {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--well);
+  color: var(--ink);
+  transition: background 0.14s, transform 0.14s;
+}
+
+.hero__chip:hover {
+  color: var(--ink);
+  transform: translateY(-1px);
+}
+
+.hero__chip-sym {
+  @include mono;
+  font-weight: 700;
+  font-size: var(--fs-sm);
+}
+
+.hero__chip-chg {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+}
+
+.hero__chip.is-up .hero__chip-chg {
+  color: var(--up);
+}
+.hero__chip.is-down .hero__chip-chg {
+  color: var(--down);
+}
+
+@media (min-width: $bp-md) {
+  .hero {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-6);
+  }
+
+  .hero__read {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  /* the strip sits to the right; five chips in a single column read as a
+     compact ledger of the indexes beside the verdict */
+  .hero__chips {
+    flex: 0 0 auto;
+    grid-template-columns: 1fr;
+    min-width: 168px;
+  }
+}
+
+/* ============================================================================
+   Breadth band (Phase 5)
+
+   Advancer / decliner counts and the share green, over a single proportion bar
+   of the up / flat / down split.
+   ========================================================================== */
+.breadth {
+  @include card;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+}
+
+.breadth__stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px var(--sp-4);
+  font-size: var(--fs-sm);
+  color: var(--ink-dim);
+}
+
+.breadth__num {
+  font-weight: 700;
+  font-size: var(--fs-lg);
+}
+
+.breadth__stat--up .breadth__num {
+  color: var(--up);
+}
+.breadth__stat--down .breadth__num {
+  color: var(--down);
+}
+
+/* the share green sits at the right end as the headline figure */
+.breadth__pct {
+  margin-left: auto;
+  font-weight: 700;
+  font-size: var(--fs-md);
+  color: var(--ink);
+}
+
+/* the proportion bar: three segments in a sunken well, no gaps */
+.breadth__bar {
+  display: flex;
+  height: 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--well);
+}
+
+.breadth__seg {
+  height: 100%;
+}
+.breadth__seg--up   { background: var(--up); }
+.breadth__seg--flat { background: var(--ink-faint); }
+.breadth__seg--down { background: var(--down); }
+
+/* ============================================================================
+   ETF band quality pieces (Phase 5)
+   ========================================================================== */
+
+/* the quality verdict pill in an ETF card head — pushed to the right end */
+.qchip {
+  margin-left: auto;
+  flex: none;
+  align-self: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 0.56rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.qchip--good     { color: var(--up);        background: var(--up-soft); }
+.qchip--ok       { color: var(--warn);      background: var(--warn-soft); }
+.qchip--bad      { color: var(--down);      background: var(--down-soft); }
+.qchip--unknown  { color: var(--ink-faint); background: var(--well); }
+
+/* the compact gainers / losers strip below the cards */
+.etf-movers {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.etf-movers__group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.etf-movers__label {
+  @include eyebrow;
+  font-size: var(--fs-2xs);
+  color: var(--ink-faint);
+  min-width: 4.5ch;
+}
+
+.etf-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--well);
+  color: var(--ink);
+  font-size: var(--fs-xs);
+  transition: transform 0.14s;
+}
+
+.etf-pill:hover {
+  color: var(--ink);
+  transform: translateY(-1px);
+}
+
+.etf-pill__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  flex: none;
+}
+.etf-pill__dot--good     { background: var(--up); }
+.etf-pill__dot--ok       { background: var(--warn); }
+.etf-pill__dot--bad      { background: var(--down); }
+.etf-pill__dot--unknown  { background: var(--ink-faint); }
+
+.etf-pill__sym {
+  @include mono;
+  font-weight: 700;
+}
+
+.etf-pill__chg {
+  font-weight: 700;
+}
+.etf-pill.is-up .etf-pill__chg   { color: var(--up); }
+.etf-pill.is-down .etf-pill__chg { color: var(--down); }
+
+@media (min-width: $bp-md) {
+  .etf-movers {
+    grid-template-columns: 1fr 1fr;
+    gap: var(--sp-4);
+  }
+}
+
 /* ---------- sparkline cards ---------- */
 .spark-grid {
   display: grid;

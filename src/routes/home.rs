@@ -47,6 +47,22 @@ const INDEXES: &[(&str, Option<&str>)] = &[
 /// "what is the market worried about today" panel.
 const COMMODITIES: &[&str] = &["^VIX", "CL=F", "GC=F", "NG=F"];
 
+/// The dashboard's curated ETF cards (Phase 5): one broad-equity anchor
+/// (`VOO`), a total-market and a growth/tech tilt (`VTI`, `QQQ`), a bond core
+/// (`BND`), and a commodity (`GLD`) — five cards spanning the asset classes a
+/// watcher scans first, mirroring the hardcoded `INDEXES` row. Each shows an
+/// intraday sparkline plus its Phase-4 quality verdict. The full ETF universe
+/// (and the movers strip below) lives on `/search?kind=etf`.
+const ETF_CARDS: &[&str] = &["VOO", "VTI", "QQQ", "BND", "GLD"];
+
+/// How many ETF gainers / losers the dashboard's compact movers strip lists.
+const ETF_MOVERS_LIMIT: usize = 5;
+
+/// NAV freshness gate for the ETF quality read's tracking factor (Phase 4):
+/// NAV is struck daily, so a price-vs-NAV premium read against a NAV older than
+/// this is meaningless and the factor drops out. Mirrors the symbol page.
+const NAV_FRESH_MS: i64 = 3 * 24 * 3600 * 1000;
+
 /// How many gainers and how many losers each movers panel lists.
 const MOVERS_LIMIT: usize = 8;
 
@@ -86,6 +102,85 @@ struct SparkSection {
     /// The most recent `last_quote_at` (epoch-ms) across the section's symbols;
     /// `None` until at least one has ever been quoted.
     asof: Option<i64>,
+}
+
+/// The dashboard hero (Phase 5): a one-line plain-language read of the day
+/// blending the broad index move, market breadth, and the VIX risk tone, with
+/// the headline figures behind it and a compact index strip. The verdict is a
+/// descriptive read of today's tape, not a forecast — the non-advice note rides
+/// with it.
+#[derive(Serialize)]
+struct Hero {
+    /// The punchy lead, e.g. "Risk-on, and broad."
+    verdict: String,
+    /// The supporting clause, e.g. "Markets higher with wide participation."
+    detail: String,
+    /// Compact index chips beside the verdict (the resolved index cards' moves).
+    chips: Vec<HeroChip>,
+    /// The broad-market day change (the lead index card's move); drives the
+    /// "S&P +0.9%" stat and feeds the verdict. `None` until that card prices.
+    broad_pct: Option<f64>,
+    /// Share of curated stocks trading green, 0..100, rounded; "78% green".
+    green_pct: Option<u8>,
+    /// The VIX read folded into one phrase, e.g. "calm at 13.2". `None` until
+    /// the VIX card prices.
+    vix_label: Option<String>,
+}
+
+/// One index chip in the hero strip: the resolved index card's ticker and day
+/// move (cash index during the regular session, its future outside it).
+#[derive(Serialize)]
+struct HeroChip {
+    ticker: String,
+    change_pct: Option<f64>,
+    up: bool,
+}
+
+/// Market breadth across the curated large-cap stocks (Phase 5): how many are
+/// advancing vs declining today and the share green, plus the proportion-bar
+/// segment widths. Drives the Breadth band and feeds the hero verdict.
+#[derive(Serialize, Default)]
+struct Breadth {
+    advancers: usize,
+    decliners: usize,
+    unchanged: usize,
+    /// Stocks with a computable day change (advancers + decliners + unchanged).
+    total: usize,
+    /// Advancers as a percent of `total`, rounded; `None` when `total` is 0.
+    pct_green: Option<u8>,
+    /// Proportion-bar segment widths (percent of `total`): green, flat, red.
+    up_w: f64,
+    flat_w: f64,
+    down_w: f64,
+}
+
+/// One curated ETF with everything the dashboard ETF band needs: its price, the
+/// close it is changing against, and its Phase-4 quality read. Built once and
+/// fed to both the curated cards and the movers strip.
+#[derive(Serialize, Clone)]
+struct EtfRow {
+    ticker: String,
+    name: String,
+    last: Option<f64>,
+    prev: Option<f64>,
+    change_pct: Option<f64>,
+    last_quote_at: Option<i64>,
+    quality: Option<compute::EtfQuality>,
+}
+
+/// One curated ETF card: its sparkline tile plus the quality verdict (Phase 5).
+#[derive(Serialize)]
+struct EtfCard {
+    card: SparkCard,
+    quality: Option<compute::EtfQuality>,
+}
+
+/// One pill in the compact ETF movers strip: ticker, day move, quality grade.
+#[derive(Serialize, Clone)]
+struct EtfMover {
+    ticker: String,
+    change_pct: f64,
+    quality: Option<compute::EtfQuality>,
 }
 
 /// One row in a movers panel.
@@ -186,9 +281,15 @@ async fn home(State(state): State<AppState>) -> Response {
         .unwrap_or(seeded);
 
     let (index_section, commodity_section) = dashboard_cards(&state).await;
-    // One scan of the curated stocks feeds the movers, the industry composites,
-    // and the quality leaderboard.
+    // One scan of the curated stocks feeds breadth, the movers, the industry
+    // composites, and the quality leaderboard.
     let stocks = load_stocks(&state).await;
+    let breadth = breadth(&stocks);
+    // The hero blends the lead index card's move, breadth, and the VIX card into
+    // a one-line read; both sections are already loaded, so it is free.
+    let hero = build_hero(&index_section, &commodity_section, &breadth);
+    // The ETF band: curated quality cards plus a compact gainers / losers strip.
+    let (etf_cards, etf_gainers, etf_losers, etf_asof) = etf_band(&state).await;
     let (gainers, losers) = movers(&stocks);
     let (healthiest, concerning) = health_panels(&stocks);
     let (top_industries, bottom_industries) = industry_panels(&stocks);
@@ -215,6 +316,12 @@ async fn home(State(state): State<AppState>) -> Response {
     let extra = minijinja::context! {
         title => "Markets",
         empty => false,
+        hero => hero,
+        breadth => breadth,
+        etf_cards => etf_cards,
+        etf_gainers => etf_gainers,
+        etf_losers => etf_losers,
+        etf_asof => etf_asof,
         index_cards => index_section.cards,
         index_asof => index_section.asof,
         commodity_cards => commodity_section.cards,
@@ -327,6 +434,291 @@ async fn spark_cards_for(state: &AppState, tickers: &[&str]) -> SparkSection {
         });
     }
     SparkSection { cards, asof }
+}
+
+/// Market breadth across the curated large-cap stocks: advancers vs decliners
+/// today and the share green, plus the proportion-bar segment widths. Reuses
+/// the already-loaded [`StockRow`] scan — no extra query. A stock without a
+/// computable change (no price, or a non-positive prior close) is left out of
+/// every count so a missing quote never reads as "flat".
+fn breadth(stocks: &[StockRow]) -> Breadth {
+    let mut b = Breadth::default();
+    for s in stocks {
+        let (Some(last), Some(prev)) = (s.last, s.prev) else {
+            continue;
+        };
+        if prev <= 0.0 {
+            continue;
+        }
+        b.total += 1;
+        match last.partial_cmp(&prev) {
+            Some(Ordering::Greater) => b.advancers += 1,
+            Some(Ordering::Less) => b.decliners += 1,
+            _ => b.unchanged += 1,
+        }
+    }
+    if b.total > 0 {
+        let total = b.total as f64;
+        b.pct_green = Some((b.advancers as f64 / total * 100.0).round() as u8);
+        b.up_w = b.advancers as f64 / total * 100.0;
+        b.down_w = b.decliners as f64 / total * 100.0;
+        b.flat_w = (100.0 - b.up_w - b.down_w).max(0.0);
+    }
+    b
+}
+
+/// A VIX level read into one plain word. The bands suit the ^VIX cash gauge:
+/// sub-14 is a placid tape, the teens are normal, the low-20s start to show
+/// stress, and 28+ is outright fear.
+fn vix_tone(level: f64) -> &'static str {
+    match level {
+        v if v < 14.0 => "calm",
+        v if v < 20.0 => "steady",
+        v if v < 28.0 => "elevated",
+        _ => "stressed",
+    }
+}
+
+/// Blend the broad-market move, breadth, and the VIX read into the hero's
+/// two-line verdict. `broad_pct` is the lead index card's day change (the cash
+/// S&P during the regular session, its future outside it); `green_pct` the
+/// share of curated stocks green; `vix_level` / `vix_pct` the volatility gauge
+/// and its move. Returns `(lead, detail)`. A descriptive read of the tape, not
+/// a forecast — direction comes from the broad move, falling back to breadth
+/// when the index is flat; width and risk tone colour the wording.
+fn market_verdict(
+    broad_pct: Option<f64>,
+    green_pct: Option<u8>,
+    vix_level: Option<f64>,
+    vix_pct: Option<f64>,
+) -> (String, String) {
+    // Direction: the broad index move is the headline truth, so the verdict's
+    // direction tracks its sign — never the opposite of the "S&P +x%" figure
+    // shown beside it. A near-flat index (|move| < 0.05%) reads as mixed even if
+    // breadth skews, since that is genuinely a directionless tape. Breadth only
+    // sets direction when there is no index price at all (e.g. it never quoted).
+    // 1 up / -1 down / 0 flat.
+    let dir = match broad_pct {
+        Some(p) if p > 0.05 => 1,
+        Some(p) if p < -0.05 => -1,
+        Some(_) => 0,
+        None => match green_pct {
+            Some(g) if g >= 55 => 1,
+            Some(g) if g <= 45 => -1,
+            _ => 0,
+        },
+    };
+    // Breadth width: 2 broad / 1 split / 0 narrow.
+    let width = match green_pct {
+        Some(g) if g >= 60 => 2,
+        Some(g) if g <= 40 => 0,
+        _ => 1,
+    };
+    let vix_rising = vix_pct.is_some_and(|p| p > 4.0);
+    let vix_elevated = vix_level.is_some_and(|v| v >= 20.0);
+
+    let lead = match (dir, width) {
+        (1, 2) if !vix_elevated => "Risk-on, and broad.",
+        (1, 2) => "Higher across the board.",
+        (1, 0) => "Higher, but narrow.",
+        (1, _) => "Modestly higher.",
+        (-1, _) if vix_rising || vix_elevated => "Risk-off.",
+        (-1, 0) => "Broadly lower.",
+        (-1, _) => "Softer today.",
+        _ => "Quiet, mixed tape.",
+    };
+    let move_word = match dir {
+        1 => "higher",
+        -1 => "lower",
+        _ => "little changed",
+    };
+    let part_word = match width {
+        2 => "wide participation",
+        0 => "narrow participation",
+        _ => "mixed participation",
+    };
+    (lead.to_string(), format!("Markets {move_word} with {part_word}."))
+}
+
+/// Assemble the hero from the already-loaded index + commodity cards and the
+/// breadth read. The broad-market move is the lead index card (resolved to the
+/// cash S&P or its future by `dashboard_cards`); the VIX read is the lead
+/// commodity card (`^VIX` always sits first). The chips mirror the index cards.
+fn build_hero(index: &SparkSection, commodity: &SparkSection, breadth: &Breadth) -> Hero {
+    let broad_pct = index.cards.first().and_then(|c| c.change_pct);
+    let vix = commodity.cards.first();
+    let vix_level = vix.and_then(|c| c.price);
+    let vix_pct = vix.and_then(|c| c.change_pct);
+    let green_pct = breadth.pct_green;
+
+    let (verdict, detail) = market_verdict(broad_pct, green_pct, vix_level, vix_pct);
+    let vix_label = vix_level.map(|v| format!("{} at {:.1}", vix_tone(v), v));
+    let chips = index
+        .cards
+        .iter()
+        .map(|c| HeroChip {
+            ticker: c.ticker.clone(),
+            change_pct: c.change_pct,
+            up: c.up,
+        })
+        .collect();
+
+    Hero {
+        verdict,
+        detail,
+        chips,
+        broad_pct,
+        green_pct,
+        vix_label,
+    }
+}
+
+/// The dashboard ETF band: the curated quality cards and a compact gainers /
+/// losers strip, plus the freshest quote behind them. Builds the full curated
+/// ETF read once ([`load_etfs`]); the cards reuse the sparkline query for their
+/// intraday tiles and attach each ETF's quality, and the strip ranks the whole
+/// curated ETF set by day move.
+async fn etf_band(state: &AppState) -> (Vec<EtfCard>, Vec<EtfMover>, Vec<EtfMover>, Option<i64>) {
+    let etfs = load_etfs(state).await;
+    let quality_by: HashMap<&str, compute::EtfQuality> = etfs
+        .iter()
+        .filter_map(|e| e.quality.map(|q| (e.ticker.as_str(), q)))
+        .collect();
+
+    // Curated cards: sparkline tiles for the hardcoded set, each carrying its
+    // quality verdict. `spark_cards_for` skips a ticker the universe lacks.
+    let spark = spark_cards_for(state, ETF_CARDS).await;
+    let etf_cards: Vec<EtfCard> = spark
+        .cards
+        .into_iter()
+        .map(|card| {
+            let quality = quality_by.get(card.ticker.as_str()).copied();
+            EtfCard { card, quality }
+        })
+        .collect();
+
+    let (gainers, losers) = etf_movers(&etfs);
+    // Freshest quote across the band: the cards' section asof, else the widest
+    // quote across the curated ETF set.
+    let etf_asof = spark
+        .asof
+        .or_else(|| etfs.iter().filter_map(|e| e.last_quote_at).max());
+    (etf_cards, gainers, losers, etf_asof)
+}
+
+/// Every curated ETF, each rolled into an [`EtfRow`] with its Phase-4 quality
+/// read. Mirrors `load_stocks` but for funds: one query for price + the Yahoo
+/// metadata (expense ratio, NAV) + the SEC AUM, a second for top-10 holdings
+/// concentration, then `compute::etf_quality`. The tracking factor reads a
+/// price-vs-NAV premium only against a *fresh* NAV (the daily `fund_nav` job),
+/// else it drops out — a stale NAV must never assert a bogus premium.
+async fn load_etfs(state: &AppState) -> Vec<EtfRow> {
+    type EtfPriceRow = (
+        String,         // ticker
+        String,         // name
+        Option<f64>,    // last
+        Option<f64>,    // prev
+        Option<i64>,    // last_quote_at
+        Option<f64>,    // expense_ratio
+        Option<f64>,    // nav_price
+        Option<i64>,    // nav_synced_at
+        Option<f64>,    // net_assets
+    );
+    let rows: Vec<EtfPriceRow> = sqlx::query_as(
+        "SELECT s.ticker, s.name, \
+           COALESCE(s.last_price, \
+             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1)), \
+           COALESCE(s.prev_close, \
+             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1 OFFSET 1)), \
+           s.last_quote_at, m.expense_ratio, m.nav_price, m.nav_synced_at, fp.net_assets \
+         FROM symbols s \
+         LEFT JOIN fund_metadata m ON m.ticker = s.ticker \
+         LEFT JOIN fund_profiles fp ON fp.ticker = s.ticker \
+         WHERE s.is_seeded = 1 AND s.kind = 'etf'",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+    if rows.is_empty() {
+        return Vec::new();
+    }
+
+    // Top-10 holdings concentration per ETF (summed weight of the ten largest
+    // holdings, percent) for the diversification factor. A fund with no
+    // holdings (a commodity trust) simply misses the map, so that factor drops
+    // out of its blend rather than reading as zero.
+    let top10_rows: Vec<(String, Option<f64>)> = sqlx::query_as(
+        "SELECT ticker, SUM(pct) FROM ( \
+           SELECT ticker, pct, ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY rank) AS rn \
+           FROM fund_holdings \
+         ) WHERE rn <= 10 AND pct IS NOT NULL GROUP BY ticker",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+    let top10_by: HashMap<String, f64> = top10_rows
+        .into_iter()
+        .filter_map(|(t, p)| p.filter(|v| *v > 0.0).map(|v| (t, v)))
+        .collect();
+
+    let now = crate::db::now_ms();
+    rows.into_iter()
+        .map(
+            |(ticker, name, last, prev, last_quote_at, expense_ratio, nav_price, nav_synced_at, net_assets)| {
+                let change_pct = match (last, prev) {
+                    (Some(l), Some(p)) if p > 0.0 => Some(compute::change(l, p).pct),
+                    _ => None,
+                };
+                // Tracking factor: read the price-vs-NAV premium only against a
+                // NAV synced within NAV_FRESH_MS; else let the factor drop out.
+                let nav_fresh = nav_synced_at.is_some_and(|t| now - t <= NAV_FRESH_MS);
+                let premium_pct = if nav_fresh {
+                    last.and_then(|p| compute::premium_discount_pct(p, nav_price))
+                } else {
+                    None
+                };
+                let top10_pct = top10_by.get(&ticker).copied();
+                let quality =
+                    compute::etf_quality(expense_ratio, premium_pct, top10_pct, net_assets);
+                EtfRow {
+                    ticker,
+                    name,
+                    last,
+                    prev,
+                    change_pct,
+                    last_quote_at,
+                    quality,
+                }
+            },
+        )
+        .collect()
+}
+
+/// The day's biggest ETF gainers and losers among the curated funds, each
+/// carrying its quality grade for a quiet chip. A compact strip (top
+/// [`ETF_MOVERS_LIMIT`] each), so the band stays scannable beneath the cards.
+fn etf_movers(etfs: &[EtfRow]) -> (Vec<EtfMover>, Vec<EtfMover>) {
+    let mut all: Vec<EtfMover> = etfs
+        .iter()
+        .filter_map(|e| {
+            Some(EtfMover {
+                ticker: e.ticker.clone(),
+                change_pct: e.change_pct?,
+                quality: e.quality,
+            })
+        })
+        .collect();
+    if all.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    all.sort_by(|a, b| {
+        b.change_pct
+            .partial_cmp(&a.change_pct)
+            .unwrap_or(Ordering::Equal)
+    });
+    let gainers: Vec<EtfMover> = all.iter().take(ETF_MOVERS_LIMIT).cloned().collect();
+    let losers: Vec<EtfMover> = all.iter().rev().take(ETF_MOVERS_LIMIT).cloned().collect();
+    (gainers, losers)
 }
 
 /// Every curated large-cap stock, each graded into a [`StockRow`].
