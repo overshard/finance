@@ -224,6 +224,11 @@ Kill the rate-limit problem at the root.
 
 ### Phase 7 — Health/systems page distillation + final polish pass
 - Distill `/health` and overall cross-page cohesion; one closing UI polish pass.
+- Add a discreet data-attribution line ("Market data via Yahoo Finance ·
+  Fundamentals via SEC EDGAR") in the footer / on `/health`. Yahoo's chart
+  endpoint is unofficial (no published ToS or attribution requirement to
+  satisfy), but a tasteful credit is honest, costs nothing, and suits the
+  professional face the user wants. (Captured 2026-05-30 from a user note.)
 
 ### Backlog / parked
 - Watchlists (tables exist, unused — user wants an opinionated no-customization
