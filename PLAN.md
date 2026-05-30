@@ -34,7 +34,7 @@ commit + auto-deploy (`git push server master`) and a clean breakpoint.
 
 ## Status
 
-_Last updated: 2026-05-30 (Phase 2 complete on dev)_
+_Last updated: 2026-05-30 (Phase 3 complete + deployed)_
 
 **Major refactor in progress (the "distill + ETF-first" rewrite).** This plan
 was fully rewritten 2026-05-30 from a sprawling 3,700-line resume doc into this
@@ -54,11 +54,34 @@ focused roadmap. The decisions driving it are in the Decisions log under
 - **Everything gets distilled** into a fast-scannable, dual-first (mobile +
   desktop) design while keeping the futuristic-clean "Paper Ledger" look.
 
-**Current work:** Phase 2 (universe curation) is **complete and verified on the
-dev box**; commit + deploy pending. Next: **Phase 3 (drop short-horizon
-prediction → quality leaderboard)**.
+**Current work:** Phases 1–3 are **done and deployed.** Next: **Phase 4 (ETFs
+as true first-class citizens)**.
 
-Phase 2 outcome:
+Phase 3 outcome (drop short-horizon prediction → quality leaderboard):
+- **The whole picker is gone.** Removed the four horizon rankers
+  (`pick_day/week/month/quarter` + `PickInput`), `src/picks.rs`, the `/backtest`
+  route + page + JS, the scheduler's once-a-day snapshot job, and the
+  backtest-only `models::latest_annual_inputs_as_of` / `FILING_LAG_DAYS`.
+  Migration `0013_drop_picks.sql` drops the `picks` table and sweeps its stale
+  `data_status` / `fetch_log` / `meta` rows so `/health` doesn't show a frozen
+  "picks" job.
+- **Three overlapping home panels merged into one Quality leaderboard.** Top
+  picks, Strongest & weakest, and Stock health all collapsed into a single
+  non-advice "Healthiest / Most concerning" surface driven by the existing
+  `compute::health_read` composite (fundamentals + trajectory + leadership
+  stability). The old strongest/weakest panel's trailing-year return is folded
+  into each leaderboard row as a quiet price anchor; the non-advice disclaimer
+  rides on the section.
+- **`compute::standing` kept** — the movers panel still uses it for each row's
+  strength badge, and the symbol + search pages use it too. Only the home
+  *strongest/weakest panel* was removed, not the standing read itself.
+- **Verified:** `cargo build` + `vite build` clean (no `backtest` entry);
+  migration applied on boot (picks table dropped, zero stale picks rows,
+  `data_status` job list no longer lists picks); `/backtest` + `/api/backtest`
+  → 404; `/api/health` → 200 with no picks job; home renders the leaderboard
+  with trailing returns and none of the removed panels (screenshot reviewed).
+
+Phase 2 outcome (universe curation, deployed in `b016b25`):
 - **Stocks reconciled to the current S&P 500.** Fetched the live Wikipedia
   constituent list (503) and diffed against ours: an exact match, zero changes
   needed — the stock list was already current.
@@ -224,12 +247,17 @@ Kill the rate-limit problem at the root.
 - ✅ Fixed Yahoo `range=max` downsampling (provider 10y fallback + `run_history`
   self-heal); every seeded symbol now holds true daily bars.
 
-### Phase 3 — Drop short-horizon prediction → quality leaderboard + home de-dup
-- Remove Day/Week picks and the short-horizon backtest machinery.
-- Reframe Month/Quarter into a single non-advice **quality leaderboard**
-  ("healthiest / strongest right now"), merging the overlapping home panels
-  (Top picks, Stock health Healthiest/Concerning, Strongest & weakest) into one
-  coherent surface. Slim or drop the `picks` table + `/backtest` accordingly.
+### Phase 3 — Drop short-horizon prediction → quality leaderboard + home de-dup  ✅ DONE (deployed 2026-05-30)
+- ✅ Removed all four pick rankers (Day/Week *and* Month/Quarter), the backtest
+  machinery, the scheduler snapshot job, and the backtest-only models helpers.
+- ✅ Merged Top picks + Stock health + Strongest & weakest into a single
+  non-advice **Quality leaderboard** (Healthiest / Most concerning) driven by
+  `compute::health_read`, trailing-year return folded into each row.
+- ✅ Dropped the `picks` table via migration `0013_drop_picks.sql` (+ swept
+  stale status rows). `compute::standing` retained for the movers badge +
+  symbol/search pages.
+- Note: the leaderboard's home-page placement is intentionally provisional —
+  Phase 5 rebuilds the dashboard (hero + bands) around it.
 
 ### Phase 4 — ETFs as true first-class citizens
 - A blended ETF **quality score** (cost / diversification / size / tracking)
@@ -274,6 +302,20 @@ Kill the rate-limit problem at the root.
 ---
 
 ## Decisions log
+
+**2026-05-30 — Phase 3 (drop short-horizon prediction → quality leaderboard).**
+Executed the kickoff decision to drop prediction. Resolved the one open design
+fork (what the unified leaderboard ranks by) without blocking: used the existing
+`health_read` composite — it is the "healthiest" read the plan named and already
+blends strength + trajectory + leadership stability — rather than inventing a new
+score or reusing `standing`. Folded the old strongest/weakest panel's
+trailing-year return into each leaderboard row so no useful signal was lost.
+Kept the home-page treatment deliberately light (a straight three-into-one
+de-dup) because Phase 5 redesigns the dashboard around this band anyway. Found
+during the work: `movers` reuses `compute::standing` for its strength badge, so
+`standing` stays (only the strongest/weakest *panel* was removed); and the
+running dev server had to be restarted to pick up the new binary + run the
+drop-picks migration.
 
 **2026-05-30 — Phase 2 (universe curation).** Answered 4 clarifying questions:
 1. **ETF roster:** keep iShares + Vanguard + the SPY/QQQ/DIA/GLD/SLV proxies;

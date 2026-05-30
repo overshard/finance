@@ -15,7 +15,7 @@
        starter list and its deep price history. This dashboard fills in once data lands.</p>
   </section>
   {% else %}
-  {% from "includes/macros.html" import spark_card, mover_row, standing_row, health_row, picks_column %}
+  {% from "includes/macros.html" import spark_card, mover_row, health_row %}
 
   <div class="page-head">
     <h1>Markets</h1>
@@ -54,20 +54,6 @@
       <p class="movers__empty">No price data yet.</p>
       {% endif %}
     </section>
-  </div>
-
-  <h2 class="section-title">Top picks<span class="section-title__asof"><a href="/backtest">Backtest these &rarr;</a></span></h2>
-  <p class="section-note">Forecasts for tomorrow, next week, next month and
-     next quarter &mdash; ranked off recent momentum and the fundamentals /
-     trajectory the app already carries, using only data available now.
-     The figure beside each row is the signal that earned the pick (e.g.
-     yesterday&rsquo;s move, trailing 20-day return), not a prediction of
-     what it will return.</p>
-  <p class="disclaimer">For fun and testing. Not financial advice. The picker
-     uses momentum + quality as forecasting signals; it does not know
-     what tomorrow holds.</p>
-  <div class="picks-grid">
-    {% for slate in pick_slates %}{{ picks_column(slate) }}{% endfor %}
   </div>
 
   <h2 class="section-title">Today&rsquo;s industries{% if industries_asof %}<span class="section-title__asof">classifications synced {{ industries_asof|ago }}</span>{% endif %}<span class="section-title__asof"><a href="/industries">All industries &rarr;</a></span></h2>
@@ -112,12 +98,14 @@
     </section>
   </div>
 
-  <h2 class="section-title">Stock health{% if health_asof %}<span class="section-title__asof">last sync {{ health_asof|ago }}</span>{% endif %}</h2>
-  <p class="section-note">Fundamentals + recent price and growth trajectory +
-     leadership stability, rolled into one read per stock. Industry context
-     is not yet folded in.</p>
-  <p class="disclaimer">For fun and reading at a glance. Not investment advice
-     and not a buy or sell signal.</p>
+  <h2 class="section-title">Quality leaderboard{% if health_asof %}<span class="section-title__asof">last sync {{ health_asof|ago }}</span>{% endif %}</h2>
+  <p class="section-note">One quality read per curated stock: fundamentals +
+     recent price and growth trajectory + leadership stability, rolled together.
+     The figure beside each row is its trailing-year return. Ranks the
+     healthiest names against the most concerning right now &mdash; it is not a
+     forecast of what any of them will do next.</p>
+  <p class="disclaimer">For reading at a glance. Not investment advice and not a
+     buy or sell signal.</p>
   <div class="movers">
     <section class="movers__panel">
       <h3 class="movers__title">Healthiest</h3>
@@ -131,29 +119,6 @@
       <h3 class="movers__title">Most concerning</h3>
       {% if concerning %}
       <div class="movers__list">{% for r in concerning %}{{ health_row(r) }}{% endfor %}</div>
-      {% else %}
-      <p class="movers__empty">No graded fundamentals yet.</p>
-      {% endif %}
-    </section>
-  </div>
-
-  <h2 class="section-title">Strongest &amp; weakest{% if standings_asof %}<span class="section-title__asof">fundamentals synced {{ standings_asof|ago }}</span>{% endif %}</h2>
-  <p class="section-note">A broader read than the day&rsquo;s move: each curated
-     stock&rsquo;s fundamentals graded and rolled up, weighted with its price and
-     growth trajectory.</p>
-  <div class="movers">
-    <section class="movers__panel">
-      <h3 class="movers__title">Strongest</h3>
-      {% if strongest %}
-      <div class="movers__list">{% for r in strongest %}{{ standing_row(r) }}{% endfor %}</div>
-      {% else %}
-      <p class="movers__empty">No graded fundamentals yet.</p>
-      {% endif %}
-    </section>
-    <section class="movers__panel">
-      <h3 class="movers__title">Weakest</h3>
-      {% if weakest %}
-      <div class="movers__list">{% for r in weakest %}{{ standing_row(r) }}{% endfor %}</div>
       {% else %}
       <p class="movers__empty">No graded fundamentals yet.</p>
       {% endif %}

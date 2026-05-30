@@ -720,10 +720,10 @@ main {
   line-height: 1.55;
 }
 
-/* ---------- disclaimer line (Phase 30) ---------- */
-/* A quiet ink-faint line used on the home Top picks panel and the /backtest
-   page header. Always smaller than body text; never carries a semantic
-   colour — the picks themselves are explicitly "for fun and testing". */
+/* ---------- disclaimer line ---------- */
+/* A quiet ink-faint line used on the home quality leaderboard. Always smaller
+   than body text; never carries a semantic colour — the read is explicitly
+   "not investment advice". */
 .disclaimer {
   margin: calc(var(--sp-2) * -1) 0 var(--sp-3);
   font-size: var(--fs-xs);

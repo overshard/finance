@@ -16,7 +16,6 @@ use serde::Serialize;
 use crate::compute::{self, Sparkline};
 use crate::market;
 use crate::models;
-use crate::picks;
 use crate::render::render;
 use crate::AppState;
 
@@ -51,12 +50,8 @@ const COMMODITIES: &[&str] = &["^VIX", "CL=F", "GC=F", "NG=F"];
 /// How many gainers and how many losers each movers panel lists.
 const MOVERS_LIMIT: usize = 8;
 
-/// How many stocks each of the strongest / weakest panels lists. Mirrors
-/// `MOVERS_LIMIT` so the two pairs of panels read alike.
-const STANDING_LIMIT: usize = 8;
-
-/// How many stocks each of the healthiest / most-concerning health panels
-/// lists (Phase 17). Mirrors `STANDING_LIMIT`.
+/// How many stocks each side of the quality leaderboard (healthiest /
+/// most-concerning) lists. Mirrors `MOVERS_LIMIT` so the panels read alike.
 const HEALTH_LIMIT: usize = 8;
 
 /// A symbol's latest session counts as the bars within this window of its most
@@ -109,32 +104,20 @@ struct Mover {
     strength: Option<compute::Standing>,
 }
 
-/// One row in a strongest / weakest panel.
-#[derive(Serialize, Clone)]
-struct StandingRow {
-    ticker: String,
-    name: String,
-    /// The combined fundamentals-and-trajectory standing this row is ranked by.
-    standing: compute::Standing,
-    /// Trailing 12-month return, percent; `None` when history is too short.
-    ret_12m: Option<f64>,
-    /// Width (0..100) of the row's magnitude tint, scaled to the largest
-    /// absolute score shown across both panels.
-    bar: f64,
-    /// Colour hook: true when the combined score is not negative.
-    up: bool,
-}
-
-/// One row in a healthiest / most-concerning panel (Phase 17). Carries the
-/// `HealthRead` directly so the row can show the overall verdict alongside
-/// the three sub-readings.
+/// One row in the quality leaderboard (healthiest / most-concerning panels,
+/// Phase 17 / reframed in Phase 3). Carries the `HealthRead` directly so the
+/// row can show the overall verdict alongside the three sub-readings, plus the
+/// trailing-year return as a quiet price-performance anchor (folded in from the
+/// old strongest / weakest panel when those merged into the leaderboard).
 #[derive(Serialize, Clone)]
 struct HealthRow {
     ticker: String,
     name: String,
     health: compute::HealthRead,
+    /// Trailing 12-month return, percent; `None` when history is too short.
+    ret_12m: Option<f64>,
     /// Width (0..100) of the row's magnitude tint, scaled to the largest
-    /// absolute score shown across both panels (mirrors movers / standing).
+    /// absolute score shown across both panels.
     bar: f64,
     /// Colour hook: true when the composite score is not negative.
     up: bool,
@@ -203,11 +186,10 @@ async fn home(State(state): State<AppState>) -> Response {
         .unwrap_or(seeded);
 
     let (index_section, commodity_section) = dashboard_cards(&state).await;
-    // One scan of the curated stocks feeds both the movers and the strongest /
-    // weakest panels.
+    // One scan of the curated stocks feeds the movers, the industry composites,
+    // and the quality leaderboard.
     let stocks = load_stocks(&state).await;
     let (gainers, losers) = movers(&stocks);
-    let (strongest, weakest) = strength_panels(&stocks);
     let (healthiest, concerning) = health_panels(&stocks);
     let (top_industries, bottom_industries) = industry_panels(&stocks);
     let industries_asof = stocks
@@ -215,22 +197,10 @@ async fn home(State(state): State<AppState>) -> Response {
         .filter_map(|s| s.asset_profile_synced_at)
         .max();
 
-    // Top picks (Phase 30): computed live every render, so the panel works on
-    // day 1 before the snapshot job has run. A separate scan (LOOKBACK_DAYS is
-    // longer than `load_stocks` needs for the 12m return, since the picks
-    // rankers want the full 200-day SMA + 52-week-high window). Cheap; the
-    // home render still comes in well under 1s warm.
-    let pick_slates = picks::load_bundles(&state.pool)
-        .await
-        .map(|b| picks::compute_picks(&b))
-        .unwrap_or_default();
-
     // Section freshness (PLAN.md Phase 22): the movers panels date off the
-    // freshest stock quote, the strongest / weakest panels off the most recent
-    // SEC fundamentals sync — the data each panel actually leans on.
+    // freshest stock quote — the data each panel actually leans on.
     let movers_asof = stocks.iter().filter_map(|s| s.last_quote_at).max();
-    let standings_asof = stocks.iter().filter_map(|s| s.fundamentals_synced_at).max();
-    // The health panels lean on both fundamentals and leadership, so their
+    // The quality leaderboard leans on both fundamentals and leadership, so its
     // freshness caption tracks whichever sync ran later.
     let health_asof = stocks
         .iter()
@@ -252,13 +222,9 @@ async fn home(State(state): State<AppState>) -> Response {
         gainers => gainers,
         losers => losers,
         movers_asof => movers_asof,
-        strongest => strongest,
-        weakest => weakest,
-        standings_asof => standings_asof,
         healthiest => healthiest,
         concerning => concerning,
         health_asof => health_asof,
-        pick_slates => pick_slates,
         top_industries => top_industries,
         bottom_industries => bottom_industries,
         industries_asof => industries_asof,
@@ -639,65 +605,14 @@ fn movers(stocks: &[StockRow]) -> (Vec<Mover>, Vec<Mover>) {
     (gainers, losers)
 }
 
-/// The strongest and weakest curated stocks by their combined Phase 20 score.
-///
-/// A fundamentals-and-trajectory lens on the same curated large-caps the
-/// movers panels draw from — a broader read than the day's price move. A stock
-/// with no graded standing (its SEC fundamentals have not synced) is left out.
-fn strength_panels(stocks: &[StockRow]) -> (Vec<StandingRow>, Vec<StandingRow>) {
-    // Rank only the stocks that earned a standing, best combined score first.
-    let mut ranked: Vec<&StockRow> = stocks.iter().filter(|s| s.standing.is_some()).collect();
-    if ranked.is_empty() {
-        return (Vec::new(), Vec::new());
-    }
-    ranked.sort_by(|a, b| {
-        let (sa, sb) = (a.standing.unwrap().score, b.standing.unwrap().score);
-        sb.partial_cmp(&sa).unwrap_or(Ordering::Equal)
-    });
-
-    let row = |s: &StockRow| {
-        let standing = s.standing.unwrap();
-        StandingRow {
-            ticker: s.ticker.clone(),
-            name: s.name.clone(),
-            standing,
-            ret_12m: s.ret_12m,
-            bar: 0.0,
-            up: standing.score >= 0.0,
-        }
-    };
-    let mut strongest: Vec<StandingRow> =
-        ranked.iter().copied().take(STANDING_LIMIT).map(&row).collect();
-    let mut weakest: Vec<StandingRow> = ranked
-        .iter()
-        .copied()
-        .rev()
-        .take(STANDING_LIMIT)
-        .map(&row)
-        .collect();
-
-    // Scale every magnitude tint to the largest absolute score shown, so the
-    // two panels read against one another (mirrors the movers tint).
-    let max_abs = strongest
-        .iter()
-        .chain(weakest.iter())
-        .map(|r| r.standing.score.abs())
-        .fold(0.0_f64, f64::max);
-    for r in strongest.iter_mut().chain(weakest.iter_mut()) {
-        r.bar = if max_abs > 0.0 {
-            (r.standing.score.abs() / max_abs * 100.0).clamp(0.0, 100.0)
-        } else {
-            0.0
-        };
-    }
-    (strongest, weakest)
-}
-
-/// The healthiest and most-concerning curated stocks by their Phase 17
-/// composite — fundamentals + trajectory + leadership stability. A broader
-/// read than the Phase 20 strongest / weakest pair, layering the leadership
-/// stability signal on top. Stocks without a health read (fundamentals not
-/// synced) are left out; the panels are a fixed page-load snapshot.
+/// The quality leaderboard: the healthiest and most-concerning curated stocks
+/// by their Phase 17 composite — fundamentals + recent trajectory + leadership
+/// stability rolled into one read. The single non-advice "best / worst quality
+/// right now" surface that replaced the old Top picks, Strongest & weakest, and
+/// Stock health panels (Phase 3). Each row also carries its trailing-year
+/// return as a price-performance anchor. Stocks without a health read
+/// (fundamentals not synced) are left out; the panels are a fixed page-load
+/// snapshot.
 fn health_panels(stocks: &[StockRow]) -> (Vec<HealthRow>, Vec<HealthRow>) {
     let mut ranked: Vec<&StockRow> = stocks.iter().filter(|s| s.health.is_some()).collect();
     if ranked.is_empty() {
@@ -714,6 +629,7 @@ fn health_panels(stocks: &[StockRow]) -> (Vec<HealthRow>, Vec<HealthRow>) {
             ticker: s.ticker.clone(),
             name: s.name.clone(),
             health,
+            ret_12m: s.ret_12m,
             bar: 0.0,
             up: health.score >= 0.0,
         }

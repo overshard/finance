@@ -40,7 +40,7 @@ use crate::providers::{
     PortfolioData, Quote, QuoteProvider,
 };
 use crate::stream::{Hub, QuoteUpdate, StreamEvent};
-use crate::{picks, seed, Config};
+use crate::{seed, Config};
 
 /// How often the loop wakes to check whether a job is due. The jobs themselves
 /// run hours apart; a one-minute tick is plenty responsive and nearly free
@@ -318,15 +318,6 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
 
             if let Err(e) = run_daily_close_if_due(&pool, &config, &hub).await {
                 tracing::warn!("[scheduler] daily close: {e:#}");
-            }
-
-            // Top picks snapshot (Phase 30): immediately after the daily close
-            // runs, freeze each horizon's 5 picks into the `picks` table. Same
-            // once-per-ET-day cadence — keyed in `meta` so it does not repeat,
-            // and gated on `daily_close_date` already being set so the picks
-            // are scored off fresh closes, not a stale half-snapshot.
-            if let Err(e) = run_picks_snapshot_if_due(&pool, &hub).await {
-                tracing::warn!("[scheduler] picks snapshot: {e:#}");
             }
 
             if let Err(e) = run_prune_if_due(&pool, &mut last_prune, &hub).await {
@@ -834,54 +825,6 @@ async fn run_daily_close_if_due(
             log_fetch(pool, "daily_close", "yahoo", "ok", Some(&detail), Some(ok), dur, started)
                 .await?;
             mark_ok(pool, "daily_close", None).await?;
-        }
-    }
-    notify_health(hub);
-    Ok(())
-}
-
-/// Top picks snapshot (Phase 30).
-///
-/// Once a day, right after `run_daily_close_if_due` populates fresh closes,
-/// run every horizon's ranker and persist the top-5 picks to the `picks`
-/// table. The snapshot is what makes `/backtest` honest: an algo tweak the
-/// next day cannot rewrite history, because the picks for every past day are
-/// already frozen.
-///
-/// Keyed in `meta` so a single snapshot per ET trading date — and gated on
-/// `daily_close_date` being set, so we never freeze picks scored against
-/// stale prices.
-async fn run_picks_snapshot_if_due(pool: &SqlitePool, hub: &Hub) -> anyhow::Result<()> {
-    // Today's daily close must have already landed: the picks are scored off
-    // the close, so running before it would freeze yesterday's snapshot.
-    let close_date = get_meta(pool, "daily_close_date").await?;
-    let Some(date) = close_date else {
-        return Ok(());
-    };
-    if get_meta(pool, "picks_snapshot_date").await?.as_deref() == Some(date.as_str()) {
-        return Ok(());
-    }
-
-    let started = now_ms();
-    mark_fetching(pool, "picks").await?;
-    notify_health(hub);
-    let t0 = Instant::now();
-    let written = picks::snapshot_today(pool, &date).await;
-    let dur = t0.elapsed().as_millis() as i64;
-
-    match written {
-        Ok(n) => {
-            set_meta(pool, "picks_snapshot_date", &date).await?;
-            let detail = format!("{n} picks for {date}");
-            tracing::info!("[scheduler] picks: {detail}");
-            log_fetch(pool, "picks", "-", "ok", Some(&detail), Some(n as i64), dur, started)
-                .await?;
-            mark_ok(pool, "picks", None).await?;
-        }
-        Err(e) => {
-            let msg = format!("{e:#}");
-            log_fetch(pool, "picks", "-", "error", Some(&msg), None, dur, started).await?;
-            mark_error(pool, "picks", &msg, None).await?;
         }
     }
     notify_health(hub);

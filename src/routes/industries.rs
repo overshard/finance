@@ -36,8 +36,7 @@ use crate::AppState;
 
 /// Trading-day cap on the composite price chart. Five years is long enough
 /// to span a full market cycle, short enough that the equal-weight scan over
-/// dozens of members is cheap; matches the deep-history cap in
-/// `routes::backtest`'s `HIST_LOOKBACK_DAYS`.
+/// dozens of members is cheap.
 const COMPOSITE_LOOKBACK_DAYS: i64 = 5 * 365 + 2;
 
 /// One row per stock with classification + the figures the page needs.

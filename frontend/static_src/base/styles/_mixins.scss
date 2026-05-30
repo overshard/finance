@@ -39,11 +39,10 @@
   color: var(--ink-faint);
 }
 
-// Shared ranked-row chrome (Phase 31). Used by `.mover`, `.standing`,
-// `.hrow`, `.industry-row`, and `.pick__row`. Each row is a grid with a
-// magnitude-tinted ::before sized by the route via the --bar custom
-// property; hover swaps in the well. The grid template is the row's job —
-// this mixin only owns the chrome.
+// Shared ranked-row chrome (Phase 31). Used by `.mover`, `.hrow`, and
+// `.industry-row`. Each row is a grid with a magnitude-tinted ::before sized
+// by the route via the --bar custom property; hover swaps in the well. The
+// grid template is the row's job — this mixin only owns the chrome.
 @mixin ranked-row {
   position: relative;
   display: grid;

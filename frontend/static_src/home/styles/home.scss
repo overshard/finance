@@ -235,49 +235,17 @@
   display: flex;
 }
 
-/* ---------- strongest / weakest panels (Phase 20) ---------- */
-/* Same ranked-row chrome as .mover; rank is the rolled-up standing rather
-   than the day's price move. */
-.standing {
-  @include ranked-row;
-  /* sym, name, trailing-year return, verdict badge */
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-}
-
-.standing--up::before    { background: var(--up-soft); }
-.standing--down::before  { background: var(--down-soft); }
-
-.standing__sym {
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: var(--fs-sm);
-}
-
-.standing__name {
-  font-size: var(--fs-xs);
-  color: var(--ink-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* the trailing-year return, a quiet context figure beside the verdict */
-.standing__ret {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--ink-faint);
-  text-align: right;
-  min-width: 5ch;
-}
-
-/* ---------- healthiest / most-concerning panels (Phase 17) ---------- */
+/* ---------- quality leaderboard: healthiest / most-concerning (Phase 17,
+   reframed Phase 3) ---------- */
 /* Each row carries the symbol, the name with three sub-component chips
-   underneath (fundamentals / trajectory / leadership), and the overall
-   Healthy / Mixed / Concerning verdict on the right. The chips read as
-   coloured pills so the synthesis is legible without expanding. */
+   underneath (fundamentals / trajectory / leadership), the trailing-year
+   return as a quiet price anchor, and the overall Healthy / Mixed / Concerning
+   verdict on the right. The chips read as coloured pills so the synthesis is
+   legible without expanding. */
 .hrow {
   @include ranked-row;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  /* sym, body (name + chips), trailing-year return, verdict badge */
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
 }
 
 .hrow--up::before    { background: var(--up-soft); }
@@ -329,160 +297,19 @@
 .hrow__chip--bad      { color: var(--down);      background: var(--down-soft); }
 .hrow__chip--unknown  { color: var(--ink-faint); background: var(--well); }
 
-/* ---------- top picks panel (Phase 30) ---------- */
-/* Four columns (Day / Week / Month / Year), each carrying 5 ranked picks.
-   On a phone the four stack 2-up so a quick read of all horizons stays
-   above the fold; on desktop they spread out into one row. */
-.picks-grid {
-  display: grid;
-  /* Single column at the narrowest widths: a 2-up grid clipped the score
-     column on a 390px phone, and stacking buys back room for the company
-     name. 2-up reinstated at $bp-sm where each card has ~280px to work with. */
-  grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
-}
-
-/* Mobile baseline: a plain block card. Each card stacks vertically and
-   its own children flow normally so the title/desc/list sequence reads
-   top-to-bottom. The subgrid alignment kicks in at $bp-sm once we're
-   back to a multi-column layout where lining rows up matters. */
-.picks-col {
-  @include card;
-  padding: 10px 12px 8px;
-  min-width: 0;
-}
-
-/* The picks-col title is a quiet header inside an already-bordered card,
-   so a serif label without an extra rule (the card border owns that). */
-.picks-col__title {
-  font-family: var(--font-serif);
-  font-weight: 600;
-  font-size: var(--fs-md);
-  letter-spacing: -0.01em;
-  color: var(--ink);
-  padding-bottom: var(--sp-1);
-}
-
-.picks-col__desc {
-  margin: 0;
-  font-size: var(--fs-2xs);
-  color: var(--ink-faint);
-  line-height: 1.4;
-}
-
-.picks-col__list {
-  list-style: none;
-  margin: var(--sp-1) 0 0;
-  padding: 0;
-}
-
-.picks-col__empty {
-  margin: var(--sp-2) 0;
+/* the trailing-year return, a quiet context figure beside the verdict */
+.hrow__ret {
+  font-family: var(--font-mono);
   font-size: var(--fs-xs);
   color: var(--ink-faint);
-}
-
-.pick {
-  border-bottom: 1px solid var(--rule);
-}
-
-.pick:last-child {
-  border-bottom: 0;
-}
-
-/* Phone baseline: the card is full-width, so the row carries the company
-   name in its own slot. At $bp-sm and up the row drops the name (no longer
-   enough horizontal room once the grid goes 2-up / 4-up) and shifts the
-   verdict badge into the flexible track instead. */
-.pick__row {
-  display: grid;
-  grid-template-columns: 1.5ch minmax(4.5ch, auto) minmax(0, 1fr) auto minmax(5.6ch, auto);
-  align-items: center;
-  gap: var(--sp-2);
-  padding: 9px 2px;
-  color: var(--ink);
-  min-height: 36px;
-}
-
-.pick__row:hover {
-  color: var(--ink);
-  background: var(--well);
-}
-
-.pick__rank {
   text-align: right;
-  font-family: var(--font-mono);
-  font-size: var(--fs-2xs);
-  color: var(--ink-faint);
-  font-weight: 600;
-}
-
-.pick__sym {
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: var(--fs-sm);
-}
-
-/* The name span shows on phones, where the stacked 1-up card has room for
-   it, and is hidden once the grid steps up to 2-up and 4-up below
-   (the slot becomes too narrow for a useful name slice). */
-.pick__name {
-  color: var(--ink-faint);
-  font-size: var(--fs-xs);
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* center the verdict pill in its slot so Strong / Fair / Weak align
-   horizontally across the four cards */
-.pick__badge {
-  display: flex;
-  justify-content: flex-start;
-  margin-left: auto;
-}
-
-.pick__score {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  font-weight: 700;
-  text-align: right;
-}
-
-/* ---------- $bp-sm: picks step up to 2-up; name yields to the badge ---------- */
-@media (min-width: $bp-sm) {
-  .picks-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  /* Reinstate the cross-card row alignment now that there's more than one
-     column to align across. */
-  .picks-col {
-    display: grid;
-    grid-template-columns: subgrid;
-    grid-template-rows: subgrid;
-    grid-row: span 3;
-    row-gap: 4px;
-  }
-
-  .pick__row {
-    grid-template-columns: 1.5ch minmax(4.5ch, auto) 1fr minmax(5.6ch, auto);
-  }
-
-  .pick__name {
-    display: none;
-  }
+  min-width: 5ch;
 }
 
 /* ---------- desktop layering ---------- */
 @media (min-width: $bp-md) {
   .movers {
     grid-template-columns: 1fr 1fr;
-  }
-
-  .picks-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
@@ -501,8 +328,8 @@
 /* ---------- Today's industries panel (Phase 15) ---------- */
 
 /* Each row is one sector: name on the left, member count, and the day
-   composite %. Same chrome as `.mover` and `.standing` via the
-   ranked-row mixin. */
+   composite %. Same chrome as `.mover` and `.hrow` via the ranked-row
+   mixin. */
 .industry-row {
   @include ranked-row;
   grid-template-columns: minmax(0, 1fr) auto auto;
