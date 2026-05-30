@@ -208,8 +208,7 @@ fn to_job(s: StatusRow) -> Job {
 /// A human label for a known upstream id.
 fn endpoint_label(endpoint: &str) -> &str {
     match endpoint {
-        "stooq" => "Stooq · daily history",
-        "yahoo" => "Yahoo Finance · quotes & intraday",
+        "yahoo" => "Yahoo Finance · quotes, intraday & daily history",
         "sec" => "SEC EDGAR · fundamentals & filings",
         other => other,
     }
@@ -225,7 +224,7 @@ fn job_meta(job: &str) -> (&str, &str) {
         ),
         "history" => (
             "Daily history",
-            "Incremental daily-bar refresh from Stooq, roughly every 6 hours.",
+            "Backstop incremental daily-bar refresh from Yahoo, roughly every 6 hours.",
         ),
         "intraday" => (
             "Intraday quotes",

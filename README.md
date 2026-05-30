@@ -19,15 +19,14 @@ Single-operator, no auth, no accounts. It is for *watching* the market, not trac
 
 ## Data sources
 
-All free, no account, one key:
+All free, no account, no key:
 
 | Source | Used for | Auth |
 |---|---|---|
-| Stooq | Deep daily OHLCV history | A free apikey (`STOOQ_APIKEY`), obtained once via a captcha |
-| Yahoo Finance | Live quotes + 15-minute intraday bars | None (a browser User-Agent) |
+| Yahoo Finance | Deep daily history + live quotes + 15-minute intraday bars | None (a browser User-Agent) |
 | SEC EDGAR | Fundamentals (XBRL) + filing history | None (a contact email, `SEC_CONTACT_EMAIL`, in the User-Agent) |
 
-Everything fetched is cached in SQLite; the network is touched only for increments. The full per-symbol history backfill runs once, then daily history is refreshed in a small recent window and intraday quotes are polled only for watched symbols during market hours. P/E and dividend yield are computed from SEC data plus the latest price, never stored.
+Everything fetched is cached in SQLite; the network is touched only for increments. Yahoo's chart endpoint serves a symbol's entire daily history in one call, so the per-symbol backfill runs once; thereafter the daily-close snapshot appends each day's bar and intraday quotes are polled only for watched symbols during market hours. P/E and dividend yield are computed from SEC data plus the latest price, never stored.
 
 ## System dependencies
 
@@ -46,13 +45,13 @@ The Docker build (see `Dockerfile`) reproduces this on `rust:alpine` + `alpine:3
 
 ```sh
 cp samplefiles/env.sample .env
-# edit .env: set STOOQ_APIKEY and SEC_CONTACT_EMAIL (and BASE_URL for prod)
+# edit .env: set SEC_CONTACT_EMAIL (and BASE_URL for prod)
 make
 ```
 
 `make` (alias `make run`) installs frontend deps if needed, then runs Vite watch and `cargo run` concurrently on port 8000. Visit http://localhost:8000.
 
-On first boot the scheduler seeds the curated universe and backfills its daily history from Stooq (resumable, paced, guarded). With no `STOOQ_APIKEY` the app still boots and serves live quotes from Yahoo; only the deep daily history is unavailable.
+On first boot the scheduler seeds the curated universe and backfills its deep daily history from Yahoo (resumable, paced, guarded). No API key is needed; Yahoo serves history, live quotes, and intraday bars from the same endpoint.
 
 ## Configuration
 
@@ -60,7 +59,6 @@ All config comes from `.env` (loaded via `dotenvy`). The full set:
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `STOOQ_APIKEY` | for history | Stooq apikey for the daily-history endpoint. Empty disables Stooq |
 | `SEC_CONTACT_EMAIL` | for fundamentals | Appended to the User-Agent on SEC requests so SEC can identify the caller. Empty disables the SEC job |
 | `BASE_URL` | yes for prod | Absolute origin used in the sitemap and og tags. No trailing slash |
 | `PORT` | no (default `8000`) | HTTP listen port |

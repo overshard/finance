@@ -1,12 +1,14 @@
 //! Data-source abstraction.
 //!
 //! Each upstream sits behind a trait so a source can be swapped without
-//! touching callers. Phase 1 ships `HistoryProvider` (Stooq); Phase 5 adds
-//! `QuoteProvider` (Yahoo); Phase 7 adds `FundamentalsProvider` (SEC EDGAR).
+//! touching callers. `QuoteProvider` + `HistoryProvider` (both Yahoo) cover
+//! live quotes/intraday and deep daily history; `FundamentalsProvider` (SEC
+//! EDGAR) covers stock fundamentals, filings, leadership, and ETF profiles.
+//! (Stooq was the original history source; it was dropped 2026-05-30 — see
+//! PLAN.md's data-source policy.)
 
 pub mod http;
 pub mod sec;
-pub mod stooq;
 pub mod yahoo;
 
 use std::collections::HashMap;
@@ -26,7 +28,9 @@ pub struct DailyBar {
     pub volume: i64,
 }
 
-/// Deep daily OHLCV history. Implemented by `StooqProvider`.
+/// Deep daily OHLCV history. Implemented by `YahooProvider` (one
+/// `interval=1d` chart call returns a symbol's whole history, or an
+/// incremental window when `since` is given).
 #[async_trait]
 pub trait HistoryProvider: Send + Sync {
     fn name(&self) -> &'static str;
@@ -74,8 +78,6 @@ pub struct QuoteData {
 /// Near-real-time quotes and intraday bars. Implemented by `YahooProvider`.
 #[async_trait]
 pub trait QuoteProvider: Send + Sync {
-    fn name(&self) -> &'static str;
-
     /// The latest quote and the day's intraday bars for `ticker`.
     async fn quote(&self, ticker: &str) -> Result<QuoteData>;
 }

@@ -35,7 +35,7 @@ use crate::market;
 use crate::providers::sec::SecProvider;
 use crate::providers::yahoo::YahooProvider;
 use crate::providers::{
-    self, stooq::StooqProvider, DividendEvent, Fact, FilingRecord, FundId, FundMetadata,
+    self, DailyBar, DividendEvent, Fact, FilingRecord, FundId, FundMetadata,
     FundShape, FundamentalsProvider, HistoryProvider, IntradayBar, OwnershipPerson,
     PortfolioData, Quote, QuoteProvider,
 };
@@ -145,12 +145,9 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
             tracing::warn!("[scheduler] register endpoints: {e}");
         }
 
-        let history_enabled = !config.stooq_apikey.is_empty();
-        if !history_enabled {
-            tracing::warn!(
-                "[scheduler] STOOQ_APIKEY unset: seed and history refresh disabled, prune still runs"
-            );
-        } else if let Err(e) = run_boot_seed(&pool, &config, &hub).await {
+        // History comes from Yahoo now (no API key needed), so the seed and
+        // incremental refresh always run.
+        if let Err(e) = run_boot_seed(&pool, &config, &hub).await {
             tracing::warn!("[scheduler] boot seed: {e:#}");
         }
 
@@ -226,16 +223,14 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
                 last_session = Some(session);
             }
 
-            if history_enabled {
-                match is_due(&pool, "history", now_ms()).await {
-                    Ok(true) => {
-                        if let Err(e) = run_history(&pool, &config, &hub).await {
-                            tracing::warn!("[scheduler] history: {e:#}");
-                        }
+            match is_due(&pool, "history", now_ms()).await {
+                Ok(true) => {
+                    if let Err(e) = run_history(&pool, &config, &hub).await {
+                        tracing::warn!("[scheduler] history: {e:#}");
                     }
-                    Ok(false) => {}
-                    Err(e) => tracing::warn!("[scheduler] history due-check: {e}"),
                 }
+                Ok(false) => {}
+                Err(e) => tracing::warn!("[scheduler] history due-check: {e}"),
             }
 
             if sec_enabled {
@@ -339,8 +334,10 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
 /// only once that endpoint's first request lazily creates its guard row. The
 /// ids and budgets mirror how each job below constructs its `EndpointGuard`.
 async fn register_endpoints(pool: &SqlitePool) -> anyhow::Result<()> {
-    EndpointGuard::new(pool.clone(), "stooq")
-        .ensure_registered()
+    // Stooq was retired 2026-05-30 (Yahoo now serves history too). Drop its
+    // stale guard row so it no longer lingers on the data-health page.
+    sqlx::query("DELETE FROM endpoint_guard WHERE endpoint = 'stooq'")
+        .execute(pool)
         .await?;
     EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET)
         .ensure_registered()
@@ -377,12 +374,9 @@ async fn run_boot_seed(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow:
     let started = now_ms();
     mark_fetching(pool, "seed").await?;
     notify_health(hub);
-    let stooq = StooqProvider::new(
-        providers::http::build_client(config),
-        config.stooq_apikey.clone(),
-    );
+    let yahoo = YahooProvider::new(providers::http::build_client(config));
     let t0 = Instant::now();
-    let result = seed::run(pool, config, &stooq).await;
+    let result = seed::run(pool, config, &yahoo).await;
     let dur = t0.elapsed().as_millis() as i64;
 
     match &result {
@@ -396,13 +390,13 @@ async fn run_boot_seed(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow:
             .fetch_one(pool)
             .await?;
             let detail = format!("{with_history}/{total} seeded symbols have history");
-            log_fetch(pool, "seed", "stooq", "ok", Some(&detail), Some(with_history), dur, started)
+            log_fetch(pool, "seed", "yahoo", "ok", Some(&detail), Some(with_history), dur, started)
                 .await?;
             mark_ok(pool, "seed", None).await?;
         }
         Err(e) => {
             let msg = format!("{e:#}");
-            log_fetch(pool, "seed", "stooq", "error", Some(&msg), None, dur, started).await?;
+            log_fetch(pool, "seed", "yahoo", "error", Some(&msg), None, dur, started).await?;
             mark_error(pool, "seed", &msg, None).await?;
         }
     }
@@ -415,8 +409,13 @@ async fn run_boot_seed(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow:
 }
 
 /// Incremental daily-history refresh: re-fetch only the symbols whose stored
-/// history has gone stale, asking Stooq for the window since each symbol's
+/// history has gone stale, asking Yahoo for the window since each symbol's
 /// last stored bar. Paced and circuit-broken like the seed.
+///
+/// This is a backstop: on a normal trading day the `daily_close` job already
+/// appends each symbol's bar (and stamps `history_synced_at`), so nothing is
+/// stale here. It still earns its keep for symbols missed while the server was
+/// down at the close, weekends, and freshly added tickers.
 async fn run_history(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Result<()> {
     let started = now_ms();
     let next = started + HISTORY_INTERVAL_SECS * 1000;
@@ -426,14 +425,12 @@ async fn run_history(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::R
     // Every symbol we track, curated or user-added, is eligible: a symbol
     // added through the Phase 9 add-symbol flow needs its history backfilled
     // exactly as a seeded one does. (The seed itself stays curated-list-only;
-    // it is the only job that keys on `is_seeded`.) Futures (kind = 'future')
-    // are excluded: Stooq has no `=F` history, so they are live-quotes only,
-    // carried by the daily-close snapshot alone (see PLAN.md Phase 10).
+    // it is the only job that keys on `is_seeded`.) Futures are included now —
+    // Yahoo serves `=F` daily history, unlike the Stooq source this replaced.
     let cutoff = started - HISTORY_STALE_SECS * 1000;
     let stale: Vec<(String, Option<String>)> = sqlx::query_as(
         "SELECT ticker, history_last_date FROM symbols \
-         WHERE kind != 'future' \
-           AND (history_synced_at IS NULL OR history_synced_at < ?) \
+         WHERE history_synced_at IS NULL OR history_synced_at < ? \
          ORDER BY ticker",
     )
     .bind(cutoff)
@@ -441,7 +438,7 @@ async fn run_history(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::R
     .await?;
 
     if stale.is_empty() {
-        log_fetch(pool, "history", "stooq", "ok", Some("no stale symbols"), Some(0), 0, started)
+        log_fetch(pool, "history", "yahoo", "ok", Some("no stale symbols"), Some(0), 0, started)
             .await?;
         mark_ok(pool, "history", Some(next)).await?;
         notify_health(hub);
@@ -449,16 +446,15 @@ async fn run_history(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::R
     }
     tracing::info!("[scheduler] history: refreshing {} stale symbols", stale.len());
 
-    let stooq = StooqProvider::new(
-        providers::http::build_client(config),
-        config.stooq_apikey.clone(),
-    );
+    let yahoo = YahooProvider::new(providers::http::build_client(config));
     let t0 = Instant::now();
 
     // Route every request through the persistent endpoint guard: it paces the
     // loop and refuses requests once the breaker opens or the hourly budget is
     // spent, so the job stops cleanly instead of hammering a guarded endpoint.
-    let guard = EndpointGuard::new(pool.clone(), stooq.name());
+    // History shares the `yahoo` guard with live quotes, so build it with the
+    // same budget rather than the 200-default `new` ceiling.
+    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
     let mut ok = 0usize;
     let mut total_bars = 0i64;
     let mut stopped: Option<String> = None;
@@ -471,7 +467,7 @@ async fn run_history(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::R
                 break;
             }
         }
-        match stooq.daily(ticker, last_date.as_deref()).await {
+        match yahoo.daily(ticker, last_date.as_deref()).await {
             Ok(bars) if !bars.is_empty() => {
                 guard.record_success().await?;
                 total_bars += bars.len() as i64;
@@ -503,14 +499,14 @@ async fn run_history(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::R
                 stale.len()
             );
             tracing::warn!("[scheduler] history: {detail}");
-            log_fetch(pool, "history", "stooq", "skipped", Some(&detail), Some(total_bars), dur, started)
+            log_fetch(pool, "history", "yahoo", "skipped", Some(&detail), Some(total_bars), dur, started)
                 .await?;
             mark_ok(pool, "history", Some(next)).await?;
         }
         None => {
             let detail = format!("{ok}/{} symbols refreshed, {total_bars} bars", stale.len());
             tracing::info!("[scheduler] history: {detail}");
-            log_fetch(pool, "history", "stooq", "ok", Some(&detail), Some(total_bars), dur, started)
+            log_fetch(pool, "history", "yahoo", "ok", Some(&detail), Some(total_bars), dur, started)
                 .await?;
             mark_ok(pool, "history", Some(next)).await?;
         }
@@ -566,7 +562,7 @@ async fn run_intraday(
     notify_health(hub);
 
     let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
     let t0 = Instant::now();
 
     let mut ok = 0i64;
@@ -627,6 +623,21 @@ async fn run_intraday(
     Ok(())
 }
 
+/// Build a daily OHLCV bar from a closing quote. `close` is the quote's last
+/// price; open/high/low fall back to the close when Yahoo's `meta` left them
+/// null (some indexes carry only a level), and volume defaults to 0.
+fn daily_bar_from_quote(date: &str, q: &Quote) -> DailyBar {
+    let close = q.price;
+    DailyBar {
+        d: date.to_string(),
+        open: q.open.unwrap_or(close),
+        high: q.day_high.unwrap_or(close),
+        low: q.day_low.unwrap_or(close),
+        close,
+        volume: q.volume.unwrap_or(0),
+    }
+}
+
 /// Once-a-day closing snapshot of the whole universe.
 ///
 /// Shortly after the regular session closes (>= 16:05 ET on a weekday), fetch
@@ -663,7 +674,7 @@ async fn run_daily_close_if_due(
     mark_fetching(pool, "daily_close").await?;
     notify_health(hub);
     let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
     let t0 = Instant::now();
 
     let mut ok = 0i64;
@@ -685,6 +696,11 @@ async fn run_daily_close_if_due(
                 if !data.bars.is_empty() {
                     store_intraday(pool, ticker, &data.bars).await?;
                 }
+                // Append today's daily bar from the same quote (no extra
+                // request), so `daily_prices` stays current with Yahoo as the
+                // sole price source — no separate per-symbol history sweep.
+                seed::store_daily(pool, ticker, &[daily_bar_from_quote(&date, &data.quote)])
+                    .await?;
                 hub.publish(StreamEvent::Quote(QuoteUpdate::new(
                     ticker.clone(),
                     data.quote.price,
@@ -1190,7 +1206,7 @@ async fn run_dividends(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow:
     tracing::info!("[scheduler] dividends: refreshing {} symbols", stale.len());
 
     let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
     let t0 = Instant::now();
     let mut ok = 0i64;
     let mut payouts = 0i64;
@@ -1319,7 +1335,7 @@ async fn run_fund_metadata(pool: &SqlitePool, config: &Config, hub: &Hub) -> any
     tracing::info!("[scheduler] fund_metadata: refreshing {} ETFs", stale.len());
 
     let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
     let t0 = Instant::now();
     let mut ok = 0i64;
     let mut empty = 0i64;
@@ -1487,7 +1503,7 @@ async fn run_earnings_calendar(
     );
 
     let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
     let t0 = Instant::now();
     let mut ok = 0i64;
     let mut empty = 0i64;
@@ -1627,7 +1643,7 @@ async fn run_asset_profile(
     );
 
     let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
     let t0 = Instant::now();
     let mut ok = 0i64;
     let mut empty = 0i64;
@@ -2172,7 +2188,7 @@ pub(crate) async fn backfill_symbol(pool: &SqlitePool, config: &Config, ticker: 
 /// failure propagated to the add-symbol response.
 async fn backfill_fund_metadata(pool: &SqlitePool, config: &Config, ticker: &str) {
     let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
     match guarded(&guard, yahoo.fund_metadata(ticker)).await {
         Some(Ok(Some(meta))) => match store_fund_metadata(pool, ticker, &meta).await {
             Ok(()) => {
@@ -2196,7 +2212,7 @@ async fn backfill_fund_metadata(pool: &SqlitePool, config: &Config, ticker: &str
 /// best-effort, no failure propagated to the add-symbol response.
 async fn backfill_asset_profile(pool: &SqlitePool, config: &Config, ticker: &str) {
     let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
     match guarded(&guard, yahoo.asset_profile(ticker)).await {
         Some(Ok(Some(profile))) => match store_asset_profile(pool, ticker, &profile).await {
             Ok(()) => {
@@ -2223,7 +2239,7 @@ async fn backfill_asset_profile(pool: &SqlitePool, config: &Config, ticker: &str
 /// best-effort, no failure propagated to the add-symbol response.
 async fn backfill_earnings_calendar(pool: &SqlitePool, config: &Config, ticker: &str) {
     let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
     match guarded(&guard, yahoo.earnings_calendar(ticker)).await {
         Some(Ok(next)) => match store_earnings_next(pool, ticker, next).await {
             Ok(()) => {
@@ -2245,7 +2261,7 @@ async fn backfill_earnings_calendar(pool: &SqlitePool, config: &Config, ticker: 
 /// denial or upstream error leaves the symbol for the next normal sweep.
 async fn backfill_dividends(pool: &SqlitePool, config: &Config, ticker: &str) {
     let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), yahoo.name(), YAHOO_BUDGET);
+    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
     match guarded(&guard, yahoo.dividends(ticker)).await {
         Some(Ok(events)) => match store_dividends(pool, ticker, &events).await {
             Ok(()) => {
@@ -2259,18 +2275,13 @@ async fn backfill_dividends(pool: &SqlitePool, config: &Config, ticker: &str) {
     }
 }
 
-/// Pull and store one symbol's deep daily history from Stooq. A no-op for a
-/// future (Stooq carries no `=F` history) or when Stooq is not configured.
-async fn backfill_history(pool: &SqlitePool, config: &Config, ticker: &str, kind: &str) {
-    if kind == "future" || config.stooq_apikey.is_empty() {
-        return;
-    }
-    let stooq = StooqProvider::new(
-        providers::http::build_client(config),
-        config.stooq_apikey.clone(),
-    );
-    let guard = EndpointGuard::new(pool.clone(), stooq.name());
-    match guarded(&guard, stooq.daily(ticker, None)).await {
+/// Pull and store one symbol's deep daily history from Yahoo (one
+/// `interval=1d&range=max` call). Used by the add-symbol backfill; all kinds
+/// are eligible since Yahoo serves `=F` futures history too.
+async fn backfill_history(pool: &SqlitePool, config: &Config, ticker: &str, _kind: &str) {
+    let yahoo = YahooProvider::new(providers::http::build_client(config));
+    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
+    match guarded(&guard, yahoo.daily(ticker, None)).await {
         Some(Ok(bars)) if !bars.is_empty() => match seed::store_daily(pool, ticker, &bars).await {
             Ok(()) => tracing::info!("[backfill] {ticker} <- {} daily bars", bars.len()),
             Err(e) => tracing::warn!("[backfill] store history {ticker}: {e:#}"),

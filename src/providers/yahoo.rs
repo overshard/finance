@@ -19,8 +19,8 @@ use reqwest::{header::RETRY_AFTER, StatusCode};
 use serde::Deserialize;
 
 use crate::providers::{
-    AssetProfile, DividendEvent, FundMetadata, IntradayBar, Quote, QuoteData, QuoteProvider,
-    RateLimited,
+    AssetProfile, DailyBar, DividendEvent, FundMetadata, HistoryProvider, IntradayBar, Quote,
+    QuoteData, QuoteProvider, RateLimited,
 };
 
 /// Near-real-time quotes from Yahoo Finance.
@@ -196,6 +196,10 @@ struct Meta {
     regular_market_volume: Option<i64>,
     /// The source's own timestamp for the quote, Unix seconds.
     regular_market_time: Option<i64>,
+    /// Seconds east of UTC for the exchange's timezone (e.g. -14400 for ET in
+    /// summer). Daily-bar timestamps are bucketed by the exchange's local day,
+    /// so the daily-history parser adds this offset before taking the date.
+    gmtoffset: Option<i64>,
     market_state: Option<String>,
     /// Identity fields — read only by `lookup`. `EQUITY` | `ETF` | `INDEX` |
     /// `MUTUALFUND` | `FUTURE` | `CURRENCY` | `CRYPTOCURRENCY` | ...
@@ -243,7 +247,51 @@ impl YahooProvider {
             "https://query1.finance.yahoo.com/v8/finance/chart/{sym}\
              ?interval=15m&range=1d&includePrePost=true"
         );
-        let resp = self.client.get(&url).send().await?;
+        self.request_chart(&url).await
+    }
+
+    /// Fetch a symbol's deep daily OHLCV history from the same v8 chart
+    /// endpoint, one bar per trading day. `since` (a `YYYY-MM-DD` date) selects
+    /// an incremental window via Yahoo's `period1`/`period2` epoch params;
+    /// `None` asks for the full `range=max` history. A single call returns the
+    /// entire deep history (or the window), which is why Yahoo replaced the
+    /// per-symbol Stooq fetch the app used through Phase 1.
+    ///
+    /// Error / "unknown symbol" semantics match [`Self::fetch_chart`].
+    async fn fetch_daily(&self, ticker: &str, since: Option<&str>) -> Result<Option<ChartResult>> {
+        let sym = urlencoding::encode(&yahoo_symbol(ticker)).into_owned();
+        let window = match since {
+            Some(d) => {
+                // Re-fetch from the day before `since` to "now + 1 day" (epoch
+                // seconds). The day-before back-step and the day-ahead end
+                // cover same-day re-runs and exchange-timezone edges; the
+                // daily upsert makes any overlap free.
+                let p1 = chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+                    .ok()
+                    .and_then(|dt| dt.pred_opt())
+                    .and_then(|dt| dt.and_hms_opt(0, 0, 0))
+                    .map(|dt| dt.and_utc().timestamp())
+                    .unwrap_or(0);
+                let p2 = chrono::Utc::now().timestamp() + 86_400;
+                format!("period1={p1}&period2={p2}")
+            }
+            None => "range=max".to_string(),
+        };
+        let url = format!(
+            "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&{window}"
+        );
+        self.request_chart(&url).await
+    }
+
+    /// GET a v8 chart URL and parse it into at most one [`ChartResult`].
+    ///
+    /// `Ok(Some(_))` is a real result; `Ok(None)` means Yahoo answered cleanly
+    /// that it has no such symbol (a 404, or a `chart.error` body) — a
+    /// definitive "unknown", not a failure. `Err` is a transport error or an
+    /// explicit rate-limit signal, surfaced as the typed [`RateLimited`] so the
+    /// endpoint guard trips its breaker at once.
+    async fn request_chart(&self, url: &str) -> Result<Option<ChartResult>> {
+        let resp = self.client.get(url).send().await?;
         let status = resp.status();
 
         if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE {
@@ -816,16 +864,65 @@ fn chart_to_quote_data(ticker: &str, result: ChartResult) -> Result<QuoteData> {
     Ok(QuoteData { quote, bars })
 }
 
+/// Turn a parsed `interval=1d` chart result into daily bars, oldest first.
+///
+/// Yahoo timestamps each daily bar at the start of the trading day in UTC
+/// seconds; adding the exchange's `gmtoffset` before formatting yields the
+/// local trading date (so a bar that starts 14:30 UTC reads as the right ET
+/// day). A bar missing any of open/high/low/close is skipped.
+fn chart_to_daily(result: ChartResult) -> Vec<DailyBar> {
+    let off = result.meta.gmtoffset.unwrap_or(0);
+    let (Some(ts), Some(o)) = (result.timestamp, result.indicators.quote.into_iter().next()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(ts.len());
+    for (i, &t) in ts.iter().enumerate() {
+        let cell = |v: &[Option<f64>]| v.get(i).copied().flatten();
+        let (Some(open), Some(high), Some(low), Some(close)) =
+            (cell(&o.open), cell(&o.high), cell(&o.low), cell(&o.close))
+        else {
+            continue;
+        };
+        let Some(d) = chrono::DateTime::from_timestamp(t + off, 0)
+            .map(|dt| dt.format("%Y-%m-%d").to_string())
+        else {
+            continue;
+        };
+        let volume = o.volume.get(i).copied().flatten().unwrap_or(0);
+        out.push(DailyBar {
+            d,
+            open,
+            high,
+            low,
+            close,
+            volume,
+        });
+    }
+    out
+}
+
 #[async_trait]
 impl QuoteProvider for YahooProvider {
-    fn name(&self) -> &'static str {
-        "yahoo"
-    }
-
     async fn quote(&self, ticker: &str) -> Result<QuoteData> {
         match self.fetch_chart(ticker).await? {
             Some(result) => chart_to_quote_data(ticker, result),
             None => Err(anyhow!("yahoo returned no chart result for {ticker}")),
+        }
+    }
+}
+
+#[async_trait]
+impl HistoryProvider for YahooProvider {
+    fn name(&self) -> &'static str {
+        "yahoo"
+    }
+
+    async fn daily(&self, ticker: &str, since: Option<&str>) -> Result<Vec<DailyBar>> {
+        // An unknown / historyless symbol returns an empty vec (a clean empty,
+        // not a guard failure) — same contract the Stooq provider had.
+        match self.fetch_daily(ticker, since).await? {
+            Some(result) => Ok(chart_to_daily(result)),
+            None => Ok(Vec::new()),
         }
     }
 }

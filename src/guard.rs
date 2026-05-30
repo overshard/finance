@@ -31,7 +31,7 @@
 //!
 //! Usage in a bulk loop:
 //! ```ignore
-//! let guard = EndpointGuard::new(pool.clone(), "stooq");
+//! let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", 1000);
 //! for ticker in tickers {
 //!     match guard.acquire().await? {
 //!         Permit::Granted => {}
@@ -54,13 +54,6 @@ use crate::providers::RateLimited;
 /// Minimum spacing between two requests to the same endpoint. Matches the
 /// anti-spam policy in PLAN.md (>= 1.5s per request). `acquire` enforces it.
 const MIN_GAP: Duration = Duration::from_millis(1500);
-
-/// Default per-hour request ceiling, used by `EndpointGuard::new`. A full
-/// universe refresh is ~144 calls, so 200 leaves comfortable headroom for
-/// Stooq's daily history work while still capping a runaway loop. Endpoints
-/// with a busier cadence (Yahoo intraday quotes) set their own via
-/// `with_budget`.
-const HOURLY_BUDGET: i64 = 200;
 
 /// Consecutive ordinary failures that trip the breaker while it is closed. An
 /// explicit rate-limit signal (429/503) trips it immediately, regardless.
@@ -112,14 +105,9 @@ struct GuardRow {
 }
 
 impl EndpointGuard {
-    /// A guard with the default per-hour budget (`HOURLY_BUDGET`).
-    pub fn new(pool: SqlitePool, endpoint: &str) -> Self {
-        Self::with_budget(pool, endpoint, HOURLY_BUDGET)
-    }
-
-    /// A guard with an explicit per-hour request budget. Endpoints polled more
-    /// often than Stooq's daily refresh (e.g. Yahoo intraday quotes) set their
-    /// own ceiling here.
+    /// A guard with an explicit per-hour request budget. Each endpoint sets its
+    /// own ceiling (e.g. 1000 for Yahoo, 600 for SEC) — see the constants in
+    /// `scheduler.rs`.
     pub fn with_budget(pool: SqlitePool, endpoint: &str, hourly_budget: i64) -> Self {
         Self {
             pool,

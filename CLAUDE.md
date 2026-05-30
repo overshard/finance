@@ -26,7 +26,7 @@ There are no tests or linters configured.
 
 **Backend:** Single-binary axum app. A tiny `src/main.rs` does env init, subcommand dispatch (`seed`), and server boot; `src/app.rs` builds `AppState` + `Config` + the `router()`. Per-feature route modules under `src/routes/`. Async sqlx + SQLite (WAL) for all reads and writes; the schema in `migrations/` is applied on boot via `sqlx::migrate!`.
 
-**Providers (`src/providers/`):** One trait per concern — `HistoryProvider` (Stooq), `QuoteProvider` (Yahoo), `FundamentalsProvider` (SEC EDGAR) — with one struct per source, so a source is swappable without touching callers. `http.rs` builds the shared reqwest clients.
+**Providers (`src/providers/`):** One trait per concern — `QuoteProvider` + `HistoryProvider` (both Yahoo) and `FundamentalsProvider` (SEC EDGAR) — with one struct per source, so a source is swappable without touching callers. `http.rs` builds the shared reqwest clients. (Stooq was the original history source; dropped 2026-05-30 — see PLAN.md.)
 
 **Endpoint guard (`src/guard.rs`):** A persistent, per-endpoint `EndpointGuard` that every outbound data call passes through: a DB-backed reactive circuit breaker (trips on HTTP 429/503 at once or after a failure streak, exponential backoff, half-open probe recovery), a hard per-hour request budget, and request pacing. State lives in the `endpoint_guard` table, so it survives restarts and is shared by the server and the `seed` subcommand. The user considers never hitting a rate limit critical — see the Anti-spam policy in `PLAN.md`.
 
@@ -68,7 +68,7 @@ finance/
 │   ├── market.rs      # US market-session clock
 │   ├── stream.rs      # SSE pub/sub hub + viewer-interest registry
 │   ├── guard.rs       # persistent per-endpoint EndpointGuard
-│   ├── providers/     # mod.rs (traits), http.rs, stooq.rs, yahoo.rs, sec.rs
+│   ├── providers/     # mod.rs (traits), http.rs, yahoo.rs, sec.rs
 │   └── routes/        # home, symbols, search, stream, health, seo
 ├── templates/         # base.html, includes/, pages/
 ├── frontend/static_src/   # base/ home/ symbol/ health/ search/ (Vite entries)
@@ -97,8 +97,7 @@ The binary reads `templates/`, `dist/`, `migrations/`, and `universe/` from cwd 
 
 All free, no account. See `PLAN.md` for the full anti-spam / caching policy.
 
-- **Historical daily OHLCV — Stooq.** One call returns a symbol's entire daily history. Gated behind a free apikey (`STOOQ_APIKEY`, in `.env`, gitignored).
-- **Intraday bars + live quotes — Yahoo Finance.** `v8/finance/chart`; no key, just a browser User-Agent.
+- **Historical daily OHLCV + intraday bars + live quotes — Yahoo Finance.** `v8/finance/chart`; no key, just a browser User-Agent. `interval=1d&range=max` returns a symbol's entire daily history in one call (used for the per-symbol backfill); `interval=15m&range=1d` serves live quotes + intraday. The daily-close snapshot appends each day's bar, so there is no separate history source. (Stooq was the original history provider; dropped 2026-05-30.)
 - **Fundamentals, filings, leadership + ETF profiles — SEC EDGAR.** `company_tickers.json` / `companyfacts` / `submissions` for stock fundamentals and filings; Form 3/4/5 ownership XML for the officer/board roster (Phase 14); `company_tickers_mf.json` plus quarterly N-PORT filings for ETF fund profiles (holdings, AUM, asset mix). No key; a contact email (`SEC_CONTACT_EMAIL`) rides in the User-Agent. Indexes do not file with the SEC.
 
 ## Tooling

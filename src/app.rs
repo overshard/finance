@@ -10,7 +10,7 @@ use crate::routes;
 use crate::{db, middleware, templates};
 
 /// A current desktop Chrome string. Outbound data requests carry this so the
-/// public upstreams (Stooq, Yahoo, SEC) see an ordinary-looking browser.
+/// public upstreams (Yahoo, SEC) see an ordinary-looking browser.
 /// Override with FINANCE_USER_AGENT.
 const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36";
@@ -39,8 +39,6 @@ pub struct Config {
     pub sec_contact_email: String,
     /// Which `QuoteProvider` impl to use for live data.
     pub quote_provider: String,
-    /// Stooq apikey for the daily-history endpoint. Empty disables Stooq.
-    pub stooq_apikey: String,
 }
 
 impl AppState {
@@ -65,7 +63,6 @@ impl AppState {
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "yahoo".to_string());
-        let stooq_apikey = std::env::var("STOOQ_APIKEY").unwrap_or_default();
 
         let pool = db::init(&data_dir).await?;
 
@@ -81,7 +78,6 @@ impl AppState {
             user_agent,
             sec_contact_email,
             quote_provider,
-            stooq_apikey,
         });
 
         let hub = Arc::new(crate::stream::Hub::new());

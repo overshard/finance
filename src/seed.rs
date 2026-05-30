@@ -3,9 +3,10 @@
 //!
 //! Resumable and quota-friendly: symbols that already hold history are skipped,
 //! so re-running `make seed` after a partial run continues where it stopped.
-//! Every Stooq request goes through the persistent `EndpointGuard`, which paces
-//! the loop and stops it early if the circuit breaker is open or the hourly
-//! budget is spent, instead of grinding the list against a guarded endpoint.
+//! Every history request goes through the persistent `EndpointGuard` (the
+//! `yahoo` one), which paces the loop and stops it early if the circuit breaker
+//! is open or the hourly budget is spent, instead of grinding the list against
+//! a guarded endpoint.
 
 use std::path::Path;
 use std::time::Instant;
@@ -89,12 +90,11 @@ pub async fn run(pool: &SqlitePool, config: &Config, history: &dyn HistoryProvid
     }
 
     // Only symbols with no history yet need a fetch. This keeps re-runs cheap
-    // and lets a quota-limited run resume later. Futures (kind = 'future') are
-    // skipped entirely: Stooq carries no `=F` history, so they are live-quotes
-    // only — fed solely by Yahoo's daily-close snapshot (see PLAN.md Phase 10).
+    // and lets a quota-limited run resume later. Futures are included now:
+    // Yahoo serves `=F` daily history, unlike the Stooq source this replaced.
     let pending: Vec<String> = sqlx::query_scalar(
         "SELECT ticker FROM symbols \
-         WHERE is_seeded = 1 AND kind != 'future' AND history_last_date IS NULL \
+         WHERE is_seeded = 1 AND history_last_date IS NULL \
          ORDER BY ticker",
     )
     .fetch_all(pool)
@@ -107,11 +107,17 @@ pub async fn run(pool: &SqlitePool, config: &Config, history: &dyn HistoryProvid
     }
     tracing::info!("seed: {} symbols need a history backfill", pending.len());
 
-    // Every Stooq request passes through the persistent endpoint guard: it
+    // Every history request passes through the persistent endpoint guard: it
     // paces the loop and, once the breaker opens or the hourly budget runs out,
     // refuses further requests so the seed stops cleanly rather than grinding
-    // the rest of the list. A stopped seed is resumable (see below).
-    let guard = EndpointGuard::new(pool.clone(), history.name());
+    // the rest of the list. A stopped seed is resumable (see below). History
+    // shares the `yahoo` guard with live quotes, so it must carry the same
+    // budget rather than the 200-default `new` ceiling.
+    let guard = EndpointGuard::with_budget(
+        pool.clone(),
+        history.name(),
+        crate::scheduler::YAHOO_BUDGET,
+    );
 
     let mut ok = 0usize;
     let mut stopped: Option<String> = None;
@@ -157,7 +163,7 @@ pub async fn run(pool: &SqlitePool, config: &Config, history: &dyn HistoryProvid
 
     let remaining: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM symbols \
-         WHERE is_seeded = 1 AND kind != 'future' AND history_last_date IS NULL",
+         WHERE is_seeded = 1 AND history_last_date IS NULL",
     )
     .fetch_one(pool)
     .await?;
@@ -197,16 +203,21 @@ pub async fn store_daily(pool: &SqlitePool, ticker: &str, bars: &[DailyBar]) -> 
         .execute(&mut *tx)
         .await?;
     }
-    let first = bars.iter().map(|b| b.d.as_str()).min();
-    let last = bars.iter().map(|b| b.d.as_str()).max();
+    // Recompute the history range from the stored rows (visible inside this
+    // transaction) rather than from just the bars passed in. An incremental
+    // window or a single daily-close append carries only recent bars, so
+    // taking min/max of the argument alone would clobber the true earliest
+    // date with the window start.
     let now = now_ms();
     sqlx::query(
-        "UPDATE symbols SET history_synced_at = ?, history_first_date = ?, \
-         history_last_date = ?, updated_at = ? WHERE ticker = ?",
+        "UPDATE symbols SET history_synced_at = ?, \
+         history_first_date = (SELECT MIN(d) FROM daily_prices WHERE ticker = ?), \
+         history_last_date = (SELECT MAX(d) FROM daily_prices WHERE ticker = ?), \
+         updated_at = ? WHERE ticker = ?",
     )
     .bind(now)
-    .bind(first)
-    .bind(last)
+    .bind(ticker)
+    .bind(ticker)
     .bind(now)
     .bind(ticker)
     .execute(&mut *tx)

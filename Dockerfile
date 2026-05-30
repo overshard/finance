@@ -23,7 +23,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # ----- runtime -----
 FROM alpine:3.23
 
-# Outbound HTTPS to Stooq, Yahoo, and SEC EDGAR.
+# Outbound HTTPS to Yahoo and SEC EDGAR.
 RUN apk add --no-cache ca-certificates
 
 WORKDIR /app

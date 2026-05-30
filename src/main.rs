@@ -61,9 +61,10 @@ fn print_usage() {
 async fn run_seed() -> anyhow::Result<()> {
     let state = AppState::from_env().await?;
     let client = providers::http::build_client(&state.config);
-    let stooq =
-        providers::stooq::StooqProvider::new(client, state.config.stooq_apikey.clone());
-    seed::run(&state.pool, &state.config, &stooq).await
+    // Yahoo serves deep daily history (one `interval=1d&range=max` call per
+    // symbol) as well as live quotes; it is the app's only price source.
+    let history = providers::yahoo::YahooProvider::new(client);
+    seed::run(&state.pool, &state.config, &history).await
 }
 
 async fn serve() -> anyhow::Result<()> {
