@@ -34,7 +34,7 @@ commit + auto-deploy (`git push server master`) and a clean breakpoint.
 
 ## Status
 
-_Last updated: 2026-05-30 (Phase 5 done on dev — commit + deploy pending)_
+_Last updated: 2026-05-30 (Phase 5 done + deployed at `656e21d`)_
 
 **Major refactor in progress (the "distill + ETF-first" rewrite).** This plan
 was fully rewritten 2026-05-30 from a sprawling 3,700-line resume doc into this
@@ -54,10 +54,9 @@ focused roadmap. The decisions driving it are in the Decisions log under
 - **Everything gets distilled** into a fast-scannable, dual-first (mobile +
   desktop) design while keeping the futuristic-clean "Paper Ledger" look.
 
-**Current work:** Phases 1–4 are **done, committed, and deployed** (Phase 4 is
-live at `19d0b14`). **Phase 5 (dashboard redesign) is done on dev, pending commit
-+ deploy.** Next after deploy: **Phase 6 (symbol-page distillation + live
-intraday on chart).**
+**Current work:** Phases 1–5 are **done, committed, and deployed** (Phase 5 is
+live at `656e21d`; production verified rendering the hero, breadth, and ETF
+bands). Next: **Phase 6 (symbol-page distillation + live intraday on chart).**
 
 Phase 5 outcome (dashboard redesign → "how is the market doing TODAY"):
 - **Hero verdict.** A two-line plain read at the top blending the broad index
@@ -329,7 +328,7 @@ Kill the rate-limit problem at the root.
   the fetch reuses the proven `quoteSummary` NAV parse, and prod exercises it on
   first deploy once its guard is healthy.
 
-### Phase 5 — Dashboard redesign: "how is the market doing TODAY"  ✅ DONE on dev (commit + deploy pending)
+### Phase 5 — Dashboard redesign: "how is the market doing TODAY"  ✅ DONE (deployed 2026-05-30, `656e21d`)
 - ✅ Hero: two-line plain-language verdict (blended index move + breadth + VIX
   tone) + compact index strip + headline figures + non-advice note. Direction
   tracks the broad index sign so it never contradicts the figure shown.
