@@ -50,6 +50,14 @@ const TICK: Duration = Duration::from_secs(60);
 /// Incremental daily-history refresh cadence.
 const HISTORY_INTERVAL_SECS: i64 = 6 * 3600;
 
+/// Retry cadence after a history run stops early (guard breaker open or hourly
+/// budget spent) with work still pending — far shorter than the full interval
+/// so a large backlog (e.g. the symbols a deploy just added, plus any coarse
+/// series being healed) drains over the next hour rather than over days. The
+/// guard still gates every request, so a too-soon retry is a cheap no-op while
+/// the breaker is open.
+const HISTORY_RETRY_SECS: i64 = 30 * 60;
+
 /// A symbol's daily history counts as stale once `history_synced_at` is older
 /// than this. Kept under 24h so the ~6-hourly job refreshes each symbol about
 /// once per trading day (markets emit one new daily bar a day) without
@@ -591,7 +599,8 @@ async fn run_history(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::R
             tracing::warn!("[scheduler] history: {detail}");
             log_fetch(pool, "history", "yahoo", "skipped", Some(&detail), Some(total_bars), dur, started)
                 .await?;
-            mark_ok(pool, "history", Some(next)).await?;
+            // Work remains, so retry soon rather than after the full interval.
+            mark_ok(pool, "history", Some(started + HISTORY_RETRY_SECS * 1000)).await?;
         }
         None => {
             let detail = format!("{ok}/{} symbols refreshed, {total_bars} bars", stale.len());
