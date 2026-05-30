@@ -379,6 +379,13 @@ async fn run_boot_seed(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow:
             Ok(_) => {}
             Err(e) => tracing::warn!("[scheduler] universe sync: {e:#}"),
         }
+        // Run the history job promptly (next tick) rather than waiting out the
+        // remaining interval from before the restart. A deploy that adds symbols
+        // or ships a history fix should reconcile data soon, not up to
+        // HISTORY_INTERVAL_SECS later: the job backfills freshly-added symbols
+        // and self-heals any coarse stored series. It is a cheap no-op when
+        // nothing needs work.
+        schedule_next(pool, "history", now_ms()).await?;
         return Ok(());
     }
     tracing::info!("[scheduler] seed_completed unset: running first-run seed");
