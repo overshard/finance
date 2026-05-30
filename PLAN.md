@@ -34,7 +34,7 @@ commit + auto-deploy (`git push server master`) and a clean breakpoint.
 
 ## Status
 
-_Last updated: 2026-05-30 (Phase 7 done on dev; commit + deploy pending)_
+_Last updated: 2026-05-30 (Phase 7 committed + deployed at `645b351`; roadmap complete)_
 
 **Major refactor in progress (the "distill + ETF-first" rewrite).** This plan
 was fully rewritten 2026-05-30 from a sprawling 3,700-line resume doc into this
@@ -54,10 +54,10 @@ focused roadmap. The decisions driving it are in the Decisions log under
 - **Everything gets distilled** into a fast-scannable, dual-first (mobile +
   desktop) design while keeping the futuristic-clean "Paper Ledger" look.
 
-**Current work:** Phases 1–6 are **done, committed, and deployed** (Phase 6 is
-live at `aa8c5f3`). **Phase 7 is done on dev** (health verdict + two-tier footer
-+ live market summary); commit + deploy pending. With Phase 7 the roadmap is
-**complete** — remaining items are all in Backlog / parked.
+**Current work:** Phases 1–7 are **done, committed, and deployed** (Phase 7 is
+live at `645b351`). With Phase 7 the roadmap is **complete** — remaining items
+are all in Backlog / parked. Prod verified: home + `/health` return 200 and serve
+the new footer + health verdict markup.
 
 Phase 7 outcome (health distillation + footer + live breadth):
 - **Systems verdict on `/health`.** A one-line plain read distilling the whole
@@ -441,7 +441,7 @@ Kill the rate-limit problem at the root.
   Order: price/change → verdict → chart.
 - ✅ Fixed a latent `.ind-btn[hidden]` override bug found in passing.
 
-### Phase 7 — Health/systems page distillation + final polish pass  ✅ DONE on dev (commit + deploy pending)
+### Phase 7 — Health/systems page distillation + final polish pass  ✅ DONE (deployed 2026-05-30, `645b351`)
 - ✅ **`/health` distilled with a top systems verdict** (the chosen shape): a
   one-line plain read above the existing detail, computed live in `health.js`.
 - ✅ **Two-tier footer built** (`footer__grid` + `.footer-bar`, Paper Ledger), data
