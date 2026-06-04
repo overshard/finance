@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Data health{% endblock %}
-{% block description %}Live status of the background data jobs, the endpoint guards, and the fetch log.{% endblock %}
+{% block description %}Live status of the on-demand data fetches, the endpoint guards, and the fetch log.{% endblock %}
 {% block extra_css %}<link rel="stylesheet" href="{{ vite_asset('static_src/health/index.js', 'css') }}">{% endblock %}
 
 {% block main %}
@@ -23,9 +23,10 @@
   </div>
 
   <p class="health-lede">
-    Every background fetch this app makes, laid open: each upstream's request
-    guard and hourly budget, what each scheduler job is doing, and a live tail
-    of the fetch log.
+    This app fetches market data <strong>on demand</strong> &mdash; when you open
+    a page &mdash; through a request guard per upstream; the only timed job is the
+    live intraday poll for the symbols on screen. Laid open here: each guard and
+    its hourly budget, that poll, and a live tail of the fetch log.
   </p>
 
   {# Shown only while a job is fetching; the page script toggles `hidden`. #}

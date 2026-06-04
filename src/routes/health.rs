@@ -214,75 +214,33 @@ fn endpoint_label(endpoint: &str) -> &str {
     }
 }
 
-/// Human label and one-line description per scheduler job. An unknown job (a
-/// future one) falls back to its raw id and no description.
+/// Human label and one-line description per scheduler job. Since the demand-only
+/// refocus the only timed job is the intraday poll (all the old sweeps were
+/// removed; deep data is fetched on demand when a page is viewed — see the guard
+/// usage in the Endpoints section above). An unknown job falls back to its raw
+/// id and no description.
 fn job_meta(job: &str) -> (&str, &str) {
     match job {
-        "seed" => (
-            "Universe seed",
-            "First-run import of the curated symbol list and its deep daily history.",
-        ),
-        "history" => (
-            "Daily history",
-            "Backstop incremental daily-bar refresh from Yahoo, roughly every 6 hours.",
-        ),
         "intraday" => (
             "Intraday quotes",
-            "Live quotes from Yahoo for the symbols on screen, during market hours.",
+            "Live quotes from Yahoo for the symbols a browser is viewing, on a \
+             ~5-minute cadence. Nothing is polled when nobody is on the site.",
         ),
-        "daily_close" => (
-            "Daily close",
-            "Once-a-day closing snapshot of the whole universe, just after the bell.",
-        ),
-        "sec" => (
-            "Fundamentals & filings",
-            "SEC EDGAR company facts and filing history for each stock, refreshed weekly.",
-        ),
-        "dividends" => (
-            "Dividend payouts",
-            "Per-payout dividend / distribution history from Yahoo for each \
-             stock and ETF, refreshed weekly.",
-        ),
-        "fund_metadata" => (
-            "ETF fund metadata",
-            "Yahoo quoteSummary snapshot for each ETF — expense ratio, yield, \
-             NAV, inception, category, fund family, strategy. Refreshed monthly.",
-        ),
-        "fund_nav" => (
-            "ETF NAV",
-            "Yahoo quoteSummary NAV for each ETF, refreshed daily — keeps the \
-             price-vs-NAV premium behind the ETF quality read's tracking factor \
-             current (the monthly metadata sweep's NAV is too stale for that).",
-        ),
-        "earnings_calendar" => (
-            "Earnings calendar",
-            "Yahoo quoteSummary `calendarEvents` for each stock — the next \
-             expected earnings date. Refreshed monthly and whenever the \
-             stored date passes.",
-        ),
-        "asset_profile" => (
-            "Stock sector & industry",
-            "Yahoo quoteSummary `assetProfile` for each stock — sector and \
-             industry classification. Refreshed monthly.",
+        "prune" => (
+            "Prune",
+            "Local cleanup of aged intraday bars and fetch-log rows (no network).",
         ),
         other => (other, ""),
     }
 }
 
-/// Display order for the jobs list: the data pipeline's own order.
+/// Display order for the jobs list. Only the intraday poll reports a status row
+/// now; the fallback keeps any future job at the end.
 fn job_rank(job: &str) -> u8 {
     match job {
-        "seed" => 0,
-        "history" => 1,
-        "sec" => 2,
-        "fund_metadata" => 3,
-        "fund_nav" => 4,
-        "asset_profile" => 5,
-        "earnings_calendar" => 6,
-        "dividends" => 7,
-        "intraday" => 8,
-        "daily_close" => 9,
-        _ => 10,
+        "intraday" => 0,
+        "prune" => 1,
+        _ => 2,
     }
 }
 

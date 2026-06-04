@@ -244,18 +244,6 @@ export function initStream() {
       // it is purely a nudge to re-pull /api/health.
       window.dispatchEvent(new Event("finance:health"));
     });
-    es.addEventListener("summary", (e) => {
-      // Re-broadcast the recomputed dashboard summary (Phase 7) so the home
-      // page can patch its hero verdict + breadth without a second connection.
-      // Only the dashboard listens; every other page ignores it.
-      try {
-        window.dispatchEvent(
-          new CustomEvent("finance:summary", { detail: JSON.parse(e.data) }),
-        );
-      } catch {
-        /* ignore a malformed frame */
-      }
-    });
   }
 
   connect();

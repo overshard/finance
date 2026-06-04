@@ -31,7 +31,6 @@
       </form>
       <nav class="topnav">
         <a href="/"{% if request.path == '/' %} class="is-active"{% endif %}>Markets</a>
-        <a href="/industries"{% if request.path == '/industries' %} class="is-active"{% endif %}>Industries</a>
         <a href="/search"{% if request.path == '/search' %} class="is-active"{% endif %}>Search</a>
       </nav>
       {% include "includes/status_indicator.html" %}
@@ -46,10 +45,6 @@
     <a href="/"{% if request.path == '/' %} class="is-active"{% endif %}>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19V11M10 19V5M16 19v-6M21 19H3"/></svg>
       <span>Markets</span>
-    </a>
-    <a href="/industries"{% if request.path == '/industries' %} class="is-active"{% endif %}>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 21h18M5 21V9l7-5 7 5v12M9 21v-6h6v6"/></svg>
-      <span>Industries</span>
     </a>
     <a href="/search"{% if request.path == '/search' %} class="is-active"{% endif %}>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -77,7 +72,6 @@
         <div class="footer__label">// Pages</div>
         <ul>
           <li><a href="/">Markets</a></li>
-          <li><a href="/industries">Industries</a></li>
           <li><a href="/search">Search</a></li>
           <li><a href="/health">Data health</a></li>
           <li><a href="https://github.com/overshard/finance" target="_blank" rel="noopener">Source</a></li>

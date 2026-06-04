@@ -218,7 +218,8 @@ function renderVerdict(snap) {
   } else if (jobErr || jobStale) {
     jobPart = `${jobs.length - jobErr - jobStale}/${jobs.length} jobs on schedule`;
   } else {
-    jobPart = `${jobs.length} jobs on schedule`;
+    const noun = jobs.length === 1 ? "job" : "jobs";
+    jobPart = `${jobs.length} ${noun} on schedule`;
   }
 
   const parts = [srcPart, jobPart];

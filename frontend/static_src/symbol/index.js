@@ -4,7 +4,9 @@ import "./styles/symbol.scss";
 import { initChart } from "./scripts/chart.js";
 import { initFundamentals } from "./scripts/fundamentals.js";
 import { initGrowth } from "./scripts/growth.js";
+import { initRefresh } from "./scripts/refresh.js";
 
 initChart();
 initFundamentals();
 initGrowth();
+initRefresh();

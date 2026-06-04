@@ -33,13 +33,25 @@
 
 {% block main %}
 <div class="wrap">
+  {# On-demand refresh control (Phase B). On load the page pulls the latest
+     data for this symbol (live price always; slow SEC / metadata only when
+     stale), showing the progress bar; the button re-pulls everything. The data
+     for each section carries its own "synced … ago" age in its heading. #}
+  <div class="refresh" data-refresh-root data-ticker="{{ symbol.ticker }}">
+    <button type="button" class="refresh__btn" data-refresh aria-label="Refresh all data">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+      <span>Refresh</span>
+    </button>
+    <span class="refresh__status" data-refresh-status aria-live="polite"></span>
+    <div class="refresh__bar" data-refresh-bar hidden><div class="refresh__fill" data-refresh-fill></div></div>
+  </div>
   <header class="sym-head{% if health or etf_quality %} sym-head--has-health{% endif %}">
     <div class="sym-head__id">
       <h1 class="sym-head__ticker">{{ symbol.ticker }}</h1>
       <span class="sym-head__tag">{{ symbol.kind }}</span>
       {% if symbol.exchange %}<span class="sym-head__tag">{{ symbol.exchange }}</span>{% endif %}
-      {% if symbol.sector %}<a class="sym-head__tag sym-head__tag--link" href="/industries/{{ sector_slug }}">{{ symbol.sector }}</a>{% endif %}
-      {% if symbol.industry %}<a class="sym-head__tag sym-head__tag--link" href="/industries/{{ sector_slug }}/{{ industry_slug }}">{{ symbol.industry }}</a>{% endif %}
+      {% if symbol.sector %}<span class="sym-head__tag">{{ symbol.sector }}</span>{% endif %}
+      {% if symbol.industry %}<span class="sym-head__tag">{{ symbol.industry }}</span>{% endif %}
     </div>
     <div class="sym-head__name">{{ symbol.name }}</div>
     {# Prefer the live quote; fall back to the most recent daily close. The
@@ -403,8 +415,8 @@
   </section>
   {% else %}
   <div class="fund-pending">
-    SEC fundamentals for {{ symbol.ticker }} have not synced yet. They land on the
-    next data refresh; see <a href="/health">data health</a>.
+    SEC fundamentals for {{ symbol.ticker }} have not synced yet. They are pulled
+    on demand &mdash; hit <strong>Refresh</strong> above to fetch them now.
   </div>
   {% endif %}
 
@@ -458,8 +470,8 @@
   <div class="fund-pending">No leadership data is available for {{ symbol.ticker }}.</div>
   {% else %}
   <div class="fund-pending">
-    Leadership data for {{ symbol.ticker }} has not synced yet. It lands on the
-    next SEC data refresh; see <a href="/health">data health</a>.
+    Leadership data for {{ symbol.ticker }} has not synced yet. It is pulled on
+    demand &mdash; hit <strong>Refresh</strong> above to fetch it now.
   </div>
   {% endif %}
 
@@ -541,8 +553,8 @@
   </section>
   {% else %}
   <div class="fund-pending">
-    Fund metadata for {{ symbol.ticker }} has not synced yet. It lands on the
-    next refresh; see <a href="/health">data health</a>.
+    Fund metadata for {{ symbol.ticker }} has not synced yet. It is pulled on
+    demand &mdash; hit <strong>Refresh</strong> above to fetch it now.
   </div>
   {% endif %}
 
@@ -676,8 +688,8 @@
   {% endif %}
   {% else %}
   <div class="fund-pending">
-    The fund profile for {{ symbol.ticker }} has not synced yet. It lands on the
-    next SEC data refresh; see <a href="/health">data health</a>.
+    The fund profile for {{ symbol.ticker }} has not synced yet. It is pulled on
+    demand &mdash; hit <strong>Refresh</strong> above to fetch it now.
   </div>
   {% endif %}
   {% endif %}
@@ -730,8 +742,8 @@
   <div class="fund-pending">{{ symbol.ticker }} has not {% if symbol.kind == 'etf' %}made a distribution{% else %}paid a dividend{% endif %} in the past five years.</div>
   {% else %}
   <div class="fund-pending">
-    {{ div_label }} history for {{ symbol.ticker }} has not synced yet. It lands
-    on the next data refresh; see <a href="/health">data health</a>.
+    {{ div_label }} history for {{ symbol.ticker }} has not synced yet. It is
+    pulled on demand &mdash; hit <strong>Refresh</strong> above to fetch it now.
   </div>
   {% endif %}
   {% endif %}

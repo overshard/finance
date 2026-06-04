@@ -101,8 +101,8 @@ pub fn router(state: AppState) -> Router {
 
     Router::new()
         .merge(routes::home::router())
-        .merge(routes::industries::router())
         .merge(routes::symbols::router())
+        .merge(routes::watchlist::router())
         .merge(routes::search::router())
         .merge(routes::stream::router())
         .merge(routes::health::router())

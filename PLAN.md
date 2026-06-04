@@ -1,14 +1,12 @@
 # finance — Project Plan and Resume Doc
 
-`finance` is a self-hosted, real-timeish market-watching web app for stocks,
-ETFs, indexes, and commodities: live charts, key stats, fundamentals, SEC
-filings, and at-a-glance health reads. A single Rust + axum binary backed by
-SQLite, with a Vite frontend. Deploys at `finance.bythewood.me`, published on
-GitHub as `finance`.
+`finance` is a self-hosted, demand-driven market watcher for stocks, ETFs,
+indexes, and commodities: live charts, key stats, fundamentals, and SEC filings.
+A single Rust + axum binary backed by SQLite, with a Vite frontend. Deploys at
+`finance.bythewood.me`, published on GitHub as `finance`.
 
 It is for *watching* the market only. No portfolio, no holdings, no money or
-cost-basis tracking, no accounts, no auth. Single operator. **Not investment
-advice** — every synthesized read carries that disclaimer.
+cost-basis tracking, no accounts, no auth. **Not investment advice.**
 
 ---
 
@@ -34,213 +32,214 @@ commit + auto-deploy (`git push server master`) and a clean breakpoint.
 
 ## Status
 
-_Last updated: 2026-05-30 (Phase 7 committed + deployed at `645b351`; roadmap complete)_
+_Last updated: 2026-06-04 (Phases A-D all built + verified on dev; roadmap
+complete; everything uncommitted, holding per the user's call to batch the
+commit/deploy)._
 
-**Major refactor in progress (the "distill + ETF-first" rewrite).** This plan
-was fully rewritten 2026-05-30 from a sprawling 3,700-line resume doc into this
-focused roadmap. The decisions driving it are in the Decisions log under
-2026-05-30; the short version:
+**Major refocus in progress (the "demand-only" rewrite).** The previous roadmap
+(the "distill + ETF-first" rewrite, Phases 1-7, all deployed at `645b351`) shipped
+a broad always-on dashboard. The user has now steered a focus shift: the app
+could not get enough live data to show what they actually wanted, and the timed
+background sweeps were spending API budget around the clock for symbols nobody was
+looking at. The new principle:
 
-- **Short-horizon prediction is being dropped.** Next-day / next-week "picks"
-  are a coin-flip gamble (the backtest's own ~50% win rates prove it) and they
-  drove most of the live-data demand that tripped the rate limits. Day/Week go;
-  Month/Quarter are reframed as a non-advice *quality leaderboard*.
-- **Data is going Yahoo-only.** Stooq is being removed entirely (its bulk
-  download is CAPTCHA-gated and unscriptable; its per-symbol API has an
-  undocumented daily-hit cap that kept blocking us). Yahoo serves both deep
-  history and daily updates. See **Data-source policy**.
-- **ETFs become true first-class citizens** with their own identity and an ETF
-  "quality" read, clearly separated from stocks.
-- **Everything gets distilled** into a fast-scannable, dual-first (mobile +
-  desktop) design while keeping the futuristic-clean "Paper Ledger" look.
+> **Nothing is fetched unless a human is actively looking at it.** With nobody on
+> the site, the app makes zero outbound calls.
 
-**Current work:** Phases 1–7 are **done, committed, and deployed** (Phase 7 is
-live at `645b351`). With Phase 7 the roadmap is **complete** — remaining items
-are all in Backlog / parked. Prod verified: home + `/health` return 200 and serve
-the new footer + health verdict markup.
+The new shape (decided 2026-06-03, see the Decisions log for the full Q&A):
 
-Phase 7 outcome (health distillation + footer + live breadth):
-- **Systems verdict on `/health`.** A one-line plain read distilling the whole
-  page — `● All systems normal · both data sources healthy · N jobs on schedule
-  · last fetch 4m ago` — sits above the Endpoints/Jobs/Log detail. Built
-  client-side in `health.js` (`renderVerdict`) from the same snapshot that drives
-  the detail, so it stays live and never disagrees with it. Tone is the worst
-  thing on the page: a tripped breaker or errored job → bad (red); a recovering
-  breaker or stale job → warn (amber, pulsing dot); else ok (green). A mid-fetch
-  job is normal and doesn't darken the tone (the existing "Fetching now —" banner
-  names it). Verified on dev: reads green "All systems normal · both data sources
-  healthy · 10 jobs on schedule · fetching now" at desktop + mobile.
-- **Two-tier footer (Paper Ledger).** Replaced the single-line footer with the
-  house pattern: a `footer__grid` (About + data attribution / Pages / Elsewhere,
-  `// LABEL` mono headers) over a slim `.footer-bar` (`© {{ now.year }} Isaac
-  Bythewood · Some rights reserved` + a GitHub icon link to
-  `github.com/overshard/finance`). Modeled on `repos` but in Paper Ledger tokens
-  (warm-paper wash, hairline rules, ink text). The stale-Stooq attribution (fixed
-  early in Phase 4) folds into the About column as "Market data via Yahoo Finance
-  · fundamentals & filings via SEC EDGAR · prices are delayed · not investment
-  advice." The `.footer-bar` now carries the mobile bottom-nav clearance (it's the
-  last element before the fixed nav); the desktop block trims it back. Verified:
-  3-up at desktop, About-spans-full + 2-up links at mobile, copyright bar clears
-  the bottom nav.
-- **Live market summary (the Phase-5 deferral).** The hero verdict + headline
-  figures + breadth were page-load snapshots; now a new `src/summary.rs` owns the
-  verdict vocabulary (`market_verdict` + `vix_tone`, moved out of `home.rs` so the
-  page render and the live push share one wording) and a cheap
-  `market_summary(pool, session)` (two aggregate reads: breadth over the curated
-  stocks + the lead index / VIX, resolving last-vs-prev exactly as the home
-  queries do). A new `StreamEvent::Summary` carries it; the scheduler publishes it
-  after an intraday sweep that touched a **pulse ticker** (the broad index or
-  ^VIX — the curated stocks behind breadth only move at the daily close, so a
-  sweep that hit only a viewed stock page is skipped), after `daily_close`, and on
-  a session flip (the lead index swaps cash↔future). `base/stream.js`
-  re-broadcasts it as a `finance:summary` window event; a new `home.js` patches
-  the hero verdict/detail/figures + breadth counts/bar in place — no second
-  EventSource. **The live push couldn't be exercised on dev** (closed-market
-  weekend, no quotes stream — same caveat as Phase 6's live tick); it runs first
-  in prod during market hours. The patcher itself was verified structurally by
-  dispatching a synthetic `finance:summary`: the verdict, all three figures, the
-  breadth counts, and the proportion-bar widths all updated correctly.
-- **Verified on dev:** `cargo build` + `vite build` clean; home + health render at
-  desktop (1280) and mobile (390) with no console errors; the new footer and
-  health verdict read correctly; the synthetic-summary patch updates every hero +
-  breadth node (screenshots reviewed, then deleted).
+- **Drop every timed network sweep.** Remove the scheduler's `daily_close`, `sec`,
+  `dividends`, `fund_metadata`, `fund_nav`, `earnings_calendar`, `asset_profile`,
+  and the periodic `history` jobs. Keep only the local `prune` (no network) and
+  the demand-driven intraday poll (already gated by the viewer-interest registry).
+  Symbol data, including daily history, is fetched **on page load when stale** and
+  on an explicit manual refresh, never on a timer.
+- **Symbol pages become pull-on-demand.** Landing on a symbol (or hitting its
+  manual refresh button) pulls the latest data with a **clear loading bar** over
+  every piece being fetched and a **clear data-age indicator** on everything. Fast
+  Yahoo data (quote / intraday / daily history) refreshes live on load; slow,
+  rate-limited SEC data (fundamentals, filings, holdings, NAV) is pulled only when
+  missing or stale. Manual refresh re-pulls everything.
+- **Dashboard is fully reworked into a TradingView-style view:** a big real-time
+  **normalized %-vs-SPX overlay** graph for the day, very clear about market hours
+  (pre / regular / after-hours / closed), over a **session-scoped editable
+  watchlist** of stocks/ETFs that refresh every ~5 minutes while the dashboard is
+  open, with data-age indicators throughout. SPX is the fixed baseline. Starters:
+  VTI, VXUS, BND, IAU, IBIT. Polls only while someone has the dashboard open. Also
+  keeps three always-on market reads (user's call): overall market volume, ^VIX
+  (risk tone), and SMA 50/200 as general-interest overlays.
+- **Remove the Industries page entirely** (not useful without real-time sector
+  data).
+- **Search stays** as the way to jump directly to any symbol for its on-demand
+  deep data. The full universe CSV remains a *searchable catalog* (metadata only;
+  each symbol's data is fetched only when it is first viewed).
 
-Phase 6 outcome (symbol-page distillation + live intraday on chart):
-- **1D / 1W intraday range buttons.** Two new ranges at the front of the chart's
-  range bar serve today's / the week's 15-minute bars from `intraday_bars` on a
-  minute axis (the rest stay daily). `history_api` branches to `intraday_history`
-  for them: bars are stored as epoch-**ms** so each `ts` is ÷1000 to the UNIX
-  *seconds* lightweight-charts wants; a new `BarTime` untagged enum lets the
-  `candles` field carry either a `YYYY-MM-DD` string (daily) or a number
-  (intraday). 1D resolves the most recent NY trading day present (so a weekend
-  shows Friday); 1W is a rolling 7 days (well inside the 14-day retention). The
-  daily-only overlays (SMA/EMA/RSI/benchmark) come back empty and their toggles
-  hide on intraday — only Volume stays. A dashed **prev-close** reference line
-  (the latest daily close) anchors the session move.
-- **Live, without a second connection.** `stream.js` now re-broadcasts each SSE
-  quote as a `finance:quote` window event; `chart.js` listens and, while an
-  intraday range is shown, ticks the trailing bar's close/high/low in place. A
-  60s background re-fetch (local DB only, no Yahoo call) folds in newly-stored
-  15m bars so new bars appear without a click. (The live tick itself couldn't be
-  exercised on dev — today is a closed-market weekend so no quotes stream; the
-  wiring is structurally verified, like Phase 4's NAV fetch. It runs first in
-  prod during market hours.)
-- **Mobile above-the-fold reorder.** Per the user's call: the full interactive
-  chart is **promoted** above the fold (no separate mini-chart), and the
-  top-right health/quality **donut is desktop-only** — on mobile a flattened
-  full-width **verdict line** sits right under the price (`● Verdict · NN% ·
-  ↑ trajectory`, coloured by overall grade; the trajectory clause shows for a
-  stock, not an ETF). So the phone order is price/change → verdict → chart.
-- **Fixed a latent bug in passing:** `.ind-btn { display: inline-flex }` was
-  overriding the `[hidden]` attribute, so the benchmark toggle never actually
-  hid on benchmark-less symbols (and wouldn't hide the daily-only toggles on
-  intraday). Added an `.ind-btn[hidden] { display: none }` re-assert.
-- **Verified on dev:** `cargo build` + `vite build` clean; `/api/.../history?
-  range=1D|1W` returns `intraday:true` with numeric times + empty overlays +
-  prev_close, while `range=1Y` is unchanged (`intraday:false`, SMAs populated).
-  Screenshots reviewed (then deleted) at mobile (390) + desktop (1280): stock +
-  ETF; 1D shows intraday candles, the prev-close line, a "over 16 hours" span
-  caption, and only the Volume toggle; switching back to a daily range restores
-  the toggles; the mobile verdict line reads correctly (stock with trajectory,
-  ETF without) with the donut hidden, and desktop shows the donut with the
-  verdict line hidden. No new console errors (only the benign restart/stream
-  chunked-encoding noise).
+**Current work:** the demand-only roadmap (Phases A-D) is **complete and verified
+on dev**. Everything is uncommitted — the user chose to hold and batch one
+commit + deploy. The old surface is still live in prod until that deploy.
 
-Phase 5 outcome (dashboard redesign → "how is the market doing TODAY"):
-- **Hero verdict.** A two-line plain read at the top blending the broad index
-  move, breadth, and the VIX risk tone into a lead + clause (e.g. "Higher, but
-  narrow." / "Markets higher with narrow participation."), over a compact
-  index-chip strip, with the headline figures (S&P %, % green, VIX tone) and a
-  non-advice note. `build_hero` + `market_verdict` + `vix_tone` in
-  `src/routes/home.rs`, fed by the already-loaded index/commodity cards + breadth
-  (zero extra queries). **The verdict's direction tracks the broad index's sign**
-  so it never contradicts the "S&P +x%" shown beside it; breadth only sets
-  direction when no index price exists. A near-flat index reads "mixed" even when
-  breadth skews. (Found + fixed during review: a +0.12% S&P with weak breadth had
-  read "Broadly lower" — a direct contradiction; the deadband was tightened from
-  ±0.15% to ±0.05% and the breadth fallback narrowed.)
-- **Breadth band.** Advancers / decliners counts + % green over a single
-  up/flat/down proportion bar. `breadth()` reuses the `load_stocks` scan (no
-  extra query); a stock without a computable change is excluded so a missing
-  quote never reads as "flat".
-- **ETF band (the Phase-4 deferral, now built).** Five curated quality cards
-  (`VOO`, `VTI`, `QQQ`, `BND`, `GLD`) — intraday sparkline + day move + the
-  Phase-4 quality verdict pill — over a compact gainers/losers strip across the
-  whole curated ETF set, each pill dotted by quality grade. `load_etfs` rolls
-  every seeded ETF (price + Yahoo metadata + SEC AUM + top-10 concentration) into
-  the `etf_quality` read, reusing the same NAV-freshness gate as the symbol page.
-- **Band order:** Hero · Indexes · Breadth · ETFs · Stock movers · Industries ·
-  Risk & commodities · Quality leaderboard. The existing Industries (sector
-  up/down) panel was **kept as its own band** (user's call), not folded into
-  breadth.
-- **Verified on dev:** `cargo build` + `vite build` clean; home renders all bands
-  at desktop (1280) and mobile (390) with no console errors; hero reads
-  consistently with the figures beside it; breadth counts reconcile
-  (197 adv / 306 dec = 39% green); ETF cards show quality pills and the movers
-  strip ranks correctly (screenshots reviewed, then deleted). Because today is a
-  weekend the index cards correctly resolve to futures (ES=F, …) and breadth
-  dates to the prior close.
-- **Known limitation (Phase 7 polish candidate):** the hero verdict and breadth
-  are page-load snapshots — the sparkline cards still stream live, but the
-  verdict sentence + breadth counts do not recompute intraday. Live breadth would
-  need a server-pushed breadth event on the stream hub.
+Phase D outcome (cohesion + polish):
+- **Removed the now-dead `StreamEvent::Summary` machinery** (the old dashboard's
+  live breadth/verdict push, unused since Phase C). Deleted `src/summary.rs`
+  (`market_summary` / `market_verdict` / breadth) and the `summary` module; the one
+  survivor, `vix_tone`, moved into `compute.rs`. Dropped the `Summary` stream
+  variant, the scheduler's session-flip + intraday publishes, `sse_summary`, and the
+  `finance:summary` re-broadcast in `stream.js`.
+- **Trimmed `/health` to the demand-only reality.** `job_meta` / `job_rank` now carry
+  only the surviving `intraday` (and `prune`) jobs instead of arms for the eight
+  removed sweeps; the page lede was rewritten to "fetches market data on demand …
+  the only timed job is the live intraday poll." Fixed a "1 jobs" pluralization in
+  the systems verdict.
+- **Data-age on the dashboard reads.** `market_reads` now carries an `asof` (freshest
+  quote across ^SPX/^VIX/SPY); the reads strip shows "Prices as of {time}", kept live
+  by `hero.js` — matching the symbol page's per-section ages.
+- **Verified on dev:** `cargo build` + `vite build` clean, zero warnings; `/api/health`
+  lists only the `intraday` job with the on-demand guards (sec/yahoo) healthy and the
+  Yahoo budget reflecting on-demand calls; the dashboard chart + reads + "Prices as of
+  …" caption render with zero console errors and no Summary references left in the
+  running app; `/health` renders the new copy.
 
-Phase 3 outcome (drop short-horizon prediction → quality leaderboard):
-- **The whole picker is gone.** Removed the four horizon rankers
-  (`pick_day/week/month/quarter` + `PickInput`), `src/picks.rs`, the `/backtest`
-  route + page + JS, the scheduler's once-a-day snapshot job, and the
-  backtest-only `models::latest_annual_inputs_as_of` / `FILING_LAG_DAYS`.
-  Migration `0013_drop_picks.sql` drops the `picks` table and sweeps its stale
-  `data_status` / `fetch_log` / `meta` rows so `/health` doesn't show a frozen
-  "picks" job.
-- **Three overlapping home panels merged into one Quality leaderboard.** Top
-  picks, Strongest & weakest, and Stock health all collapsed into a single
-  non-advice "Healthiest / Most concerning" surface driven by the existing
-  `compute::health_read` composite (fundamentals + trajectory + leadership
-  stability). The old strongest/weakest panel's trailing-year return is folded
-  into each leaderboard row as a quiet price anchor; the non-advice disclaimer
-  rides on the section.
-- **`compute::standing` kept** — the movers panel still uses it for each row's
-  strength badge, and the symbol + search pages use it too. Only the home
-  *strongest/weakest panel* was removed, not the standing read itself.
-- **Verified:** `cargo build` + `vite build` clean (no `backtest` entry);
-  migration applied on boot (picks table dropped, zero stale picks rows,
-  `data_status` job list no longer lists picks); `/backtest` + `/api/backtest`
-  → 404; `/api/health` → 200 with no picks job; home renders the leaderboard
-  with trailing returns and none of the removed panels (screenshot reviewed).
+Phase D follow-up (dashboard freshness + graph legibility, from user feedback after
+the close): the dashboard felt stale — "prices as of 7:40pm" while it was 8:25pm —
+because it only updated via the market-hours intraday poll (which skips non-futures
+when the market is closed, since stocks/ETFs don't trade then) and had **no on-open
+refresh** like the symbol pages. Fixes:
+- **On-open refresh.** New `GET /api/dashboard/refresh` → `scheduler::refresh_quotes`
+  pulls fresh quotes for the watchlist + baseline (^SPX/^VIX/SPY) once when the page
+  opens, regardless of session, skipping anything quoted in the last ~5min (so a reload
+  doesn't re-hit Yahoo). `hero.js` calls it on init, then redraws — so opening the
+  dashboard always shows current data and a current "as of" time. Verified: the caption
+  jumped 7:40pm → 8:32pm on open (`refreshed: 7`) with the market closed.
+- **Closed-state clarity.** The banner sub now reads "Prices update during market hours"
+  when closed (was a static "all times ET"), so a frozen price reads as expected, not
+  broken.
+- **Graph legibility.** Each line now carries a `title` (its ticker / "S&P 500") that
+  lightweight-charts labels at the line's last value on the price axis, and the palette
+  was swapped for eight well-separated hues — so each line is identifiable by name +
+  colour, not colour alone. Verified at the close: IAU / BND / S&P 500 / VTI / VXUS /
+  IBIT each labelled on the axis, zero console errors.
 
-Phase 2 outcome (universe curation, deployed in `b016b25`):
-- **Stocks reconciled to the current S&P 500.** Fetched the live Wikipedia
-  constituent list (503) and diffed against ours: an exact match, zero changes
-  needed — the stock list was already current.
-- **ETF roster curated to iShares + Vanguard (43 ETFs).** Dropped the
-  other-issuer thematic/sector funds (SMH, ARKK, SCHD, XLK/XLF/XLE/XLV); kept
-  the SPY/QQQ/DIA/GLD/SLV proxies; added the most-common Vanguard + iShares
-  funds incl. the core holdings IAU, IBIT, VBIL. Issuer/category tags come from
-  the existing Yahoo `fund_metadata` (no new schema) per the user's choice.
-- **Seed now reconciles on every boot.** `seed::sync_universe` (upsert + prune)
-  runs each boot via `run_boot_seed`, so a CSV edit (symbols added or dropped)
-  takes effect on deploy without a manual re-seed. Pruning is `is_seeded = 1 AND
-  ticker NOT IN (csv)`, cascading cleanly; user-added symbols (`is_seeded = 0`)
-  are never touched. This also swept up 7 stale rows an older non-pruning seed
-  had left behind (MSTR, NET, RIVN, SHOP, SNOW, SOFI, MRVL — popular names from
-  a pre-S&P-narrowing universe; none are current S&P 500 members). **If the user
-  wants those back, that's a separate "popular non-S&P watchlist" decision (see
-  backlog).**
-- **Fixed a Phase-1 data-quality bug: Yahoo `range=max` downsampling.** Yahoo
-  silently returns weekly/monthly bars for `interval=1d&range=max` on symbols
-  with long histories (all the futures, ^RUT/^VIX, and every freshly-backfilled
-  multi-year ETF were monthly; some were 1-bar). Two-part fix: the provider
-  refetches a bounded `range=10y` window (which Yahoo serves at true daily
-  granularity) when it detects a downsampled response; and `run_history`
-  self-heals stored coarse/single-bar series (recent-density test) by replacing
-  them with a clean daily re-fetch — so **prod self-heals on deploy**. Verified:
-  every seeded symbol now holds genuine daily bars (median gap 1 day), no
-  symbol is 1-bar, ^SPX's deep daily history (back to 1789) is preserved, and
-  the density test flags zero false positives across all 562 symbols.
+Phase C outcome (dashboard rework: session watchlist + %-vs-S&P-500 hero graph):
+- **Session-scoped watchlist.** New `watchlist` table (migration `0015`) keyed on
+  an opaque `fin_sid` cookie (no accounts; minted via SQLite `randomblob`, no new
+  crate). `src/watchlist.rs` owns the session resolve/seed/list/add/remove; a first
+  visit seeds the starters (VTI, VXUS, BND, IAU, IBIT) and sets the cookie, an
+  existing cookie's list is used as-is (even empty — a user who clears it isn't
+  re-seeded). `routes/watchlist.rs` exposes `POST /api/watchlist` (add) +
+  `/remove`. Add reuses a new `ensure_symbol` (refactored out of `add_symbol`) so a
+  brand-new ticker is validated + backfilled into the universe first.
+- **Normalized %-vs-S&P-500 hero graph.** `GET /api/dashboard` returns the day's
+  series (S&P baseline + each watchlist symbol, each as % change from the session's
+  first bar) plus the market reads. `home/scripts/hero.js` draws them on one
+  lightweight-charts axis (ink baseline + a muted non-semantic palette), with a
+  legend, re-fetched every 60s and on tab focus. Symbols with no intraday bars are
+  cleanly dropped from the graph (their card still shows "no intraday data").
+- **Market reads kept (user's call):** S&P level/move, VIX + tone (reuses
+  `summary::vix_tone`), market **volume** (proxied off SPY — cash indexes carry no
+  share volume on Yahoo — today vs its 65-day average → Heavy/Normal/Light), and the
+  S&P's **50/200-day** stance (`compute::sma`). SMA 50/200 stay on symbol charts; the
+  open sub-decision (a daily SPX chart on the dashboard) was resolved as **not now** —
+  the dashboard carries the 50/200 read as a one-line trend stat instead.
+- **Market-hours banner** (Regular / Pre-market / After hours / Market closed) with a
+  coloured session dot, kept live by hero.js.
+- **Watchlist cards** reuse the `spark-card` markup (so the base stream client
+  live-ticks price + sparkline) with a hover remove button; an add box sits in the
+  header. Add/remove reload the page so the cards, the stream tickers, and the graph
+  re-sync.
+- **~5-minute poll throttle** added to `run_intraday`: a viewed symbol quoted within
+  the last ~4m45s is skipped, so a dashboard left open polls each symbol about once
+  every five minutes (light on budget, plenty for delayed data). The baseline reads
+  (^SPX/^VIX/SPY) carry `data-ticker` so they stay polled while the dashboard is open.
+- **Stripped the old dashboard** entirely: home.rs's breadth / movers / ETF band /
+  quality leaderboard / hero verdict code and structs, the old `home.js` (+ its
+  `finance:summary` patcher), and the dead `compute::trailing_return`.
+- **Verified on dev (curl + Playwright):** migration applies on boot; first visit
+  sets `fin_sid` and seeds the 5 starters; `/api/dashboard` returns the baseline +
+  watchlist series (with real intraday point counts) and all four reads (S&P +0.22%,
+  VIX 16.06 Steady, volume 54.4M Light, "Above its 50- and 200-day"); add (TSLA) and
+  remove (via both API and the UI buttons) work and persist across reloads; the hero
+  overlay draws all five lines as % from open with the S&P baseline; the banner reads
+  "Market closed"; clean at desktop (1280, 4-up reads) and mobile (390); zero console
+  errors; `cargo build` + `vite build` clean with zero warnings.
+- **Known limitations (Phase D / backlog):** (1) because symbols are polled on the
+  ~5-min cadence and were last touched at different times in dev, the graph's series
+  can span slightly different day-windows, showing a small x-axis gap; with all
+  dashboard symbols polled together during live hours they align. (2) The dead
+  `StreamEvent::Summary` machinery was **removed in Phase D** (`vix_tone` moved to
+  `compute.rs`). (3) Pre/regular/after-hours **shading** on the graph itself was not
+  built — the banner carries the session; shading is a backlog polish candidate.
 
-**Dev server:** kept running in the background via `make` during sessions so
-the user can review progress live.
+Phase B outcome (on-demand symbol data + loading bar + data age + manual refresh):
+- **New SSE refresh pipeline.** `scheduler::refresh_plan` decides which steps a
+  symbol's refresh runs (the two price steps — live quote, daily history — always;
+  the slow SEC / metadata steps only when their `*_synced_at` is stale, or on
+  `force`). `scheduler::refresh_step` runs each, reusing the existing guarded
+  `backfill_*` helpers. A new SSE route `GET /api/symbols/{ticker}/refresh?force=`
+  (`routes::symbols::refresh_stream`) streams a `plan` event, a `step` event before
+  and after each step, and a final `done {reload}`.
+- **Step set:** stock → Live quote · Daily history · Fundamentals/filings/leadership
+  (SEC) · Earnings · Sector & industry · Dividends. ETF → Live quote · Daily history
+  · Holdings & filings (SEC) · Fund details & NAV · Distributions. Index/future →
+  Live quote · Daily history. History uses an **incremental** since-last-bar fetch
+  (deep `range=max` only when no history exists). The quote step publishes to the
+  hub so an open page patches its price live; the ETF NAV step re-adds a small
+  `store_fund_nav` and uses the (now un-`allow(dead_code)`-ed) `yahoo.fund_nav`.
+- **Frontend (`symbol/scripts/refresh.js` + markup + `symbol.scss`):** a header
+  Refresh button + status text + a thin progress bar. On load the page auto-runs a
+  refresh (`force=0`); the button runs `force=1` (everything). The bar fills per
+  step and names the current one. On `done`: if a **deep** (server-rendered) section
+  was refreshed it reloads to show the new data + age; otherwise the live price was
+  already patched and it just settles. A one-shot `sessionStorage` skip flag set
+  before our own reload prevents that reload from re-triggering the auto-refresh —
+  **no reload loop**.
+- **Data age everywhere (already present, now honest):** every section heading
+  already showed "synced … ago" off its `*_synced_at`; the reload refreshes them.
+  The stale "lands on the next sweep" empty-state copy was rewritten to "pulled on
+  demand — hit Refresh".
+- **Staleness windows:** SEC fundamentals/filings 7d, leadership 30d, Yahoo
+  metadata (earnings/profile/dividends/fund metadata) 7d. `force` ignores them.
+- **Verified on dev (Playwright + curl):** the SSE emits plan → per-step running/ok
+  → done; AAPL `force=0` ran quote+history+earnings+profile (the stale ones) and
+  left fundamentals/dividends (4d) and leadership (11d, inside its 30d window)
+  untouched, each showing its true age. A fresh symbol (NVDA) did a single reload
+  then settled ("Updated just now", no loop, zero console errors). The manual
+  Refresh button on VTI ran the full ETF step set with the bar reading "Updating:
+  Distributions", reloaded once, and settled. (Live in-market price tick couldn't be
+  exercised — after-hours during the check — but the quote step stores + publishes
+  exactly as the intraday job does.)
+
+Phase A outcome (strip background sweeps + remove Industries):
+- **Scheduler gutted to demand-only.** Removed `run_history`, `run_sec`,
+  `run_dividends`, `run_fund_metadata`, `run_fund_nav`, `run_earnings_calendar`,
+  `run_asset_profile`, `run_daily_close_if_due` (and the `is_due` / `schedule_next`
+  due-check helpers + their constants, ~1340 lines). The loop now only broadcasts
+  market-session changes (+ a local-DB summary on a session flip), runs the
+  demand-driven `run_intraday` (viewed symbols only), and the local `run_prune`.
+  The per-symbol on-demand pull (`backfill_symbol` + its `store_*` / `backfill_*`
+  helpers) is **kept** — it is the on-demand path Phases B/C build on.
+- **Boot seed is metadata-only.** `run_boot_seed` now just calls
+  `seed::sync_universe` (local upsert + prune, no network); the history backfill is
+  gone from boot. `make seed` (the `seed` subcommand) keeps `seed::run` for an
+  explicit, user-invoked bulk backfill.
+- **Removed jobs swept from `/health`.** `register_endpoints` now also
+  `DELETE FROM data_status WHERE job NOT IN ('intraday','prune')` so a prod DB's
+  old job rows don't linger as stale.
+- **Industries removed entirely:** deleted `src/routes/industries.rs`, the
+  `industries` frontend entry + its Vite input, both `industries_*` templates, the
+  home "Today's industries" band (`IndustryRow` / `industry_panels` + context vars +
+  the now-dead `StockRow.sector` / `asset_profile_synced_at` fields), the
+  `compute::industry_returns` / `seasonality` block + its tests, and every
+  `/industries` nav/footer link. The symbol-page sector/industry tags are now plain
+  `<span>`s (no link). The sector/industry *symbol data* (Yahoo assetProfile) is
+  kept.
+- **Retained-for-next-phase (marked `#[allow(dead_code)]`):** `yahoo.fund_nav`
+  (Phase B on-demand NAV), `market::{et_date,is_et_weekday,after_close}` (Phase C
+  market-hours), `db::get_meta`.
+- **Verified on dev:** `cargo build` + `vite build` clean, zero warnings; boot does
+  only local work (universe sync 562 + prune), and an 8s idle window makes **zero**
+  outbound calls; `/` → 200 with no "industr" remnants, `/industries` → 404,
+  `/api/health` lists only `intraday`. (Live intraday couldn't be exercised — no
+  open market / viewer during the check; the path is unchanged from before.)
 
 ---
 
@@ -252,58 +251,64 @@ monospace ledger figures, restrained serif headings. Tokens are CSS custom
 properties in `base.scss :root`.
 
 **Color is semantic and sparing.** Green / amber / red mean good / ok / bad
-(price moves, health reads, data-health states) — never decoration. Chart
+(price moves, data-age states, data-health states), never decoration. Chart
 indicator lines are the one deliberate exception (a muted non-semantic palette).
 
-**Scannability is the bar.** The user must be able to:
-- Land on the **dashboard** and tell *how the market is doing TODAY* in one
-  glance — a one-line plain verdict + the index strip + market breadth.
-- Land on a **stock** and immediately read its health, trajectory, and key
-  figures without hunting.
-- Land on an **ETF** and immediately read what it holds, what it costs, and how
-  it's trending — with a clear visual separation from stocks.
+**Data age is always visible and honest.** Because data is now fetched on demand
+rather than on a timer, every figure on the site carries a clear, plain age read
+("live", "2m ago", "stale, refreshing", "as of Fri close"). A stale figure is
+never shown as if fresh. A refresh in flight shows a loading bar, not a spinner
+guessing-game.
+
+**Market hours are explicit.** The dashboard makes the current session
+(pre-market / regular / after-hours / closed) unmistakable, and the day graph
+delineates those periods rather than drawing one undifferentiated line.
+
+**Scannability is the bar.** Land on the dashboard and read how your watchlist is
+doing against the market today in one glance. Land on a symbol and read its
+price, trend, and key figures (with their ages) without hunting.
 
 **Dual-first, not mobile-first-only.** Desktop is information-dense and should
-*use* its space; mobile distills to the key signals (clear hierarchy, nothing
-important below a second scroll). Neither is an afterthought.
+*use* its space; mobile distills to the key signals. Neither is an afterthought.
 
-**Polish last.** Features land first; one focused UI polish pass closes each
-visual phase rather than nibbling polish mid-build.
+**Polish last.** Features land first; one focused UI polish pass closes the work
+rather than nibbling polish mid-build.
 
 ---
 
 ## Data-source policy (the important reference)
 
-All data is **free, no account, no API key.** The user considers *never hitting
-a rate limit* critical: every outbound call goes through a persistent
+All data is **free, no account, no API key.** The user considers *never hitting a
+rate limit* critical: every outbound call goes through a persistent
 `EndpointGuard` (DB-backed reactive circuit breaker + hard per-hour budget +
-request pacing; survives restarts; see `src/guard.rs`).
+request pacing; survives restarts; see `src/guard.rs`). The demand-only refocus
+*reduces* outbound traffic sharply, since idle time now means zero calls.
 
-**Yahoo Finance is the only price source (as of 2026-05-30; Stooq removed).**
+**Yahoo Finance is the only price source.**
 - **Deep daily history:** `v8/finance/chart?interval=1d&range=max` returns a
-  symbol's entire daily OHLCV in one call. Used once per symbol to backfill
-  `daily_prices`.
-- **Daily updates:** the once-a-day `daily_close` job already touches every
-  symbol; it appends that day's bar to `daily_prices` (no extra requests).
-- **Intraday + live quotes:** `v8/finance/chart?interval=15m&range=1d`.
+  symbol's entire daily OHLCV in one call. Fetched on demand when a viewed symbol's
+  stored history is stale or absent (no more periodic sweep).
+- **Intraday + live quotes:** `v8/finance/chart?interval=15m&range=1d`. Polled only
+  for symbols a browser is currently viewing.
 - **ETF / fundamentals metadata:** `v10/finance/quoteSummary` (crumb-gated; the
   provider does the `fc.yahoo.com` primer + `getcrumb` dance, caches the crumb,
   rotates on 401/403). Modules: `fundProfile`, `calendarEvents`, `assetProfile`.
-- Budget: 1000 req/hr on the `yahoo` guard. 429/503/401/403 surface as the
-  typed `RateLimited` the guard trips on.
+  Fetched on demand for a viewed symbol when stale.
+- Budget: 1000 req/hr on the `yahoo` guard.
 
 **SEC EDGAR** (no key, contact email in User-Agent; 600/hr guard): stock
 fundamentals (`companyfacts`), filings (`submissions`), leadership (Form 3/4/5),
-ETF holdings/AUM (N-PORT, `company_tickers_mf.json`). Indexes don't file.
+ETF holdings/AUM (N-PORT, `company_tickers_mf.json`). Fetched on demand for a
+viewed symbol when its SEC data is missing or stale. Indexes don't file.
 
-**Freshness tiers (deliberate, to stay on-budget):**
-- **Live intraday (SSE-polled):** ONLY the dashboard's headline indexes and the
-  single symbol whose page is currently open. Demand-driven via the viewer-
-  interest registry in `src/stream.rs` — nothing is polled when nobody's
-  watching.
-- **Daily close:** the entire rest of the universe. One snapshot per trading day.
-- A viewed fund during live market hours shows today's real-time intraday on its
-  chart (Phase 6).
+**Freshness model (demand-only):**
+- **Live intraday (SSE-polled):** ONLY the symbols a browser is currently showing,
+  via the viewer-interest registry in `src/stream.rs`. A dashboard watchlist symbol
+  refreshes ~every 5 minutes while watched; an open symbol page refreshes faster.
+  Nothing is polled when nobody's watching.
+- **History + deep data:** fetched on page load when stale, and on manual refresh.
+  There is no background sweep keeping idle symbols warm; a symbol nobody visits
+  simply holds whatever it last had, and is refreshed the next time it is viewed.
 
 ---
 
@@ -315,29 +320,30 @@ migrations in `migrations/` applied on boot.
 
 - **`src/providers/`** — one trait per concern: `QuoteProvider` /
   `HistoryProvider` (Yahoo), `FundamentalsProvider` (SEC). `http.rs` builds the
-  shared reqwest clients. (Stooq provider removed in Phase 1.)
+  shared reqwest clients.
 - **`src/guard.rs`** — the persistent per-endpoint `EndpointGuard` (see policy).
-- **`src/scheduler.rs`** — one long-lived 60s-tick tokio task running
-  market-hours-aware jobs (history backfill, daily_close, demand-driven
-  intraday, SEC sweep, dividends, fund_metadata, earnings, asset_profile,
-  prune). Each writes `data_status` + `fetch_log` and pings the stream hub.
+- **`src/scheduler.rs`** — the 60s-tick tokio task. **Shrinking in Phase A** to
+  just: broadcast market-session changes, run the demand-driven intraday poll
+  (viewed symbols only), and run the local prune. All timed network sweeps are
+  being removed.
 - **`src/stream.rs`** — `tokio::broadcast` hub + per-ticker viewer-interest
-  registry; `/stream` SSE forwards quote / market / health events.
+  registry; `/stream` SSE forwards quote / market / health events. This registry
+  is the heart of the demand-only model and stays central.
 - **`src/market.rs`** — US session clock (Closed/Pre/Regular/Post) via
   `chrono-tz`. No holiday calendar (deliberate).
 - **`src/compute.rs`** — pure numeric code: indicators (sma/ema/rsi), graded
-  fundamental ratios, health read, range-meter positions, sparkline SVG.
+  fundamental ratios, range-meter positions, sparkline SVG.
 - **Templates** — minijinja in `templates/` with a Jinja2-faithful HTML
-  formatter (so `/` isn't escaped in URLs). **Frontend** — Vite from
-  `frontend/static_src/` (entries: base, home, symbol, health, search), built
-  with bun, served hashed at `/static/`.
+  formatter. **Frontend** — Vite from `frontend/static_src/` (entries: base, home,
+  symbol, health, search; the `industries` entry is being removed), built with bun,
+  served hashed at `/static/`.
 
 **Key tables:** `symbols` (universe + denormalized latest price/snapshot +
-per-source `*_synced_at` staleness columns), `daily_prices` (permanent deep
-OHLCV), `intraday_bars` (15m, pruned 14d), `quotes`, `fundamentals` (long/narrow
-SEC facts), `filings`, `dividends`, `fund_profiles` + `fund_holdings` (ETF
-N-PORT), `fund_metadata` (ETF Yahoo data), `leadership`, `picks` (being
-reworked), `endpoint_guard`, `data_status`, `fetch_log`.
+per-source `*_synced_at` staleness columns), `daily_prices` (deep OHLCV),
+`intraday_bars` (15m, pruned 14d), `quotes`, `fundamentals`, `filings`,
+`dividends`, `fund_profiles` + `fund_holdings`, `fund_metadata`, `leadership`,
+`endpoint_guard`, `data_status`, `fetch_log`. **New in Phase C:** a session
+watchlist table (sid -> tickers).
 
 `kind` values: `stock`, `etf`, `index`, `future` (commodities/futures).
 
@@ -346,400 +352,210 @@ reworked), `endpoint_guard`, `data_status`, `fetch_log`.
 ## Roadmap
 
 Phases are ordered but reorderable; each is a context-clearing breakpoint that
-ends verified + committed + deployed. Pain-point mapping to the user's brief:
-data/guardrails → P1; ETFs first-class → P4; distill/cohesion → P3,P5,P7;
-drop short-horizon → P3; live intraday for viewed fund → P6.
+ends verified + committed + deployed.
 
-### Phase 1 — Yahoo-only data layer  ✅ DONE (deployed 2026-05-30, `76f38f4`)
-Kill the rate-limit problem at the root.
-- Remove the Stooq provider, the `stooq` `EndpointGuard`, `STOOQ_APIKEY`
-  config, the per-symbol Stooq history job, and the seed's Stooq backfill path.
-- Add `YahooProvider::daily_history` (`interval=1d&range=max`) → full daily
-  OHLCV; route through the `yahoo` guard with pacing.
-- Seed/backfill `daily_prices` from Yahoo for symbols missing deep history
-  (one-time, paced under 1000/hr).
-- `daily_close` appends the day's bar to `daily_prices` from data it already
-  fetches (no extra requests), so there's no recurring per-symbol history sweep.
-- Verify: guard never trips during a full backfill; `daily_prices` populates;
-  charts render; `/health` shows no stooq endpoint.
+### Phase A — Strip background sweeps + remove Industries  ✅ DONE on dev (commit + deploy pending)
+Make the app demand-only and delete the dead surface, before building the new one.
+See the Status block above for the full outcome.
+- **Gut the scheduler.** Remove the `daily_close`, `sec`, `dividends`,
+  `fund_metadata`, `fund_nav`, `earnings_calendar`, `asset_profile`, and periodic
+  `history` jobs and their bring-forward calls. The loop keeps: market-session
+  broadcast, `run_intraday` (demand-driven), and `run_prune_if_due`. The
+  `EndpointGuard` and `data_status` / `fetch_log` plumbing stay (the on-demand
+  fetches in Phases B/C still record through them).
+- **Stop the seed's automatic history backfill.** First-run seed still creates the
+  universe rows (metadata only, local) via `sync_universe`, but no longer fetches
+  any history over the network. A symbol's history is filled the first time it is
+  viewed (Phase B).
+- **Remove Industries entirely:** the `industries` route + `/api/industries`, the
+  `industries` frontend entry, the `industries_*` templates, the home Industries
+  band, and the nav link. Drop the industries-only compute if unused elsewhere.
+- **Verify:** with no browser connected, the app makes zero outbound calls over a
+  several-minute idle window (watch `fetch_log` / guard counters); `/industries`
+  → 404; home still renders (old bands, trimmed of Industries) until Phase C
+  replaces it; `/health` no longer lists the removed jobs.
 
-### Phase 2 — Universe curation  ✅ DONE on dev (commit + deploy pending)
-- ✅ Reconciled the 503 stocks to the current S&P 500 (fetch + diff: exact match).
-- ✅ Curated ETFs to iShares + Vanguard (43 total): dropped other-issuer
-  thematic/sector funds, kept SPY/QQQ/DIA/GLD/SLV proxies, added the
-  most-common Vanguard + iShares funds incl. core holdings IAU/IBIT/VBIL.
-  Issuer/category tags reuse the Yahoo `fund_metadata` (no new schema).
-- ✅ Kept the 6 indexes and all 10 futures (4 index-futures + 6 commodities).
-- ✅ `seed::sync_universe` now reconciles (upsert + prune) on every boot, so CSV
-  edits take effect on deploy. Pruned 7 stale non-S&P leftovers in passing.
-- ✅ Fixed Yahoo `range=max` downsampling (provider 10y fallback + `run_history`
-  self-heal); every seeded symbol now holds true daily bars.
+### Phase B — On-demand symbol data (loading bar + data age + manual refresh)  ✅ DONE on dev (commit + deploy pending)
+Turn the symbol page into a pull-on-demand surface. See the Status block above for
+the full outcome.
+- **On load:** if the symbol's quote / intraday / daily history is stale or absent,
+  trigger a fresh Yahoo pull. Slow SEC data (fundamentals, filings, holdings, NAV)
+  is pulled only when missing or past its staleness window. A manual **Refresh**
+  button re-pulls everything.
+- **Loading bar over the whole pull.** A clear progress indicator that names each
+  step as it runs (prices → history → fundamentals → filings → ...), driven by the
+  existing SSE stream or a dedicated per-symbol refresh endpoint that reports
+  progress. Guard-denied steps surface plainly ("rate-limited, showing cached").
+- **Data-age on every block.** Each figure/section shows a plain age read derived
+  from its `*_synced_at` timestamp ("live" / "3m ago" / "as of Fri close" /
+  "stale").
+- **Respect the guard.** All pulls route through the `yahoo` / `sec` guards; an
+  open breaker degrades gracefully to cached + a clear note, never a hammer.
+- **Verify:** loading a cold symbol fills its chart + stats live with the bar
+  advancing; data-age reads correctly; manual refresh re-pulls; a tripped guard
+  shows cached-with-note; no console errors at mobile + desktop.
 
-### Phase 3 — Drop short-horizon prediction → quality leaderboard + home de-dup  ✅ DONE (deployed 2026-05-30)
-- ✅ Removed all four pick rankers (Day/Week *and* Month/Quarter), the backtest
-  machinery, the scheduler snapshot job, and the backtest-only models helpers.
-- ✅ Merged Top picks + Stock health + Strongest & weakest into a single
-  non-advice **Quality leaderboard** (Healthiest / Most concerning) driven by
-  `compute::health_read`, trailing-year return folded into each row.
-- ✅ Dropped the `picks` table via migration `0013_drop_picks.sql` (+ swept
-  stale status rows). `compute::standing` retained for the movers badge +
-  symbol/search pages.
-- Note: the leaderboard's home-page placement is intentionally provisional —
-  Phase 5 rebuilds the dashboard (hero + bands) around it.
+### Phase C — Dashboard rework: session watchlist + %-vs-SPX hero graph  ✅ DONE on dev (commit + deploy pending)
+See the Status block above for the full outcome.
+Rebuild home around the watchlist and the day graph.
+- **Session watchlist.** An opaque `fin_sid` cookie identifies a browser session
+  (no accounts); a `watchlist(sid, ticker, position, added_at)` table holds its
+  symbols, seeded with VTI, VXUS, BND, IAU, IBIT on first visit. Add/remove UI on
+  the dashboard. Clearing cookies loses the list (acceptable, by design). SPX is a
+  fixed, non-removable baseline.
+- **Hero graph = normalized %-vs-SPX overlay.** All watchlist symbols + SPX on one
+  intraday chart, each as % change from today's open (TradingView/Google compare
+  style), SPX as the visual baseline. The graph delineates pre / regular /
+  after-hours and shows "closed" state clearly. Falls back to the most recent
+  trading day on weekends/holidays.
+- **Watchlist rows/cards** beneath: price, day change, a sparkline, and a data-age
+  read each. Refresh ~every 5 minutes while the dashboard is open (demand-driven:
+  the page registers its watchlist tickers with the interest registry; the
+  intraday poll honors a ~5-minute per-symbol cadence for dashboard viewers).
+- **Keep these market reads on the dashboard (user's call, 2026-06-03):**
+  - **Overall market volume.** An aggregate market-volume read for the day (source
+    TBD during build: the lead index's / a broad-ETF's volume, since we no longer
+    sweep the whole universe for a true summed figure). Shown with its data-age.
+  - **VIX, kept tracking.** ^VIX stays a first-class dashboard read (the risk tone),
+    not dropped with the old hero verdict. It is one of the always-on reads even
+    though it is not a watchlist symbol.
+  - **SMA 50 / SMA 200.** Interesting in general. They stay as chart overlays on
+    symbol pages (Phase B, daily ranges). On the dashboard they only make sense on a
+    *daily* SPX chart, not on the intraday %-vs-SPX hero overlay; decide during the
+    build whether the dashboard carries a small SPX daily chart with the 50/200 SMAs
+    or whether 50/200 live only on symbol pages. (Open sub-decision.)
+- **Strip the rest of the old home bands** that depended on whole-universe daily
+  data we no longer fetch (breadth, stock movers, the quality leaderboard, the hero
+  verdict sentence). The new dashboard is: session/hours banner + hero comparison
+  graph + the volume/VIX reads + editable watchlist. (Revisit whether any other old
+  band is worth keeping during the build.)
+- **Verify:** first visit seeds the 5 starters; add/remove persists across reloads
+  in the same browser and resets in a fresh one; the hero overlay normalizes all
+  lines to % from open with SPX as baseline; market-hours labeling is correct in
+  each session; watchlist refreshes on the ~5-minute cadence with live data-age;
+  nothing polls once the dashboard tab is closed.
 
-### Phase 4 — ETFs as true first-class citizens  ✅ DONE (deployed 2026-05-30, `19d0b14`)
-- ✅ Blended ETF **quality score** (`compute::etf_quality`): cost-weighted blend
-  of cost (40%) / tracking (25%) / diversification (20%) / size (15%), composite
-  −1..1 → percent, four sub-reading chips — structurally mirrors the stock
-  `health_read` donut. Renormalises over gradeable factors (commodity trusts
-  with no holdings drop diversification cleanly); shows only with ≥2 factors.
-- ✅ Distinct ETF symbol-page identity: the quality donut anchors the header
-  top-right (reusing the `health-badge` styling), hover reveals the four
-  sub-readings + non-advice note. The ETF already shows fund sections (holdings,
-  expense/yield, NAV/premium, sector/geo, trailing returns vs benchmark) and no
-  stock fundamentals — so the badge + `ETF` tag complete the distinct identity.
-- ✅ **Tracking now backed by a real daily NAV.** Discovered the 30-day metadata
-  cadence made premium/discount unreliable; added a dedicated daily `fund_nav`
-  scheduler job + `nav_synced_at` column (migration `0014`) so NAV is current,
-  and a freshness gate that drops the tracking factor to `—` when NAV is stale
-  rather than assert a bogus premium. (See Decisions log for the full story.)
-- ⏸ **Distinct ETF band on the dashboard — deferred to Phase 5** (user's call):
-  the dashboard is fully redesigned in P5, so the ETF band is built there once
-  rather than built twice.
-- **Verified on dev:** `cargo build` clean; migration `0014` applies on boot;
-  `/health` lists the new "ETF NAV" job; every ETF page renders the quality
-  donut (VOO 89% Strong, GLD 64% with diversification correctly `—`, BND 100%
-  on its two graded factors); the freshness gate correctly drops tracking to
-  `—` while NAV is stale (screenshot reviewed). **One runtime path still
-  unverified live:** the daily `fund_nav` Yahoo fetch — the dev `yahoo` guard's
-  breaker was open (normal post-deploy back-off) so the job stopped early 0/43;
-  the fetch reuses the proven `quoteSummary` NAV parse, and prod exercises it on
-  first deploy once its guard is healthy.
-
-### Phase 5 — Dashboard redesign: "how is the market doing TODAY"  ✅ DONE (deployed 2026-05-30, `656e21d`)
-- ✅ Hero: two-line plain-language verdict (blended index move + breadth + VIX
-  tone) + compact index strip + headline figures + non-advice note. Direction
-  tracks the broad index sign so it never contradicts the figure shown.
-- ✅ Breadth band: advancers/decliners + % S&P green + a proportion bar. (Sector
-  leaders/laggards stay in their **own** Industries band, per the user's call —
-  not folded into breadth.)
-- ✅ ETF band (the Phase-4 deferral): 5 curated quality cards + a gainers/losers
-  strip, each carrying the Phase-4 quality verdict.
-- ✅ Clearly labeled bands, dual-first density: Hero · Indexes · Breadth · ETFs ·
-  Stock movers · Industries · Risk & commodities · Quality leaderboard.
-
-### Phase 6 — Symbol-page distillation + live intraday on chart  ✅ DONE on dev (commit + deploy pending)
-- ✅ Live intraday surfaced as **1D / 1W range buttons** (the user's call over a
-  single stitched-on candle): 15m bars from `intraday_bars` on a minute axis,
-  daily-only overlays/toggles suppressed, a dashed prev-close reference line.
-- ✅ Live tick of the trailing bar via a re-broadcast `finance:quote` event +
-  a 60s local-DB re-fetch — no second EventSource. (Live path runs first in
-  prod; a closed-market weekend can't stream quotes on dev.)
-- ✅ Mobile above-the-fold reorder: full chart **promoted** (no separate mini
-  chart, user's call); donut is desktop-only and a flattened full-width
-  **verdict line** (verdict · % · trajectory) sits under the price on mobile.
-  Order: price/change → verdict → chart.
-- ✅ Fixed a latent `.ind-btn[hidden]` override bug found in passing.
-
-### Phase 7 — Health/systems page distillation + final polish pass  ✅ DONE (deployed 2026-05-30, `645b351`)
-- ✅ **`/health` distilled with a top systems verdict** (the chosen shape): a
-  one-line plain read above the existing detail, computed live in `health.js`.
-- ✅ **Two-tier footer built** (`footer__grid` + `.footer-bar`, Paper Ledger), data
-  attribution folded into the About column.
-- ✅ **Live market summary** (the Phase-5 hero/breadth deferral): `src/summary.rs`
-  + `StreamEvent::Summary` + scheduler publishes + `home.js` patches. Live path
-  runs first in prod (closed-market weekend can't stream on dev).
-- Light cohesion only (per the scope decision); no full cross-page audit.
-- See Status + the 2026-05-30 Phase 7 decisions log for the full outcome.
-
-Original Phase 7 brief (kept for reference):
-- Distill `/health` and overall cross-page cohesion; one closing UI polish pass.
-- **Expand the footer to match the sibling-project pattern.** Finance currently
-  has a single-line footer; the user wants it grown "a lot" to match how the
-  other apps do footers. The house pattern (analytics, status, blog, repos) is a
-  **two-tier footer**: a multi-column upper `<footer>` (columns like About /
-  Pages / Links — nav links, cross-project links, Portfolio/GitHub/LinkedIn, and
-  a "Source" link to `github.com/overshard/finance`) over a slim `.footer-bar`
-  with `© {{ now.year }} Isaac Bythewood · Some rights reserved` + a GitHub icon
-  link. `repos`'s `footer__grid` with `// LABEL` column headers is the closest
-  fit for the Paper Ledger aesthetic — model finance's on that. Fold the data
-  attribution below into one of the columns.
-- **Data-attribution (partially done early):** the stale **Stooq** credit was a
-  factual bug (Stooq removed Phase 1), so the one-line footer was corrected
-  on 2026-05-30 to "Market data via Yahoo Finance · Fundamentals via SEC EDGAR ·
-  not investment advice" ahead of schedule. The full footer build above still
-  belongs to this polish pass. Yahoo's chart endpoint is unofficial (no
-  published ToS/attribution requirement), but a tasteful credit is honest and
-  suits the professional face the user wants.
+### Phase D — Cohesion + polish pass  ✅ DONE on dev (commit + deploy pending)
+Removed the dead Summary machinery, trimmed `/health` to the demand-only job set +
+copy, added a "Prices as of" age to the dashboard reads, and fixed a verdict
+pluralization. (Industries links were already removed in Phase A; the loading bar,
+market-hours banner, and mobile hierarchy landed in Phases B/C.) See the Status
+block above for the full outcome. **This completes the demand-only roadmap.**
 
 ### Backlog / parked
-- Watchlists (tables exist, unused — user wants an opinionated no-customization
-  view for now).
-- **Popular non-S&P watchlist.** Phase 2 narrowed stocks to exactly the S&P 500,
-  which dropped some popular names the universe used to carry (MSTR, NET, RIVN,
-  SHOP, SNOW, SOFI, MRVL). Add them back as an opt-in "popular / most-watched"
-  band if the user wants them.
-- Issuer-direct ETF feeds (iShares/Vanguard) if Yahoo/SEC prove thin.
-- Deep pre-2000 history (lost with Stooq; revisit only if charts feel thin).
-  Note: index/futures daily history via Yahoo caps at ~10y (the `range=10y`
-  fallback); ^SPX/^DJI/^NDX still carry deep daily history from before.
-- **Scrub Claude/Anthropic trailers from git history (cross-repo, force-push).**
-  User wants every `Co-Authored-By: Claude`, `🤖 Generated with [Claude Code]`,
-  and any Anthropic ad line removed from *all* commit messages in *all* repos.
-  **Survey 2026-05-30: history is already clean** — a strict scan across all 9
-  `~/code` repos (analytics, blog, darkfurrow, finance, isaacbythewood, repos,
-  status, taproot, timelite) found **zero** such trailers; the only "claude"
-  hits are legitimate references to the `CLAUDE.md` *filename* in commit
-  messages, which must NOT be scrubbed. So this is a no-op today and only
-  matters if a trailer ever slips in. Procedure if needed (do it as its own
-  focused session — it is irreversible):
-  1. Per repo, rewrite history dropping the offending trailer lines, e.g.
-     `git filter-repo --message-callback` (preferred) or a `filter-branch`
-     fallback, stripping only `Co-Authored-By: Claude*`, `🤖 Generated with*`,
-     and `Generated with [Claude Code]*` lines — never the `CLAUDE.md` mentions.
-  2. `git push --force-with-lease` to **every** remote (GitHub `origin` *and*
-     the deploy remote `server`).
-  3. **Server fixup:** the deploy is a bare repo + post-receive hook that builds
-     into the project dir. After a history rewrite the server's checkout will be
-     on an orphaned commit, so SSH to the alpine host (`taproot` manages it) and
-     reset the bare repo's `master` + re-run the deploy (`docker compose up
-     --build --detach`) so `/srv` tracks the rewritten history; verify the
-     container is healthy and reattached to `bythewood-edge`. Coordinate via the
-     `taproot` repo (its CLAUDE.md is off-limits to auto-edits per user rule).
+- Named multiple watchlists (only a single session list is planned for now).
+- A "popular non-S&P" quick-add set on the dashboard, if the curated catalog feels
+  thin for adding symbols.
+- Server-rendered fallback when JS is off (the hero graph + loading bar are JS).
+- Whether to keep *any* whole-market read (breadth/movers) as an optional,
+  on-demand-only panel rather than deleting it outright.
 
 ---
 
 ## Decisions log
 
-**2026-05-30 — Phase 7 (health distillation + footer + live breadth) design forks
-resolved.** Answered 3 clarifying questions before building:
-1. **/health distillation = add a top "verdict" summary** (like the dashboard
-   hero): a one-line plain-language systems read at the top (`● All systems
-   normal · both data sources healthy · N jobs on schedule · last fetch 4m ago`),
-   keeping the existing Endpoints / Background jobs / Activity-log detail below.
-   Computed client-side in `health.js` from the snapshot so it stays live.
-2. **Build live breadth now** (not parked). The Phase-5 hero verdict + breadth
-   were page-load snapshots; add a server-pushed market-summary event on the
-   stream hub so the verdict sentence, the headline figures, and the breadth
-   counts/bar recompute intraday instead of going stale beside the live-ticking
-   index chips. (Runs first in prod during market hours — a closed-market weekend
-   can't stream quotes on dev, like Phase 6's live tick.)
-3. **Polish scope = footer + health properly, light cohesion only.** Build the
-   two-tier footer (modeled on `repos`' `footer__grid`, adapted to Paper Ledger)
-   and the health verdict; do a light spacing/heading cohesion sweep only where
-   quick, rather than a full cross-page audit.
-Implementation shape: a new `src/summary.rs` owns the verdict vocabulary
-(`market_verdict` + `vix_tone`, moved out of `home.rs` so page-load and live push
-share one wording) and a cheap `market_summary(pool, session)` (two aggregate
-reads: breadth over curated stocks + the lead index / VIX). A new
-`StreamEvent::Summary` carries it; the scheduler publishes it after an intraday
-sweep that touched a pulse ticker (the broad index or ^VIX) and after daily_close.
-`base/stream.js` re-broadcasts it as a `finance:summary` window event; a new
-`home.js` patches the hero + breadth DOM in place.
+**2026-06-03 — The "demand-only refocus" kickoff.** The user steered a focus shift
+away from the broad always-on dashboard: the app could not source enough live data
+to show what they wanted, and the timed sweeps were spending API budget on symbols
+nobody was viewing. Answered 4 clarifying questions:
+1. **Dashboard = a session-scoped editable watchlist.** Cookie-based, no accounts;
+   custom to a browser "session" however we manage it (chosen impl: an opaque
+   `fin_sid` cookie + a `watchlist` table). Clearing the browser loses it, which is
+   fine. Seeded with VTI, VXUS, BND, IAU, IBIT; SPX is the fixed baseline.
+2. **Hero graph = normalized %-vs-SPX overlay** (TradingView/Google compare style):
+   every watchlist symbol + SPX as % change from today's open, SPX the baseline.
+3. **Symbol pull scope = prices auto, deep data if stale.** On load, auto-pull fast
+   Yahoo data (quote / intraday / daily history) live with a loading bar; pull slow
+   SEC data (fundamentals / filings / holdings / NAV) only when missing or stale,
+   each carrying a data-age read. Manual refresh re-pulls everything.
+4. **Drop all timed network sweeps** (including `daily_close`). Nothing happens
+   automatically. History is fetched on loading a page whose data is stale. Keep
+   only the local prune and demand-driven polling. The universe CSV stays as a
+   searchable catalog (metadata only; data fetched on first view).
+Then riffed three reads to keep on the dashboard despite stripping the old bands:
+**overall market volume**, **^VIX** (keep tracking), and **SMA 50/200** (interesting
+in general). Budgeted into Phase C: volume + VIX are always-on dashboard reads; the
+50/200 SMAs stay as symbol-page chart overlays, with an open sub-decision on whether
+the dashboard also carries a daily SPX chart to host them (the intraday %-vs-SPX hero
+overlay can't show daily SMAs meaningfully).
+Roadmap rewritten into Phases A-D above. The previous "distill + ETF-first"
+roadmap (Phases 1-7) is **superseded** but its outcomes remain live in prod until
+each new phase replaces them; that history is condensed below and in git.
 
-**2026-05-30 — Phase 6 (symbol-page distillation + live intraday).** Answered 3
-design forks before building:
-1. **Intraday = dedicated 1D + 1W range buttons** (not a single live candle
-   stitched onto every daily range, and not both). 15m bars on their own minute
-   axis, the conventional Yahoo/Google shape; the daily ranges stay daily. The
-   plan's "stitched onto the daily series" wording was reconciled this way —
-   15m granularity is invisible on a 1Y view, so a separate intraday tab is the
-   honest surface, with a prev-close reference line tying it to the daily basis.
-2. **Mobile = promote the full chart** above the fold (no separate mini chart),
-   so there is one chart with its range/indicator controls, just lifted higher.
-3. **Mobile health = a full-width verdict line** under the price (`● Verdict ·
-   NN% · trajectory ↑`); the donut ring stays the desktop treatment. Works for a
-   stock (with the trajectory clause) or an ETF (without).
-Implementation notes worth keeping: `intraday_bars.ts` is epoch-**ms**, so it is
-÷1000 for lightweight-charts' UNIX-**seconds** intraday axis; a `BarTime`
-untagged enum lets one `candles` field serialise a date string (daily) or a
-number (intraday). The live tick reuses the existing SSE quotes via a
-re-broadcast `finance:quote` window event — no second connection — plus a 60s
-local-DB re-fetch for new bars. Found + fixed in passing: `.ind-btn`'s
-`display: inline-flex` was beating the `[hidden]` attribute, so neither the
-benchmark toggle (on benchmark-less symbols) nor the daily-only toggles (on
-intraday) actually hid; an `.ind-btn[hidden]` rule re-asserts it. The live tick
-couldn't be exercised on a closed-market weekend; it runs first in prod.
+**Superseded — the "distill + ETF-first" rewrite (2026-05-30, Phases 1-7, deployed
+`645b351`).** Condensed, since the demand-only refocus reworks much of it:
+- **P1 Yahoo-only data layer:** removed the Stooq provider/guard/config; Yahoo
+  `interval=1d&range=max` serves deep history. Fixed Yahoo `range=max`
+  downsampling (provider 10y fallback + `run_history` self-heal). *Yahoo-only
+  stays; the periodic history job it added is now being removed in Phase A.*
+- **P2 Universe curation:** reconciled stocks to the current S&P 500 (exact match);
+  curated ETFs to iShares + Vanguard (43); `seed::sync_universe` reconciles on every
+  boot. *Universe stays as the search catalog; the boot history backfill is being
+  dropped in Phase A.*
+- **P3 Dropped short-horizon prediction → quality leaderboard:** removed the four
+  pick rankers, `src/picks.rs`, `/backtest`, the snapshot job; dropped the `picks`
+  table (migration `0013`). *The leaderboard band is being removed in Phase C.*
+- **P4 ETFs first-class:** `compute::etf_quality` (cost/tracking/diversification/
+  size blend), the ETF symbol-page quality donut, a daily `fund_nav` job +
+  `nav_synced_at` (migration `0014`) + a NAV-freshness gate. *The quality read +
+  ETF page identity stay; the daily `fund_nav` sweep is being removed in Phase A
+  (NAV now fetched on demand for a viewed ETF).*
+- **P5 Dashboard "how is the market TODAY":** hero verdict + breadth band + ETF
+  band + bands layout. *Being replaced by the watchlist + %-vs-SPX dashboard in
+  Phase C.*
+- **P6 Symbol-page distillation + live intraday:** 1D/1W intraday range buttons
+  (15m bars on a minute axis, prev-close reference line), live tick via a
+  re-broadcast `finance:quote` event, mobile above-the-fold reorder. *The intraday
+  chart + live tick stay and are the base for Phase B's on-demand pull.*
+- **P7 Health distillation + footer + live breadth:** `/health` top systems
+  verdict, two-tier Paper Ledger footer, `src/summary.rs` + `StreamEvent::Summary`
+  live market summary. *The footer + `/health` stay (Phase D trims `/health` to the
+  smaller job set); the live market summary/breadth push is being removed with the
+  old dashboard.*
 
-**2026-05-30 — Phase 5 (dashboard redesign).** Answered 4 design forks before
-building:
-1. **Hero verdict = blended + a touch more.** A two-line read: a punchy lead
-   ("Higher, but narrow.") plus a clause ("Markets higher with narrow
-   participation."), blending the broad index move, breadth (% green), and the
-   VIX risk tone, with the headline figures and a non-advice note beneath.
-2. **Sectors stay separate.** Breadth band = advancers/decliners + % green only;
-   the existing Industries (sector up/down) panel keeps its own band rather than
-   folding "sector leaders/laggards" into breadth.
-3. **ETF band = both.** Curated quality cards (VOO/VTI/QQQ/BND/GLD) *and* a
-   compact ETF gainers/losers strip — this is the Phase-4 deferral, now built.
-4. **Breadth viz = stat strip + proportion bar** (advancers/decliners counts, %
-   green, one up/flat/down bar), not a distribution histogram.
-Implemented entirely in `src/routes/home.rs` + `home.html`/`macros.html` +
-`home.scss`, reusing the already-loaded card/stock scans so the hero and breadth
-add **zero** extra queries (only the ETF band adds two: the ETF roll-up and a
-top-10-holdings window query). Found + fixed during the screenshot review: the
-verdict could contradict the figure beside it — a +0.12% S&P with weak breadth
-read "Broadly lower" because the ±0.15% direction deadband swallowed the move and
-let breadth flip the sign. Fixed by tightening the deadband to ±0.05% and making
-direction track the broad index's sign, with breadth breaking ties only when no
-index price exists. Deferred live updates for the hero/breadth (page-load
-snapshots) to the Phase 7 polish pass.
-
-**2026-05-30 — Phase 4 build + the NAV-staleness discovery.** Built the ETF
-quality read (`compute::etf_quality`, mirroring `health_read`) and the
-symbol-page quality donut. **Mid-build discovery:** the tracking factor
-(premium/discount to NAV, the option the user picked) was reading "Wide gap" on
-funds that track perfectly (VOO, IVV) because Yahoo's NAV is only refreshed
-every 30 days (`FUND_METADATA_STALE_SECS`) — so a live price compared to a
-weeks-old NAV showed a bogus premium. This broke the premise behind the user's
-tracking choice. Surfaced it and asked; user chose **refresh NAV daily** so
-tracking becomes a true daily read. Implemented as:
-- a dedicated daily `fund_nav` scheduler job (separate from the 30-day static
-  metadata sweep so the slow fields keep their cadence) that fetches NAV only
-  (`YahooProvider::fund_nav`, two `quoteSummary` modules) through the `yahoo`
-  guard — ~43 req/day, negligible vs the 1000/hr budget;
-- a `nav_synced_at` column (migration `0014`) the daily job stamps;
-- a **freshness gate** on the symbol page: the tracking factor is graded only
-  when NAV was synced ≤3 days ago, else it drops to `—` and the cost/div/size
-  blend renormalises — so a stale NAV never drives a false tracking verdict.
-Also deferred the **dashboard ETF band to Phase 5** (it rebuilds the dashboard
-anyway) and corrected the footer's stale Stooq credit early (a factual bug).
-The `fund_nav` live fetch wasn't exercised on dev (the guard's breaker was open
-post-deploy), but it reuses the proven NAV parse and runs on first prod deploy.
-
-**2026-05-30 — Phase 4 (ETFs as first-class citizens) design forks resolved.**
-Answered 3 clarifying questions before building:
-1. **ETF quality score = cost-weighted, all four factors.** Cost (expense ratio)
-   ~40%, Tracking ~25%, Diversification ~20%, Size (AUM) ~15%. Composite in
-   [-1,1] → percent, with four sub-reading chips — structurally mirrors the
-   stock `health_read` donut. Weights renormalize over whichever factors are
-   gradeable (commodity trusts like GLD/SLV/IBIT have no holdings, so
-   diversification drops out and the rest reweight). Show the badge only when
-   ≥2 factors are gradeable.
-2. **Tracking factor = premium/discount to NAV**, reusing the existing
-   `compute::premium_discount_pct` + `premium_grade` (price vs Yahoo NAV). No
-   new compute, no benchmark-alignment work. (True tracking error vs benchmark
-   was considered and parked.)
-3. **Dashboard ETF band deferred to Phase 5.** Phase 4 ships the quality score +
-   the distinct ETF symbol-page identity (own quality donut + sub-readings in
-   the header, alongside the fund sections that already exist). The dashboard
-   ETF band gets built into the Phase 5 dashboard redesign rather than built
-   twice.
-Grading bands (initial, tune later): cost cheap ≤0.10% / pricey >0.50%;
-tracking via `premium_grade` (±0.25% tight, ±1% wide); diversification on top-10
-holdings concentration (≤~25% broad, >~50% concentrated); size on log10(AUM)
-centered ~ $2B ok, ≥ $20B large.
-
-**2026-05-30 — Phase 3 (drop short-horizon prediction → quality leaderboard).**
-Executed the kickoff decision to drop prediction. Resolved the one open design
-fork (what the unified leaderboard ranks by) without blocking: used the existing
-`health_read` composite — it is the "healthiest" read the plan named and already
-blends strength + trajectory + leadership stability — rather than inventing a new
-score or reusing `standing`. Folded the old strongest/weakest panel's
-trailing-year return into each leaderboard row so no useful signal was lost.
-Kept the home-page treatment deliberately light (a straight three-into-one
-de-dup) because Phase 5 redesigns the dashboard around this band anyway. Found
-during the work: `movers` reuses `compute::standing` for its strength badge, so
-`standing` stays (only the strongest/weakest *panel* was removed); and the
-running dev server had to be restarted to pick up the new binary + run the
-drop-picks migration.
-
-**2026-05-30 — Phase 2 (universe curation).** Answered 4 clarifying questions:
-1. **ETF roster:** keep iShares + Vanguard + the SPY/QQQ/DIA/GLD/SLV proxies;
-   drop other-issuer thematic/sector funds; add the most-common Vanguard +
-   iShares funds. Landed at 43 ETFs.
-2. **Core holdings:** "get the most common Vanguard and iShares funds" (not just
-   the named IAU/IBIT/VBIL) — drove the broadened ETF set above.
-3. **ETF tags:** reuse Yahoo `fund_metadata.category` / `fund_family` for the
-   dashboard band separation; no new schema/migration.
-4. **S&P 500 recon:** fetch the live constituent list and diff to match exactly
-   (result: already an exact match).
-Plus, surfaced and fixed during verification: the seed never reconciled on
-re-boot (now does, via `sync_universe`), and Yahoo `range=max` silently
-downsamples `interval=1d` to weekly/monthly for long-history symbols (fixed in
-the provider + a `run_history` self-heal). See Status for the full outcome.
-
-**2026-05-30 — The "distill + ETF-first" refactor kickoff.** User steered a
-broad refactor; answered 10 clarifying questions. Decisions:
-1. **Drop next-day/next-week prediction.** Confirmed it's a gamble and the main
-   driver of live-data demand. Day/Week picks removed; Month/Quarter reframed as
-   a non-advice quality leaderboard.
-2. **Universe = S&P 500 + major indexes + major commodities + iShares/Vanguard
-   ETFs.** Commodities stay.
-3. **Data goes Yahoo-only; Stooq removed.** Investigated the Stooq bulk
-   download: it's CAPTCHA-gated (authorizes the PHP session, not a reusable
-   token — verified live), so it can't be cron'd; the per-symbol apikey path is
-   reusable but carries the undocumented "Exceeded the daily hits limit" cap
-   that was blocking us. Yahoo `interval=1d&range=max` gives full daily history
-   in one call and `daily_close` already touches every symbol, so Yahoo covers
-   both backfill and updates with no rate-limit exposure. Trade-off: lose
-   Stooq's ultra-deep pre-2000 history (a chart curiosity).
-4. **Freshness tiers:** live intraday only for dashboard indexes + the open
-   symbol; daily close for everything else.
-5. **ETF separation:** distinct dashboard bands + distinct ETF symbol-page
-   identity.
-6. **ETF read:** a blended "quality" score (not a fake "company health").
-7. **Dashboard hero:** one-line verdict + index strip + breadth.
-8. **Mobile stock order:** price/change → health verdict → mini chart →
-   trajectory.
-9. **Cadence:** commit + auto-deploy each verified phase.
-10. **This session:** rewrite PLAN.md (done), then start Phase 1.
-
-**Pre-2026-05-30 history (condensed).** The app shipped Phases 0–31 of the
-original roadmap: MVP (universe, Stooq history, scheduler+guard, Paper Ledger
-redesign, live quotes+SSE, health page, SEC fundamentals+filings, chart
-indicators, search+add-symbol, commodities, home redesign, ship/Docker), then
-post-MVP work (company leadership, industry trends, ETF profiles, strongest/
-weakest, data-age captions, financials table, dividends, earnings dates,
-per-ticker anomaly feed, stock health read, ETF first-class v1, top picks +
-backtest, and a full UI polish pass). It deployed to production at
-finance.bythewood.me. This refactor reworks the prediction, data-source, ETF,
-and distillation layers on top of that base. The blow-by-blow phase history
-from before this rewrite lives in git history; it was intentionally dropped
-from this doc to keep it scannable.
+**Pre-2026-05-30 history (condensed).** The app shipped the original Phases 0-31:
+MVP (universe, Stooq history, scheduler+guard, Paper Ledger redesign, live
+quotes+SSE, health page, SEC fundamentals+filings, chart indicators, search+add-
+symbol, commodities, home redesign, ship/Docker), then post-MVP work (leadership,
+industry trends, ETF profiles, strongest/weakest, data-age captions, financials
+table, dividends, earnings dates, anomaly feed, stock health read, ETF first-class
+v1, top picks + backtest, UI polish). Blow-by-blow lives in git history.
 
 ---
 
 ## Hard-won lessons (don't relearn these)
 
-- **Yahoo `range=max` silently downsamples `interval=1d`.** For symbols with
-  long histories (futures, ^RUT/^VIX, multi-year ETFs) the v8 chart endpoint
-  returns weekly/monthly bars even when a daily interval is asked for — and for
-  some it returned a single bar. A *bounded* window (`range=10y`, or explicit
-  `period1`/`period2`) is served at true daily granularity. The provider detects
-  a downsampled `range=max` response (median timestamp gap > 4 days) and refetches
-  10y; `run_history` self-heals already-stored coarse/single-bar series (it flags
-  a symbol with < 30 bars in its trailing 90 days, replacing them with a daily
-  re-fetch). Detect coarseness from *recent* spacing, not whole-span density —
-  ^SPX has daily data for decades but a sparse pre-1900 tail, and a whole-span
-  test wrongly flags it.
-- **The seed must reconcile on every boot, not only first-run.** `seed_completed`
-  gates the history *backfill*, but `sync_universe` (upsert + prune) runs each
-  boot so a `starter.csv` edit (symbols added or dropped) takes effect on deploy.
-  Pruning keys on `is_seeded = 1` so user-added symbols are safe.
+- **Yahoo `range=max` silently downsamples `interval=1d`.** For symbols with long
+  histories (futures, ^RUT/^VIX, multi-year ETFs) the v8 chart endpoint returns
+  weekly/monthly bars even when a daily interval is asked for, and for some a single
+  bar. A *bounded* window (`range=10y`, or explicit `period1`/`period2`) is served
+  at true daily granularity. The provider detects a downsampled `range=max` response
+  (median gap > 4 days) and refetches 10y; detect coarseness from *recent* spacing,
+  not whole-span density (^SPX has daily data for decades but a sparse pre-1900
+  tail). The on-demand history fetch in Phase B reuses this provider logic.
+- **The seed reconciles the universe on every boot, not only first-run.**
+  `sync_universe` (upsert + prune) runs each boot so a `starter.csv` edit takes
+  effect on deploy. Pruning keys on `is_seeded = 1` so user-added symbols are safe.
+  (Phase A keeps this; it removes only the *history backfill*, not the metadata
+  sync.)
 - **Yahoo `quoteSummary` is crumb-gated.** Must prime `fc.yahoo.com` + fetch
-  `/v1/test/getcrumb` with cookies, cache the crumb, rotate on 401/403. Already
-  implemented in `src/providers/yahoo.rs`.
-- **SEC's `fy` field tags the *filing's* fiscal year, not the period's.**
-  Derive fiscal year from period-end + the company's fiscal-year-end month, or
-  comparatives shift by years. Keep only clean full-year/discrete-quarter
-  durations; skip quarterly balance-sheet figures (10-Q mis-tags prior-year
-  comparatives).
-- **"No data" / historyless symbols are a clean empty, not a failure** — never
-  feed the breaker for a symbol Yahoo legitimately has no history for.
+  `/v1/test/getcrumb` with cookies, cache the crumb, rotate on 401/403. Already in
+  `src/providers/yahoo.rs`.
+- **SEC's `fy` field tags the *filing's* fiscal year, not the period's.** Derive
+  fiscal year from period-end + the company's fiscal-year-end month. Keep only clean
+  full-year/discrete-quarter durations; skip quarterly balance-sheet figures.
+- **"No data" / historyless symbols are a clean empty, not a failure** — never feed
+  the breaker for a symbol Yahoo legitimately has no history for.
 - **Guard state is shared across server + `seed` subcommand** via SQLite, and
-  survives restarts. A boot-time breaker trip is normal after a deploy that adds
-  a new upstream-backed job; it recovers via the half-open probe.
-- **Chart indicator lines use a non-semantic palette on purpose** — green/amber/
-  red are reserved for good/ok/bad; candles own green/red.
-- **Yahoo NAV is only as fresh as you keep it.** The 30-day `fund_metadata`
-  sweep (`FUND_METADATA_STALE_SECS`) carries a NAV, but comparing a live price
-  to a weeks-old NAV yields a meaningless premium/discount — it reads as a huge
-  fake "premium" on funds that actually track to the basis point. NAV is struck
-  once per trading day; anything that reads a price-vs-NAV premium (the ETF
-  quality read's tracking factor) must run off the daily `fund_nav` refresh and
-  gate on `nav_synced_at` freshness. Don't trust the metadata sweep's NAV for
-  any real-time comparison.
-- **`cargo` isn't on PATH in this dev container** — use `~/.cargo/bin/cargo`,
-  and run the dev binary with `FINANCE_ROOT=/home/dev/code/finance` (or from the
-  project dir so paths resolve from cwd).
+  survives restarts. A boot-time breaker trip is normal after a deploy; it recovers
+  via the half-open probe.
+- **Chart indicator lines use a non-semantic palette on purpose** — green/amber/red
+  are reserved for good/ok/bad; candles own green/red.
+- **Yahoo NAV is only as fresh as you keep it.** Comparing a live price to a
+  weeks-old NAV yields a meaningless premium/discount. The ETF quality read's
+  tracking factor must gate on `nav_synced_at` freshness. In the demand-only model
+  NAV is fetched when an ETF page is viewed and stale, and the freshness gate still
+  drops the tracking factor to `—` rather than assert a bogus premium.
+- **`cargo` isn't on PATH in this dev container** — use `~/.cargo/bin/cargo`, and
+  run the dev binary with `FINANCE_ROOT=/home/dev/code/finance` (or from the project
+  dir so paths resolve from cwd).

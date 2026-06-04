@@ -1871,3 +1871,92 @@ a.anomaly__link:hover .anomaly__body {
   font-size: 0.74rem;
   color: var(--ink-faint);
 }
+
+/* ---------- on-demand refresh control (Phase B) ----------
+   A button + live status + a thin progress bar that fills as the symbol's
+   data is pulled. The fill is neutral ink, not semantic green: it is progress,
+   not a "good" reading. The bar reserves its row height even when hidden so
+   the header does not jump when a refresh starts. */
+.refresh {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin: 0 0 var(--sp-3);
+  min-height: 1.9rem;
+}
+
+.refresh__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.3rem 0.7rem;
+  font: 500 var(--fs-sm) / 1 inherit;
+  color: var(--ink-dim);
+  background: var(--surface);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+
+  svg {
+    width: 1em;
+    height: 1em;
+    transition: transform 0.4s;
+  }
+
+  &:hover:not(:disabled) {
+    color: var(--ink);
+    border-color: var(--ink);
+  }
+  &:disabled {
+    cursor: default;
+    opacity: 0.7;
+  }
+}
+
+/* Spin the icon while a refresh is in flight. */
+.refresh.is-running .refresh__btn svg {
+  animation: refresh-spin 0.9s linear infinite;
+}
+
+@keyframes refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.refresh__status {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.refresh__bar {
+  flex: 0 0 30%;
+  max-width: 12rem;
+  height: 3px;
+  background: var(--rule);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.refresh__fill {
+  width: 0;
+  height: 100%;
+  background: var(--ink-dim);
+  border-radius: inherit;
+  transition: width 0.3s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .refresh.is-running .refresh__btn svg {
+    animation: none;
+  }
+  .refresh__fill {
+    transition: none;
+  }
+}

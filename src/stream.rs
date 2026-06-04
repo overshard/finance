@@ -21,8 +21,6 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tokio::sync::broadcast;
 
-use crate::summary::MarketSummary;
-
 /// Broadcast channel depth. One full universe sweep (~144 quote events) sits
 /// well under this; a subscriber that still lags is handled by skipping the
 /// gap (see `routes::stream`), never by stalling a publisher.
@@ -36,11 +34,6 @@ const CHANNEL_CAPACITY: usize = 1024;
 pub enum StreamEvent {
     Quote(QuoteUpdate),
     Market { session: String },
-    /// A recomputed dashboard market summary — the hero verdict, headline
-    /// figures, and breadth — pushed as index quotes tick intraday so the
-    /// home page's verdict and breadth stay live (Phase 7). Published by the
-    /// scheduler; an open `/` page patches the hero + breadth DOM in place.
-    Summary(MarketSummary),
     /// A background-data state change — a job started or finished, a
     /// `fetch_log` row landed. Carries no payload: it is a nudge telling an
     /// open `/health` page to pull a fresh snapshot from `/api/health`.

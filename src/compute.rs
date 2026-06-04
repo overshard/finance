@@ -21,6 +21,18 @@ pub fn change(last: f64, prev: f64) -> Change {
     Change { abs, pct }
 }
 
+/// A VIX level read into one plain word, for the dashboard's volatility tone.
+/// The bands suit the ^VIX cash gauge: sub-14 is a placid tape, the teens are
+/// normal, the low-20s start to show stress, and 28+ is outright fear.
+pub fn vix_tone(level: f64) -> &'static str {
+    match level {
+        v if v < 14.0 => "calm",
+        v if v < 20.0 => "steady",
+        v if v < 28.0 => "elevated",
+        _ => "stressed",
+    }
+}
+
 /// Position of `value` along the `[lo, hi]` range, as a 0..100 percent for
 /// placing a marker on a track. Clamped to the ends; a zero-width range maps
 /// to the midpoint. Rounded to 2 dp so it inlines cleanly into a `style`.
@@ -817,17 +829,6 @@ fn score_grade(score: f64) -> Grade {
     } else {
         Grade::Ok
     }
-}
-
-/// Trailing return (percent) over the price-trend window, for display beside a
-/// stock's standing. `None` with less than a few months of history.
-pub fn trailing_return(closes: &[f64]) -> Option<f64> {
-    if closes.len() < TREND_MIN {
-        return None;
-    }
-    let window = &closes[closes.len().saturating_sub(TREND_WINDOW)..];
-    let (&first, &last) = (window.first()?, window.last()?);
-    (first > 0.0).then(|| (last - first) / first * 100.0)
 }
 
 /// Score the trailing-year price trend in [-1, 1]: a trailing return blended
@@ -1652,176 +1653,6 @@ pub fn next_earnings_estimate(dates: &[&str]) -> Option<String> {
     let median = median.clamp(60, 200);
     let next = parsed[0] + chrono::Duration::days(median);
     Some(next.format("%Y-%m-%d").to_string())
-}
-
-// ────────────────────────── industry aggregation (Phase 15) ─────────────────
-//
-// Pure helpers that aggregate per-stock daily-close series into one industry
-// composite, and roll a single member's history into a 12-month seasonality
-// average. No DB, no I/O — `routes/industries.rs` does the SQL and hands the
-// numbers in.
-
-/// Equal-weight composite return read for one industry / sector aggregation.
-/// Each return is the average across the industry's members of that member's
-/// own simple return over the same trailing window. `None` when too few
-/// members carry enough history for the period.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct IndustryReturns {
-    /// One-day return (latest close vs prior close), percent.
-    pub d1: Option<f64>,
-    /// Trailing five-day return, percent.
-    pub d5: Option<f64>,
-    /// Trailing ~21-day (one month) return, percent.
-    pub d21: Option<f64>,
-    /// Trailing ~63-day (one quarter) return, percent.
-    pub d63: Option<f64>,
-    /// Trailing ~252-day (one year) return, percent.
-    pub d252: Option<f64>,
-    /// Number of members that contributed at least one return figure.
-    pub members: usize,
-}
-
-/// Compute one industry's equal-weight composite trailing returns from each
-/// member's oldest-first daily close series. A member with too short a
-/// history simply drops out of that period's average rather than skewing it;
-/// the average is over the members that *did* qualify for that period.
-///
-/// Every period is computed independently — a stock with 200 bars contributes
-/// to d5 / d21 / d63 but not d252. `None` for a period where no member
-/// qualifies. The `members` count is the union: any member that contributed
-/// to at least one period.
-pub fn industry_returns(member_closes: &[&[f64]]) -> IndustryReturns {
-    // Lookback offsets keyed in trading days. d5 is "one trading week" — five
-    // bars back — matching how the existing Phase 8 / 30 maths counts.
-    let mean_of_returns = |lookback: usize| -> Option<f64> {
-        let rets: Vec<f64> = member_closes
-            .iter()
-            .filter_map(|closes| {
-                if closes.len() <= lookback {
-                    return None;
-                }
-                let last = *closes.last()?;
-                let prev = closes[closes.len() - 1 - lookback];
-                if prev <= 0.0 {
-                    return None;
-                }
-                Some((last - prev) / prev * 100.0)
-            })
-            .collect();
-        if rets.is_empty() {
-            return None;
-        }
-        Some(rets.iter().sum::<f64>() / rets.len() as f64)
-    };
-
-    let members = member_closes
-        .iter()
-        .filter(|closes| closes.len() >= 2)
-        .count();
-
-    IndustryReturns {
-        d1: mean_of_returns(1),
-        d5: mean_of_returns(5),
-        d21: mean_of_returns(21),
-        d63: mean_of_returns(63),
-        d252: mean_of_returns(252),
-        members,
-    }
-}
-
-/// One twelve-cell seasonality reading: the average daily return for each
-/// calendar month across all years of history. Percent per day, not per
-/// month — kept comparable to the trailing returns above and avoids a
-/// compounding artefact from uneven trading-day counts. `None` for months
-/// with no observations.
-#[derive(Debug, Clone, Serialize)]
-pub struct Seasonality {
-    /// Twelve entries, Jan → Dec.
-    pub months: [Option<f64>; 12],
-}
-
-/// Per-month average daily return computed across all years of `closes` /
-/// `dates`. Both slices must be the same length and aligned, oldest first.
-/// `dates` are `YYYY-MM-DD`; an unparseable date is skipped.
-pub fn seasonality(closes: &[f64], dates: &[&str]) -> Option<Seasonality> {
-    if closes.len() != dates.len() || closes.len() < 2 {
-        return None;
-    }
-    let mut sums = [0.0_f64; 12];
-    let mut counts = [0u32; 12];
-    for i in 1..closes.len() {
-        let (prev, cur) = (closes[i - 1], closes[i]);
-        if prev <= 0.0 {
-            continue;
-        }
-        // Month bucketed from the *current* bar's date — the return earned by
-        // sitting through that bar, attributed to the month it landed in.
-        let Some(d) = chrono::NaiveDate::parse_from_str(dates[i], "%Y-%m-%d").ok() else {
-            continue;
-        };
-        let m = d.month0() as usize;
-        sums[m] += (cur - prev) / prev * 100.0;
-        counts[m] += 1;
-    }
-    let mut months: [Option<f64>; 12] = Default::default();
-    for i in 0..12 {
-        if counts[i] > 0 {
-            months[i] = Some(sums[i] / counts[i] as f64);
-        }
-    }
-    Some(Seasonality { months })
-}
-
-#[cfg(test)]
-mod phase15_tests {
-    use super::*;
-
-    #[test]
-    fn industry_returns_equal_weights_each_member() {
-        // Two members, identical 252-day flat-to-step pattern. The composite
-        // should be the same as each member's individual return.
-        let mut a: Vec<f64> = (0..260).map(|i| 100.0 + i as f64 * 0.1).collect();
-        let b = a.clone();
-        // Bump the last bar to make d1 non-trivial.
-        *a.last_mut().unwrap() = 110.0;
-        let mut b = b.clone();
-        *b.last_mut().unwrap() = 110.0;
-        let r = industry_returns(&[&a[..], &b[..]]);
-        assert_eq!(r.members, 2);
-        // d1: prior bar was 100 + 258*0.1 = 125.8 -> 110, return is negative.
-        let prior = 100.0 + 258.0 * 0.1;
-        let expected = (110.0 - prior) / prior * 100.0;
-        assert!((r.d1.unwrap() - expected).abs() < 1e-9);
-    }
-
-    #[test]
-    fn industry_returns_drops_too_short_members_per_period() {
-        // One full-history member, one too-short member. d252 should reflect
-        // only the full-history member; d1 should reflect both (each carries
-        // at least 2 bars).
-        let long: Vec<f64> = (0..260).map(|i| 100.0 + i as f64).collect();
-        let short = vec![200.0, 201.0];
-        let r = industry_returns(&[&long[..], &short[..]]);
-        assert!(r.d252.is_some(), "long member should qualify for d252");
-        assert!(r.d1.is_some(), "both members qualify for d1");
-        // members = 2 (both ≥ 2 bars), even though only one carried d252.
-        assert_eq!(r.members, 2);
-    }
-
-    #[test]
-    fn seasonality_averages_by_calendar_month() {
-        // Two consecutive January bars (one return), plus two consecutive
-        // February bars (one return). Both deterministic.
-        let dates = ["2025-01-15", "2025-01-16", "2025-02-15", "2025-02-16"];
-        let closes = [100.0, 101.0, 200.0, 196.0]; // Jan +1.0%, Feb −2.0%
-        let date_refs: Vec<&str> = dates.iter().copied().collect();
-        let s = seasonality(&closes, &date_refs).unwrap();
-        assert!((s.months[0].unwrap() - 1.0).abs() < 1e-9);
-        assert!((s.months[1].unwrap() - (-2.0)).abs() < 1e-9);
-        for m in 2..12 {
-            assert!(s.months[m].is_none());
-        }
-    }
 }
 
 #[cfg(test)]

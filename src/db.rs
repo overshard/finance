@@ -49,7 +49,9 @@ pub async fn set_meta(pool: &SqlitePool, key: &str, value: &str) -> sqlx::Result
     Ok(())
 }
 
-/// Read a `meta` setting, if present.
+/// Read a `meta` setting, if present. (Paired with `set_meta`; retained as the
+/// generic meta accessor even though Phase A removed its last caller.)
+#[allow(dead_code)]
 pub async fn get_meta(pool: &SqlitePool, key: &str) -> sqlx::Result<Option<String>> {
     sqlx::query_scalar("SELECT value FROM meta WHERE key = ?")
         .bind(key)

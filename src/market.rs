@@ -65,14 +65,17 @@ pub fn session_at(now: DateTime<Utc>) -> Session {
     }
 }
 
-/// The `America/New_York` calendar date (`YYYY-MM-DD`) at `now`. This is the
-/// trading day the daily-close job keys its once-per-day guard on.
+/// The `America/New_York` calendar date (`YYYY-MM-DD`) at `now`.
+// Retained past the Phase-A removal of the daily-close job: the Phase-C
+// dashboard resolves "today" / the most-recent trading day for the day graph.
+#[allow(dead_code)]
 pub fn et_date(now: DateTime<Utc>) -> String {
     now.with_timezone(&New_York).format("%Y-%m-%d").to_string()
 }
 
 /// Whether `now` falls on a weekday in ET (no holiday calendar; see the
 /// module note).
+#[allow(dead_code)] // see et_date: Phase-C market-hours logic.
 pub fn is_et_weekday(now: DateTime<Utc>) -> bool {
     !matches!(
         now.with_timezone(&New_York).weekday(),
@@ -81,8 +84,8 @@ pub fn is_et_weekday(now: DateTime<Utc>) -> bool {
 }
 
 /// Whether the regular session has closed for the current ET day: time is at
-/// or past 16:05 ET. The five-minute cushion lets the closing print settle
-/// before the daily-close job snapshots it.
+/// or past 16:05 ET.
+#[allow(dead_code)] // see et_date: Phase-C market-hours logic.
 pub fn after_close(now: DateTime<Utc>) -> bool {
     now.with_timezone(&New_York).time() >= at(16, 5)
 }

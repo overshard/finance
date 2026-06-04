@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
+    response::sse::Sse,
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -26,6 +27,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/symbols", post(add_symbol))
         .route("/api/symbols/{ticker}/history", get(history_api))
         .route("/api/symbols/{ticker}/growth", get(growth_api))
+        .route("/api/symbols/{ticker}/refresh", get(refresh_stream))
 }
 
 /// Stats for the symbol page header and key-stats visualizations. Until
@@ -1494,19 +1496,6 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         None
     };
 
-    // Phase 15: slugs for the sector / industry header tags' links. Computed
-    // here so the template stays declarative.
-    let sector_slug = symbol
-        .sector
-        .as_deref()
-        .map(crate::routes::industries::slug)
-        .unwrap_or_default();
-    let industry_slug = symbol
-        .industry
-        .as_deref()
-        .map(crate::routes::industries::slug)
-        .unwrap_or_default();
-
     let extra = minijinja::context! {
         title => ticker,
         symbol => symbol,
@@ -1524,8 +1513,6 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         anomalies => anomalies,
         earnings => earnings,
         filings => filings,
-        sector_slug => sector_slug,
-        industry_slug => industry_slug,
     };
     render(&state, "pages/symbol.html", &format!("/s/{ticker}"), extra)
 }
@@ -2074,12 +2061,33 @@ fn add_err(status: StatusCode, msg: impl Into<String>) -> Response {
 /// before the response, so its page is complete the moment the add returns
 /// (PLAN.md Phase 21; see `scheduler::backfill_symbol`). Every outbound call
 /// goes through the shared endpoint guard (see PLAN.md's anti-spam policy).
-async fn add_symbol(State(state): State<AppState>, Json(body): Json<AddSymbolBody>) -> Response {
-    let Some(ticker) = valid_ticker(&body.ticker) else {
-        return add_err(
+/// The outcome of ensuring a symbol is in the tracked universe.
+pub(crate) struct EnsureOutcome {
+    pub ticker: String,
+    pub name: String,
+    pub kind: String,
+    /// True when this call created the symbol; false when it already existed.
+    pub added: bool,
+}
+
+/// Ensure `ticker` is a tracked symbol, adding it to the universe if missing.
+///
+/// Idempotent: an already-tracked symbol returns at once. A new one is validated
+/// against Yahoo (one guarded lookup that also yields its name / kind / exchange
+/// / currency), inserted as a user-added (`is_seeded = 0`) row, has the lookup's
+/// quote + bars stored, and its full backfill (deep history + SEC data) pulled
+/// synchronously, so its page is complete on return. Errors come back as a
+/// (status, message) pair the caller surfaces. Shared by `POST /api/symbols`
+/// (the Search "Add") and the dashboard watchlist add.
+pub(crate) async fn ensure_symbol(
+    state: &AppState,
+    raw_ticker: &str,
+) -> Result<EnsureOutcome, (StatusCode, String)> {
+    let Some(ticker) = valid_ticker(raw_ticker) else {
+        return Err((
             StatusCode::BAD_REQUEST,
-            "That does not look like a ticker symbol.",
-        );
+            "That does not look like a ticker symbol.".into(),
+        ));
     };
 
     // Already tracked? Idempotent — report it so the caller can just navigate.
@@ -2091,15 +2099,7 @@ async fn add_symbol(State(state): State<AppState>, Json(body): Json<AddSymbolBod
             .ok()
             .flatten();
     if let Some((name, kind)) = existing {
-        return Json(AddSymbolResponse {
-            ok: true,
-            ticker: Some(ticker),
-            name: Some(name),
-            kind: Some(kind),
-            added: false,
-            error: None,
-        })
-        .into_response();
+        return Ok(EnsureOutcome { ticker, name, kind, added: false });
     }
 
     // One guarded Yahoo lookup: validates the symbol and describes it.
@@ -2108,28 +2108,28 @@ async fn add_symbol(State(state): State<AppState>, Json(body): Json<AddSymbolBod
     match guard.acquire().await {
         Ok(Permit::Granted) => {}
         Ok(Permit::Denied(_)) => {
-            return add_err(
+            return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
-                "The market data source is busy right now. Try again in a few minutes.",
-            );
+                "The market data source is busy right now. Try again in a few minutes.".into(),
+            ));
         }
         Err(e) => {
-            tracing::error!("add_symbol guard for {ticker}: {e:#}");
-            return add_err(
+            tracing::error!("ensure_symbol guard for {ticker}: {e:#}");
+            return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Something went wrong. Try again shortly.",
-            );
+                "Something went wrong. Try again shortly.".into(),
+            ));
         }
     }
 
     let (info, data) = match yahoo.lookup(&ticker).await {
         Err(e) => {
             let _ = guard.record_failure(&e).await;
-            tracing::warn!("add_symbol lookup {ticker}: {e:#}");
-            return add_err(
+            tracing::warn!("ensure_symbol lookup {ticker}: {e:#}");
+            return Err((
                 StatusCode::BAD_GATEWAY,
-                "Could not reach the market data source. Try again shortly.",
-            );
+                "Could not reach the market data source. Try again shortly.".into(),
+            ));
         }
         Ok(outcome) => {
             // The endpoint answered — even an "unknown symbol" is a healthy
@@ -2138,19 +2138,16 @@ async fn add_symbol(State(state): State<AppState>, Json(body): Json<AddSymbolBod
             match outcome {
                 SymbolLookup::Found { info, data } => (info, data),
                 SymbolLookup::Unknown => {
-                    return add_err(
+                    return Err((
                         StatusCode::NOT_FOUND,
                         format!("No symbol called {ticker} was found."),
-                    );
+                    ));
                 }
                 SymbolLookup::Unsupported(raw_kind) => {
                     let what = raw_kind.to_lowercase();
-                    return add_err(
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        format!(
-                            "{ticker} is a {what}. Only stocks, ETFs, indexes, and futures can be added right now."
-                        ),
-                    );
+                    return Err((StatusCode::UNPROCESSABLE_ENTITY, format!(
+                        "{ticker} is a {what}. Only stocks, ETFs, indexes, and futures can be added right now."
+                    )));
                 }
             }
         }
@@ -2172,38 +2169,122 @@ async fn add_symbol(State(state): State<AppState>, Json(body): Json<AddSymbolBod
     .execute(&state.pool)
     .await;
     if let Err(e) = inserted {
-        tracing::error!("add_symbol insert {ticker}: {e:#}");
-        return add_err(
+        tracing::error!("ensure_symbol insert {ticker}: {e:#}");
+        return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            "Could not save the symbol. Try again shortly.",
-        );
+            "Could not save the symbol. Try again shortly.".into(),
+        ));
     }
 
-    // Store the quote (and bars) the lookup already paid for, so the symbol's
-    // page shows a live price at once. Best-effort: a hiccup here does not
-    // undo a successful add.
+    // Store the quote (and bars) the lookup already paid for, then pull the full
+    // backfill before returning, so the symbol's page is complete at once.
     if let Err(e) = scheduler::store_quote(&state.pool, &ticker, &data.quote).await {
-        tracing::warn!("add_symbol store_quote {ticker}: {e:#}");
+        tracing::warn!("ensure_symbol store_quote {ticker}: {e:#}");
     }
     if !data.bars.is_empty() {
         if let Err(e) = scheduler::store_intraday(&state.pool, &ticker, &data.bars).await {
-            tracing::warn!("add_symbol store_intraday {ticker}: {e:#}");
+            tracing::warn!("ensure_symbol store_intraday {ticker}: {e:#}");
         }
     }
-    // Pull the full backfill — deep daily history and all SEC data — before
-    // responding, so the new symbol's page is complete the moment the add
-    // returns rather than filling in over later scheduler cycles. Best-effort
-    // and guard-routed; see `scheduler::backfill_symbol`.
     scheduler::backfill_symbol(&state.pool, &state.config, &ticker, &info.kind).await;
 
-    tracing::info!("add_symbol: added {ticker} ({}, {})", info.name, info.kind);
-    Json(AddSymbolResponse {
-        ok: true,
-        ticker: Some(ticker),
-        name: Some(info.name),
-        kind: Some(info.kind),
-        added: true,
-        error: None,
-    })
-    .into_response()
+    tracing::info!("ensure_symbol: added {ticker} ({}, {})", info.name, info.kind);
+    Ok(EnsureOutcome { ticker, name: info.name, kind: info.kind, added: true })
+}
+
+/// `POST /api/symbols` — add a symbol to the tracked universe (the Search "Add").
+async fn add_symbol(State(state): State<AppState>, Json(body): Json<AddSymbolBody>) -> Response {
+    match ensure_symbol(&state, &body.ticker).await {
+        Ok(o) => Json(AddSymbolResponse {
+            ok: true,
+            ticker: Some(o.ticker),
+            name: Some(o.name),
+            kind: Some(o.kind),
+            added: o.added,
+            error: None,
+        })
+        .into_response(),
+        Err((status, msg)) => add_err(status, msg),
+    }
+}
+
+#[derive(Deserialize)]
+struct RefreshQuery {
+    /// `1` = the manual Refresh button: re-pull every source regardless of
+    /// staleness. Default `0` = a page load: pull the live price always, the
+    /// slow SEC / metadata sources only when their stored copy is stale.
+    #[serde(default)]
+    force: u8,
+}
+
+/// `GET /api/symbols/{ticker}/refresh` — Server-Sent Events driving the symbol
+/// page's loading bar. Asks the scheduler which steps to run for this symbol
+/// (kind + staleness + `force`), then runs each in turn, emitting a `step`
+/// event before and after so the bar advances and names what it is doing. A
+/// final `done` event tells the page whether a deep (server-rendered) section
+/// changed — if so it reloads to show it; otherwise the live price was already
+/// patched in place over the stream and no reload is needed.
+async fn refresh_stream(
+    Path(ticker): Path<String>,
+    Query(q): Query<RefreshQuery>,
+    State(state): State<AppState>,
+) -> Response {
+    let ticker = ticker.to_uppercase();
+    let force = q.force != 0;
+
+    let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM symbols WHERE ticker = ?")
+        .bind(&ticker)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten();
+    let Some(kind) = kind else {
+        return not_found(&state);
+    };
+
+    let steps = scheduler::refresh_plan(&state.pool, &state.config, &ticker, &kind, force).await;
+    let any_deep = steps.iter().any(|s| s.deep);
+
+    let body = async_stream::stream! {
+        let total = steps.len();
+        // Announce the plan up front so the bar can size itself.
+        yield sse_json("plan", &format!("{{\"total\":{total}}}"));
+
+        for (i, st) in steps.iter().enumerate() {
+            yield sse_json(
+                "step",
+                &format!(
+                    "{{\"i\":{},\"n\":{},\"label\":{},\"state\":\"running\"}}",
+                    i + 1, total, json_str(st.label)
+                ),
+            );
+            let status =
+                scheduler::refresh_step(&state.pool, &state.config, &state.hub, &ticker, &kind, st.key)
+                    .await;
+            yield sse_json(
+                "step",
+                &format!(
+                    "{{\"i\":{},\"n\":{},\"label\":{},\"state\":{}}}",
+                    i + 1, total, json_str(st.label), json_str(status)
+                ),
+            );
+        }
+
+        yield sse_json("done", &format!("{{\"reload\":{}}}", any_deep));
+    };
+
+    Sse::new(body)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response()
+}
+
+/// Build a named SSE event with a raw JSON `data` payload.
+fn sse_json(event: &str, data: &str) -> Result<axum::response::sse::Event, std::convert::Infallible> {
+    Ok(axum::response::sse::Event::default().event(event).data(data))
+}
+
+/// Minimal JSON string escaper for the short, known labels/statuses streamed
+/// above (no control characters in play; just quote the value safely).
+fn json_str(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
 }

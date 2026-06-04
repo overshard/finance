@@ -11,8 +11,8 @@ mod routes;
 mod scheduler;
 mod seed;
 mod stream;
-mod summary;
 mod templates;
+mod watchlist;
 
 pub use app::{AppState, Config};
 

@@ -1,206 +1,116 @@
 {% extends "base.html" %}
 {% block title %}Markets{% endblock %}
+{% block description %}A live, normalized view of your watchlist against the S&P 500, with market hours, volume, and volatility.{% endblock %}
 {% block extra_css %}<link rel="stylesheet" href="{{ vite_asset('static_src/home/index.js', 'css') }}">{% endblock %}
 
 {% block main %}
-<div class="wrap">
-  {% if empty %}
-  <section class="empty">
-    <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
-      <polyline points="4,44 18,30 28,38 44,14 52,24 60,12" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
-      <circle cx="60" cy="12" r="3.6" fill="currentColor"/>
-    </svg>
-    <h1>The market universe is empty</h1>
-    <p>No symbols are seeded yet. Run <code>make seed</code> to import the curated
-       starter list and its deep price history. This dashboard fills in once data lands.</p>
-  </section>
-  {% else %}
-  {% from "includes/macros.html" import spark_card, etf_card, etf_pill, mover_row, health_row %}
+<div class="wrap dash">
 
-  <div class="page-head">
-    <h1>Markets</h1>
-    <a class="page-head__link" href="/search">Browse all {{ total }} symbols</a>
+  {# Market-hours banner: makes the current session unmistakable. The dot colour
+     keys off data-session; hero.js keeps it live as the session flips. #}
+  <div class="dash-banner" data-role="session-banner" data-session="{{ session }}">
+    <span class="dash-banner__dot"></span>
+    <span class="dash-banner__label" data-role="session-label">{{ session_label }}</span>
+    <span class="dash-banner__sub" data-role="session-note">{% if session == 'closed' %}Prices update during market hours &middot; ET{% else %}US equities &middot; all times ET{% endif %}</span>
   </div>
 
-  {# Hero (Phase 5): a one-line plain read of the day — the broad move, breadth,
-     and the VIX risk tone blended into a verdict — over a compact index strip.
-     Rendered at page load, then kept live (Phase 7): the scheduler pushes a
-     recomputed `summary` over the stream as the indexes tick, and home.js
-     patches the verdict, the figures, and the breadth band below in place. The
-     data-role hooks are those patch targets. #}
-  <section class="hero" data-role="hero">
-    <div class="hero__read">
-      <p class="hero__verdict" data-role="hero-verdict">{{ hero.verdict }}</p>
-      <p class="hero__detail" data-role="hero-detail">{{ hero.detail }}</p>
-      <p class="hero__stats">
-        {% if hero.broad_pct is not none %}<span class="hero__stat">S&amp;P <span class="num {{ 'is-up' if hero.broad_pct >= 0 else 'is-down' }}" data-role="hero-broad">{{ hero.broad_pct|pct }}</span></span>{% endif %}
-        {% if hero.green_pct is not none %}<span class="hero__stat"><span class="num" data-role="hero-green">{{ hero.green_pct }}%</span> of the S&amp;P green</span>{% endif %}
-        {% if hero.vix_label %}<span class="hero__stat">VIX <span data-role="hero-vix">{{ hero.vix_label }}</span></span>{% endif %}
-      </p>
-      <p class="hero__note">A plain read of today&rsquo;s tape &mdash; not investment advice.</p>
+  {# The hero day graph: every watchlist symbol plus the S&P 500, each as %
+     change from today's open, on one axis. Drawn by hero.js from /api/dashboard;
+     this is its mount point and a no-JS fallback line. #}
+  <section class="hero-graph">
+    <div class="hero-graph__head">
+      <h1 class="hero-graph__title">Today, vs the S&amp;P 500</h1>
+      <span class="hero-graph__note">% change from the open &middot; <span class="hero-graph__base">S&amp;P 500 baseline</span></span>
     </div>
-    {% if hero.chips %}
-    <div class="hero__chips">
-      {% for c in hero.chips %}
-      <a class="hero__chip {{ 'is-up' if c.up else 'is-down' }}" href="/s/{{ c.ticker|urlencode }}">
-        <span class="hero__chip-sym">{{ c.ticker }}</span>
-        <span class="hero__chip-chg num">{{ c.change_pct|pct }}</span>
-      </a>
+    <div class="hero-graph__chart" data-role="hero-chart">
+      <p class="hero-graph__empty" data-role="hero-empty">Loading today&rsquo;s session&hellip;</p>
+    </div>
+    <div class="hero-graph__legend" data-role="hero-legend"></div>
+  </section>
+
+  {# Headline market reads. S&P carries data-ticker/data-field so the base stream
+     client live-patches its price; VIX and SPY carry data-ticker only (to keep
+     them polled) and are patched by hero.js, which also fills volume + trend. #}
+  <div class="reads-head">
+    <span class="reads-head__asof" data-role="reads-asof">{% if reads.asof %}Prices as of {{ reads.asof|asof }}{% else %}Awaiting first quotes&hellip;{% endif %}</span>
+  </div>
+  <section class="reads">
+    <div class="read" data-ticker="{{ baseline }}">
+      <div class="read__label">S&amp;P 500</div>
+      <div class="read__value num" data-field="price">{{ reads.spx_price|money }}</div>
+      <div class="read__sub num{% if reads.spx_pct is none %} is-flat{% elif reads.spx_pct >= 0 %} is-up{% else %} is-down{% endif %}" data-field="change_pct">{{ reads.spx_pct|pct }}</div>
+    </div>
+
+    <div class="read" data-ticker="{{ vix }}">
+      <div class="read__label">Volatility &middot; VIX</div>
+      <div class="read__value num" data-role="vix-level">{{ reads.vix_level|round(2) if reads.vix_level is not none else "—" }}</div>
+      <div class="read__sub read__tone read__tone--{{ reads.vix_tone or 'steady' }}" data-role="vix-tone">{{ reads.vix_tone|capitalize if reads.vix_tone else "—" }}</div>
+    </div>
+
+    <div class="read" data-ticker="{{ volume_proxy }}">
+      <div class="read__label">Market volume</div>
+      <div class="read__value num" data-role="volume">{{ reads.volume|compact if reads.volume is not none else "—" }}</div>
+      <div class="read__sub" data-role="volume-label">{% if reads.volume_label %}{{ reads.volume_label }} vs avg{% else %}&mdash;{% endif %}</div>
+    </div>
+
+    <div class="read">
+      <div class="read__label">S&amp;P trend</div>
+      <div class="read__value read__value--text read__tone--{{ reads.sma_tone or 'steady' }}" data-role="sma-read">{{ reads.sma_read or "—" }}</div>
+      <div class="read__sub">50 &amp; 200-day average</div>
+    </div>
+  </section>
+
+  {# The editable, session-scoped watchlist. #}
+  <section class="watch">
+    <div class="watch__head">
+      <h2 class="section-title">Watchlist</h2>
+      <form class="watch-add" data-role="watch-add" autocomplete="off">
+        <input class="watch-add__input" name="ticker" type="text" inputmode="text"
+               placeholder="Add a symbol — e.g. AAPL" aria-label="Add a symbol to your watchlist" maxlength="15">
+        <button class="watch-add__btn" type="submit">Add</button>
+      </form>
+    </div>
+    <p class="watch-msg" data-role="watch-msg" role="status" hidden></p>
+
+    {% if cards %}
+    <div class="watch-grid">
+      {% for c in cards %}
+      {# data-ticker drives the live stream; the `spark-card` class lets the base
+         client repaint the sparkline tip on each quote. The remove button sits
+         outside the link so the whole card stays navigable. #}
+      <div class="watch-card spark-card{% if c.up %} is-up-card{% else %} is-down-card{% endif %}" data-ticker="{{ c.ticker }}">
+        <a class="watch-card__link" href="/s/{{ c.ticker|urlencode }}">
+          <div class="spark-card__head">
+            <span class="spark-card__sym">{{ c.ticker }}</span>
+            <span class="spark-card__name">{{ c.name }}</span>
+          </div>
+          {% if c.spark %}
+          <svg class="spark" viewBox="0 0 100 36" preserveAspectRatio="none"
+               data-lo="{{ c.spark.lo }}" data-hi="{{ c.spark.hi }}" aria-hidden="true">
+            <polygon class="spark__area" points="{{ c.spark.area }}"/>
+            {% if c.spark.baseline is not none %}
+            <line class="spark__base" x1="0" x2="100" y1="{{ c.spark.baseline }}" y2="{{ c.spark.baseline }}"/>
+            {% endif %}
+            <polyline class="spark__line" points="{{ c.spark.line }}"/>
+          </svg>
+          {% else %}
+          <div class="spark spark--empty">no intraday data</div>
+          {% endif %}
+          <div class="spark-card__foot">
+            <span class="spark-card__price num" data-field="price">{{ c.price|money }}</span>
+            <span class="spark-card__chg num{% if c.change_pct is none %} is-flat{% elif c.change_pct >= 0 %} is-up{% else %} is-down{% endif %}" data-field="change_pct">{{ c.change_pct|pct }}</span>
+          </div>
+        </a>
+        <button class="watch-card__remove" type="button" data-remove data-ticker="{{ c.ticker }}" aria-label="Remove {{ c.ticker }} from watchlist" title="Remove">&times;</button>
+      </div>
       {% endfor %}
     </div>
+    {% else %}
+    <p class="watch-empty">Your watchlist is empty. Add a stock or ETF above, or
+      <a href="/search">browse the universe</a> to find one. The S&amp;P 500 stays
+      on the graph as the baseline.</p>
     {% endif %}
   </section>
-
-  {# The sparkline-card sections stream live, so their freshness time rides in
-     a data-field the stream client refreshes as quotes land (Phase 22). The
-     movers / standings panels below are fixed page-load snapshots, so their
-     captions are plain server-rendered text. #}
-  <h2 class="section-title">Indexes{% if index_asof %}<span class="section-title__asof">prices as of <span data-field="spark-asof">{{ index_asof|asof }}</span></span>{% endif %}</h2>
-  <div class="spark-grid">
-    {% for c in index_cards %}{{ spark_card(c) }}{% endfor %}
-  </div>
-
-  {# Breadth band (Phase 5): how many curated S&P stocks are up vs down today,
-     the share green, and a proportion bar of the split. A page-load snapshot. #}
-  {% if breadth.total %}
-  <h2 class="section-title">Breadth{% if movers_asof %}<span class="section-title__asof">prices as of {{ movers_asof|asof }}</span>{% endif %}</h2>
-  <p class="section-note">How many of the curated large-cap stocks are advancing
-     versus declining today, and the share trading green.</p>
-  <div class="breadth" data-role="breadth">
-    <div class="breadth__stats">
-      <span class="breadth__stat breadth__stat--up"><span class="breadth__num num" data-role="breadth-adv">{{ breadth.advancers }}</span> advancing</span>
-      <span class="breadth__stat breadth__stat--down"><span class="breadth__num num" data-role="breadth-dec">{{ breadth.decliners }}</span> declining</span>
-      {% if breadth.unchanged %}<span class="breadth__stat breadth__stat--flat"><span class="breadth__num num" data-role="breadth-flat">{{ breadth.unchanged }}</span> flat</span>{% endif %}
-      {% if breadth.pct_green is not none %}<span class="breadth__pct num" data-role="breadth-pct">{{ breadth.pct_green }}% green</span>{% endif %}
-    </div>
-    <div class="breadth__bar" role="img" data-role="breadth-bar"
-         aria-label="{{ breadth.advancers }} advancing, {{ breadth.decliners }} declining of {{ breadth.total }} stocks">
-      <span class="breadth__seg breadth__seg--up" style="width: {{ breadth.up_w }}%" data-role="breadth-up"></span>
-      <span class="breadth__seg breadth__seg--flat" style="width: {{ breadth.flat_w }}%" data-role="breadth-flat-seg"></span>
-      <span class="breadth__seg breadth__seg--down" style="width: {{ breadth.down_w }}%" data-role="breadth-down"></span>
-    </div>
-  </div>
-  {% endif %}
-
-  {# ETF band (Phase 5): curated quality cards spanning the asset classes, then
-     a compact gainers / losers strip across the whole curated ETF set. #}
-  <h2 class="section-title">ETFs{% if etf_asof %}<span class="section-title__asof">prices as of <span data-field="spark-asof">{{ etf_asof|asof }}</span></span>{% endif %}<span class="section-title__asof"><a href="/search?kind=etf">All ETFs &rarr;</a></span></h2>
-  <p class="section-note">A quality read per fund &mdash; cost, tracking,
-     diversification, and size, blended. Hover the verdict for the breakdown.</p>
-  {% if etf_cards %}
-  <div class="spark-grid">
-    {% for e in etf_cards %}{{ etf_card(e) }}{% endfor %}
-  </div>
-  {% else %}
-  <p class="movers__empty">No curated ETFs yet.</p>
-  {% endif %}
-  {% if etf_gainers or etf_losers %}
-  <div class="etf-movers">
-    <div class="etf-movers__group etf-movers__group--up">
-      <span class="etf-movers__label">Gainers</span>
-      {% for m in etf_gainers %}{{ etf_pill(m) }}{% endfor %}
-    </div>
-    <div class="etf-movers__group etf-movers__group--down">
-      <span class="etf-movers__label">Losers</span>
-      {% for m in etf_losers %}{{ etf_pill(m) }}{% endfor %}
-    </div>
-  </div>
-  {% endif %}
-
-  <h2 class="section-title">Today&rsquo;s movers{% if movers_asof %}<span class="section-title__asof">prices as of {{ movers_asof|asof }}</span>{% endif %}</h2>
-  <div class="movers">
-    <section class="movers__panel">
-      <h3 class="movers__title">Top gainers</h3>
-      {% if gainers %}
-      <div class="movers__list">{% for m in gainers %}{{ mover_row(m) }}{% endfor %}</div>
-      {% else %}
-      <p class="movers__empty">No price data yet.</p>
-      {% endif %}
-    </section>
-    <section class="movers__panel">
-      <h3 class="movers__title">Top losers</h3>
-      {% if losers %}
-      <div class="movers__list">{% for m in losers %}{{ mover_row(m) }}{% endfor %}</div>
-      {% else %}
-      <p class="movers__empty">No price data yet.</p>
-      {% endif %}
-    </section>
-  </div>
-
-  <h2 class="section-title">Today&rsquo;s industries{% if industries_asof %}<span class="section-title__asof">classifications synced {{ industries_asof|ago }}</span>{% endif %}<span class="section-title__asof"><a href="/industries">All industries &rarr;</a></span></h2>
-  <p class="section-note">Equal-weight day move of the curated stocks inside
-     each sector. The classification comes from Yahoo&rsquo;s
-     <code>assetProfile</code> and lands in the background; a sector waits
-     for at least one of its members to sync.</p>
-  <div class="movers">
-    <section class="movers__panel">
-      <h3 class="movers__title">Sectors moving up</h3>
-      {% if top_industries %}
-      <div class="movers__list">
-        {% for r in top_industries %}
-        <a class="industry-row {{ 'industry-row--up' if r.up else 'industry-row--down' }}"
-           href="/industries/{{ r.slug }}" style="--bar: {{ r.bar }}%">
-          <span class="industry-row__name">{{ r.name }}</span>
-          <span class="industry-row__count">{{ r.members }} stocks</span>
-          <span class="industry-row__chg num {{ 'is-up' if r.up else 'is-down' }}">{{ r.change_pct|pct }}</span>
-        </a>
-        {% endfor %}
-      </div>
-      {% else %}
-      <p class="movers__empty">No sector classifications synced yet.</p>
-      {% endif %}
-    </section>
-    <section class="movers__panel">
-      <h3 class="movers__title">Sectors moving down</h3>
-      {% if bottom_industries %}
-      <div class="movers__list">
-        {% for r in bottom_industries %}
-        <a class="industry-row {{ 'industry-row--up' if r.up else 'industry-row--down' }}"
-           href="/industries/{{ r.slug }}" style="--bar: {{ r.bar }}%">
-          <span class="industry-row__name">{{ r.name }}</span>
-          <span class="industry-row__count">{{ r.members }} stocks</span>
-          <span class="industry-row__chg num {{ 'is-up' if r.up else 'is-down' }}">{{ r.change_pct|pct }}</span>
-        </a>
-        {% endfor %}
-      </div>
-      {% else %}
-      <p class="movers__empty">No sector classifications synced yet.</p>
-      {% endif %}
-    </section>
-  </div>
-
-  <h2 class="section-title">Risk &amp; commodities{% if commodity_asof %}<span class="section-title__asof">prices as of <span data-field="spark-asof">{{ commodity_asof|asof }}</span></span>{% endif %}</h2>
-  <div class="spark-grid">
-    {% for c in commodity_cards %}{{ spark_card(c) }}{% endfor %}
-  </div>
-
-  <h2 class="section-title">Quality leaderboard{% if health_asof %}<span class="section-title__asof">last sync {{ health_asof|ago }}</span>{% endif %}</h2>
-  <p class="section-note">One quality read per curated stock: fundamentals +
-     recent price and growth trajectory + leadership stability, rolled together.
-     The figure beside each row is its trailing-year return. Ranks the
-     healthiest names against the most concerning right now &mdash; it is not a
-     forecast of what any of them will do next.</p>
-  <p class="disclaimer">For reading at a glance. Not investment advice and not a
-     buy or sell signal.</p>
-  <div class="movers">
-    <section class="movers__panel">
-      <h3 class="movers__title">Healthiest</h3>
-      {% if healthiest %}
-      <div class="movers__list">{% for r in healthiest %}{{ health_row(r) }}{% endfor %}</div>
-      {% else %}
-      <p class="movers__empty">No graded fundamentals yet.</p>
-      {% endif %}
-    </section>
-    <section class="movers__panel">
-      <h3 class="movers__title">Most concerning</h3>
-      {% if concerning %}
-      <div class="movers__list">{% for r in concerning %}{{ health_row(r) }}{% endfor %}</div>
-      {% else %}
-      <p class="movers__empty">No graded fundamentals yet.</p>
-      {% endif %}
-    </section>
-  </div>
-  {% endif %}
 </div>
 {% endblock %}
 

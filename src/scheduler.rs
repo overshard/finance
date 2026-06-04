@@ -1,26 +1,25 @@
-//! Background job scheduler.
+//! Background job scheduler (demand-only).
 //!
-//! One long-lived tokio task wakes on a fixed tick and runs the market-data
-//! maintenance jobs as they fall due:
-//!  - the first-run universe seed, once, while `meta.seed_completed` is unset;
-//!  - an incremental daily-history refresh from Stooq (~every 6h), touching
-//!    only symbols whose stored history has gone stale;
-//!  - market-hours intraday quotes from Yahoo for the symbols a browser is
-//!    actually viewing right now — demand-driven via the stream hub's interest
-//!    registry, so nothing is polled when nobody is watching;
-//!  - a once-a-day close fetch that snapshots the whole universe from Yahoo
-//!    shortly after the regular session ends;
-//!  - a prune of aged `intraday_bars` and `fetch_log` rows (~daily).
+//! One long-lived tokio task wakes on a fixed tick. Since the demand-only
+//! refocus (PLAN.md 2026-06-03) it does **no** timed network fetching: with
+//! nobody on the site it makes zero outbound calls. Each tick it only:
+//!  - broadcasts a market-session change so open pages update their pill (and
+//!    re-pushes the dashboard summary, a local DB read, on a session flip);
+//!  - runs the demand-driven intraday quote poll — Yahoo quotes for just the
+//!    symbols a browser is currently viewing (the stream hub's interest
+//!    registry), so nothing is polled when nobody is watching;
+//!  - prunes aged `intraday_bars` and `fetch_log` rows (~daily, local only).
 //!
-//! Every data job records a `fetch_log` row, refreshes its `data_status` row,
-//! and pings the stream hub so the `/health` page reflects it live. Outbound
-//! Stooq calls go through the persistent `EndpointGuard` (see `src/guard.rs`),
-//! which paces requests and stops a job early when the circuit breaker is open
-//! or the hourly request budget is spent.
+//! All the old timed sweeps (daily-close, SEC, dividends, fund metadata, NAV,
+//! earnings, asset profile, periodic history) were removed in Phase A. The data
+//! they fetched is now pulled **on demand** when a symbol's page is viewed and
+//! its stored copy is stale — see `backfill_symbol` (the synchronous per-symbol
+//! pull the add-symbol route and the on-demand refresh use) and Phase B.
 //!
-//! Modelled on `status/src/scheduler.rs`, scaled down: finance's jobs run
-//! hours apart, not seconds, and are inherently sequential (the pacing is the
-//! point), so they run inline in the loop task rather than via semaphores.
+//! The boot seed only reconciles the universe rows from the curated CSV (local,
+//! no network); a symbol's history and deep data fill in the first time it is
+//! viewed. Outbound calls still pass through the persistent `EndpointGuard`
+//! (see `src/guard.rs`), which paces requests and trips on rate limits.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -29,18 +28,17 @@ use std::time::{Duration, Instant};
 use sqlx::SqlitePool;
 use tokio::task::JoinHandle;
 
-use crate::db::{get_meta, now_ms, set_meta};
+use crate::db::now_ms;
 use crate::guard::{EndpointGuard, Permit};
 use crate::market;
 use crate::providers::sec::SecProvider;
 use crate::providers::yahoo::YahooProvider;
 use crate::providers::{
-    self, DailyBar, DividendEvent, Fact, FilingRecord, FundId, FundMetadata,
+    self, DividendEvent, Fact, FilingRecord, FundId, FundMetadata,
     FundShape, FundamentalsProvider, HistoryProvider, IntradayBar, OwnershipPerson,
     PortfolioData, Quote, QuoteProvider,
 };
 use crate::stream::{Hub, QuoteUpdate, StreamEvent};
-use crate::summary;
 use crate::{seed, Config};
 
 /// How often the loop wakes to check whether a job is due. The jobs themselves
@@ -48,22 +46,12 @@ use crate::{seed, Config};
 /// (two small SELECTs per wake).
 const TICK: Duration = Duration::from_secs(60);
 
-/// Incremental daily-history refresh cadence.
-const HISTORY_INTERVAL_SECS: i64 = 6 * 3600;
-
-/// Retry cadence after a history run stops early (guard breaker open or hourly
-/// budget spent) with work still pending — far shorter than the full interval
-/// so a large backlog (e.g. the symbols a deploy just added, plus any coarse
-/// series being healed) drains over the next hour rather than over days. The
-/// guard still gates every request, so a too-soon retry is a cheap no-op while
-/// the breaker is open.
-const HISTORY_RETRY_SECS: i64 = 30 * 60;
-
-/// A symbol's daily history counts as stale once `history_synced_at` is older
-/// than this. Kept under 24h so the ~6-hourly job refreshes each symbol about
-/// once per trading day (markets emit one new daily bar a day) without
-/// re-fetching symbols already touched a few hours ago.
-const HISTORY_STALE_SECS: i64 = 20 * 3600;
+/// Minimum seconds between intraday polls of the same viewed symbol. With the
+/// 60s tick this yields a ~5-minute per-symbol cadence (PLAN.md Phase C): the
+/// dashboard's watchlist and an open symbol page refresh about every five
+/// minutes while watched, not every minute. Just under 5 min so a symbol due at
+/// the 5-minute mark isn't skipped to the next tick.
+const INTRADAY_MIN_INTERVAL_SECS: i64 = 4 * 60 + 45;
 
 /// Prune cadence and the two retention windows it enforces.
 const PRUNE_INTERVAL_SECS: i64 = 24 * 3600;
@@ -77,12 +65,6 @@ const FETCH_LOG_RETENTION_DAYS: i64 = 30;
 /// `pub(crate)` so the add-symbol route builds its Yahoo guard with the same
 /// ceiling (see `routes::symbols`).
 pub(crate) const YAHOO_BUDGET: i64 = 1000;
-
-/// SEC fundamentals job: how often the loop checks whether the sweep is due,
-/// and how stale a company's SEC data may go before it is re-fetched. SEC
-/// filings land quarterly, so a weekly refresh is ample.
-const SEC_INTERVAL_SECS: i64 = 24 * 3600;
-const SEC_STALE_SECS: i64 = 7 * 24 * 3600;
 
 /// Per-hour request ceiling for the SEC endpoint guard. A first-run full sweep
 /// is one bulk ticker-map call plus two calls per stock (~220 for the starter
@@ -103,55 +85,7 @@ const SEC_BUDGET: i64 = 600;
 /// universe, churned through the SEC endpoint's hourly budget during the
 /// Phase 14 backfill (markets-closed weekend burn). Smaller chunks spread
 /// that initial fill across more sweeps without changing the eventual roster.
-const LEADERSHIP_STALE_SECS: i64 = 30 * 24 * 3600;
 const LEADERSHIP_MAX_FILINGS: usize = 10;
-
-/// Dividend history refresh (Phase 26). Declared dividends are confirmed and
-/// stable once an ex-date passes, so the data changes slowly: a stock pays out
-/// at most a handful of times a year. A weekly cadence is plenty to land each
-/// new payment within a few days while keeping the Yahoo budget light.
-const DIVIDENDS_INTERVAL_SECS: i64 = 24 * 3600;
-const DIVIDENDS_STALE_SECS: i64 = 7 * 24 * 3600;
-
-/// ETF fund metadata refresh (Phase 28). The Yahoo `quoteSummary` figures —
-/// expense ratio, distribution yield, NAV, inception, category, fund family,
-/// strategy summary — change slowly (the prospectus is updated once a year),
-/// so a monthly staleness window is enough. The due-check is daily so a
-/// newly-stale ETF is picked up within a day, but the steady-state cost is
-/// one request per ETF per month.
-const FUND_METADATA_INTERVAL_SECS: i64 = 24 * 3600;
-const FUND_METADATA_STALE_SECS: i64 = 30 * 24 * 3600;
-
-/// ETF NAV refresh (Phase 4). NAV is struck once per trading day, and the
-/// price-vs-NAV premium behind the ETF quality read's "tracking" factor is only
-/// meaningful against a *fresh* NAV — so unlike the 30-day `fund_metadata`
-/// sweep (which owns the slow static fields, NAV included but far too stale to
-/// read a premium against), this job refreshes *only* nav_price, daily. One
-/// lightweight `quoteSummary` request per ETF (~43/day) through the shared
-/// `yahoo` `EndpointGuard` — negligible against the hourly budget. The 20h
-/// staleness window (< the 24h interval) means every ETF refreshes once per
-/// daily run.
-const FUND_NAV_INTERVAL_SECS: i64 = 24 * 3600;
-const FUND_NAV_STALE_SECS: i64 = 20 * 3600;
-
-/// Earnings calendar refresh (Phase 25). Yahoo's `calendarEvents.earnings`
-/// rolls forward one quarter at a time as each print lands, and a stock's
-/// next date is irrelevant before it shifts — so a monthly cadence is
-/// enough to land each new date within a few weeks of when Yahoo learns it.
-/// Daily due-check; one request per stock through the shared `yahoo`
-/// `EndpointGuard`. The whole sweep also re-runs once the stored
-/// `next_earnings_at` passes, so a missed roll-forward never sits stale.
-const EARNINGS_INTERVAL_SECS: i64 = 24 * 3600;
-const EARNINGS_STALE_SECS: i64 = 30 * 24 * 3600;
-
-/// Asset-profile refresh (Phase 15). A company's sector and industry
-/// classification changes only on a structural shift (a reverse-merger or a
-/// reclassification by the index provider), so a monthly cadence is plenty.
-/// Daily due-check; one request per stock through the shared `yahoo`
-/// `EndpointGuard`. ~512 stocks × monthly = ~17 requests/day in steady
-/// state, well below the 1000/hr budget.
-const ASSET_PROFILE_INTERVAL_SECS: i64 = 24 * 3600;
-const ASSET_PROFILE_STALE_SECS: i64 = 30 * 24 * 3600;
 
 /// Spawn the scheduler. The returned handle is normally dropped: dropping it
 /// detaches the task, which then runs for the lifetime of the process.
@@ -166,67 +100,11 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
             tracing::warn!("[scheduler] register endpoints: {e}");
         }
 
-        // History comes from Yahoo now (no API key needed), so the seed and
-        // incremental refresh always run.
-        if let Err(e) = run_boot_seed(&pool, &config, &hub).await {
+        // Reconcile the universe rows from the curated CSV (local, no network).
+        // No history is fetched here any more — a symbol's data fills in on
+        // demand the first time its page is viewed (Phase B).
+        if let Err(e) = run_boot_seed(&pool, &config).await {
             tracing::warn!("[scheduler] boot seed: {e:#}");
-        }
-
-        // SEC's fair-access policy asks consumers to identify themselves; with
-        // no contact email configured the SEC job stays off rather than make
-        // anonymous requests.
-        let sec_enabled = !config.sec_contact_email.is_empty();
-        if !sec_enabled {
-            tracing::warn!(
-                "[scheduler] SEC_CONTACT_EMAIL unset: SEC fundamentals & filings job disabled"
-            );
-        } else if let Err(e) = schedule_next(&pool, "sec", now_ms()).await {
-            // Bring the SEC job forward to the first tick. The sweep is
-            // resumable and cheap when nothing is stale, so running it on
-            // each boot is harmless — and it means a deploy that introduces
-            // new SEC-backed data (e.g. the Phase 18 ETF profiles) backfills
-            // within a tick instead of waiting out the ~24h interval.
-            tracing::warn!("[scheduler] bring sec job forward: {e}");
-        }
-
-        // Dividends job (Phase 26): bring it forward the same way the SEC job
-        // is, so a deploy adding the table backfills the universe within a
-        // tick rather than waiting out the daily interval. The sweep is
-        // resumable and the no-stale fast path is free.
-        if let Err(e) = schedule_next(&pool, "dividends", now_ms()).await {
-            tracing::warn!("[scheduler] bring dividends job forward: {e}");
-        }
-
-        // Fund-metadata job (Phase 28): same pattern as the SEC and dividends
-        // jobs — bring it forward to the first tick so a deploy that adds the
-        // table backfills the ETF universe within a tick rather than waiting
-        // out the daily interval. Resumable; the no-stale fast path is free.
-        if let Err(e) = schedule_next(&pool, "fund_metadata", now_ms()).await {
-            tracing::warn!("[scheduler] bring fund_metadata job forward: {e}");
-        }
-
-        // Fund-NAV job (Phase 4): same bring-forward pattern, so a deploy adding
-        // the daily NAV refresh populates fresh NAVs — and thus the ETF quality
-        // read's tracking factor — within a tick rather than waiting out the
-        // daily interval. Resumable; the no-stale fast path is free.
-        if let Err(e) = schedule_next(&pool, "fund_nav", now_ms()).await {
-            tracing::warn!("[scheduler] bring fund_nav job forward: {e}");
-        }
-
-        // Earnings calendar job (Phase 25): same bring-forward pattern, so a
-        // deploy adding the columns backfills the stock universe within a
-        // tick rather than the daily interval. Resumable; no-stale fast path
-        // is free.
-        if let Err(e) = schedule_next(&pool, "earnings_calendar", now_ms()).await {
-            tracing::warn!("[scheduler] bring earnings_calendar job forward: {e}");
-        }
-
-        // Asset profile job (Phase 15): same bring-forward pattern. A fresh
-        // deploy populates each curated stock's sector and industry within
-        // hours rather than the daily interval; resumable, the no-stale fast
-        // path is free.
-        if let Err(e) = schedule_next(&pool, "asset_profile", now_ms()).await {
-            tracing::warn!("[scheduler] bring asset_profile job forward: {e}");
         }
 
         // Prune's last-run time is loop-local: a restart simply re-prunes once,
@@ -249,115 +127,15 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
                 hub.publish(StreamEvent::Market {
                     session: session.as_str().to_string(),
                 });
-                // The lead index swaps between the cash S&P and its future on a
-                // session change, so the verdict's basis moves — push a fresh
-                // summary so an open dashboard re-reads against the new lead.
-                hub.publish(StreamEvent::Summary(
-                    summary::market_summary(&pool, session).await,
-                ));
                 last_session = Some(session);
-            }
-
-            match is_due(&pool, "history", now_ms()).await {
-                Ok(true) => {
-                    if let Err(e) = run_history(&pool, &config, &hub).await {
-                        tracing::warn!("[scheduler] history: {e:#}");
-                    }
-                }
-                Ok(false) => {}
-                Err(e) => tracing::warn!("[scheduler] history due-check: {e}"),
-            }
-
-            if sec_enabled {
-                match is_due(&pool, "sec", now_ms()).await {
-                    Ok(true) => {
-                        if let Err(e) = run_sec(&pool, &config, &hub).await {
-                            tracing::warn!("[scheduler] sec: {e:#}");
-                        }
-                    }
-                    Ok(false) => {}
-                    Err(e) => tracing::warn!("[scheduler] sec due-check: {e}"),
-                }
-            }
-
-            // Dividend payouts (Phase 26 + 28): sweep stocks AND ETFs whose
-            // dividend / distribution history has gone stale (weekly). Runs
-            // only when Yahoo is reachable; gated nowhere else — declared
-            // events drift after the ex-date passes, so a fresh pull every
-            // week is enough.
-            match is_due(&pool, "dividends", now_ms()).await {
-                Ok(true) => {
-                    if let Err(e) = run_dividends(&pool, &config, &hub).await {
-                        tracing::warn!("[scheduler] dividends: {e:#}");
-                    }
-                }
-                Ok(false) => {}
-                Err(e) => tracing::warn!("[scheduler] dividends due-check: {e}"),
-            }
-
-            // ETF fund metadata (Phase 28): sweep ETFs whose Yahoo
-            // quoteSummary snapshot has gone stale (monthly). Same Yahoo
-            // guard as intraday + daily-close + dividends; expense / yield /
-            // NAV / strategy change rarely, so this is cheap in steady state.
-            match is_due(&pool, "fund_metadata", now_ms()).await {
-                Ok(true) => {
-                    if let Err(e) = run_fund_metadata(&pool, &config, &hub).await {
-                        tracing::warn!("[scheduler] fund_metadata: {e:#}");
-                    }
-                }
-                Ok(false) => {}
-                Err(e) => tracing::warn!("[scheduler] fund_metadata due-check: {e}"),
-            }
-
-            // ETF NAV (Phase 4): refresh every ETF's NAV daily so the
-            // price-vs-NAV premium behind the quality read's tracking factor
-            // stays current. Same Yahoo guard; one lightweight request per ETF.
-            match is_due(&pool, "fund_nav", now_ms()).await {
-                Ok(true) => {
-                    if let Err(e) = run_fund_nav(&pool, &config, &hub).await {
-                        tracing::warn!("[scheduler] fund_nav: {e:#}");
-                    }
-                }
-                Ok(false) => {}
-                Err(e) => tracing::warn!("[scheduler] fund_nav due-check: {e}"),
-            }
-
-            // Earnings calendar (Phase 25): sweep stocks whose next-expected
-            // earnings date has gone stale or already passed. Same Yahoo
-            // guard; one request per stock per month in steady state.
-            match is_due(&pool, "earnings_calendar", now_ms()).await {
-                Ok(true) => {
-                    if let Err(e) = run_earnings_calendar(&pool, &config, &hub).await {
-                        tracing::warn!("[scheduler] earnings_calendar: {e:#}");
-                    }
-                }
-                Ok(false) => {}
-                Err(e) => tracing::warn!("[scheduler] earnings_calendar due-check: {e}"),
-            }
-
-            // Asset profile (Phase 15): sweep stocks whose sector / industry
-            // classification has gone stale (monthly). Same Yahoo guard; one
-            // request per stock per month in steady state.
-            match is_due(&pool, "asset_profile", now_ms()).await {
-                Ok(true) => {
-                    if let Err(e) = run_asset_profile(&pool, &config, &hub).await {
-                        tracing::warn!("[scheduler] asset_profile: {e:#}");
-                    }
-                }
-                Ok(false) => {}
-                Err(e) => tracing::warn!("[scheduler] asset_profile due-check: {e}"),
             }
 
             // Intraday quotes: demand-driven (only symbols a browser is
             // viewing). Inside a trading session every viewed symbol is
             // polled; outside it, only viewed futures, which trade nearly
-            // around the clock. Does no network work when neither applies.
+            // around the clock. Does no network work when nobody is watching.
             if let Err(e) = run_intraday(&pool, &config, &hub, session).await {
                 tracing::warn!("[scheduler] intraday: {e:#}");
-            }
-
-            if let Err(e) = run_daily_close_if_due(&pool, &config, &hub).await {
-                tracing::warn!("[scheduler] daily close: {e:#}");
             }
 
             if let Err(e) = run_prune_if_due(&pool, &mut last_prune, &hub).await {
@@ -376,6 +154,13 @@ async fn register_endpoints(pool: &SqlitePool) -> anyhow::Result<()> {
     // Stooq was retired 2026-05-30 (Yahoo now serves history too). Drop its
     // stale guard row so it no longer lingers on the data-health page.
     sqlx::query("DELETE FROM endpoint_guard WHERE endpoint = 'stooq'")
+        .execute(pool)
+        .await?;
+    // The demand-only refocus (Phase A) removed every timed sweep. Drop their
+    // leftover `data_status` rows so `/health` lists only the jobs that still
+    // run (the demand-driven intraday poll and the local prune); a prod DB
+    // carries rows from the old jobs that would otherwise show as stale.
+    sqlx::query("DELETE FROM data_status WHERE job NOT IN ('intraday', 'prune')")
         .execute(pool)
         .await?;
     EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET)
@@ -397,251 +182,23 @@ async fn reset_states_on_boot(pool: &SqlitePool) -> sqlx::Result<()> {
     Ok(())
 }
 
-/// Run the first-run universe seed while `meta.seed_completed` is unset.
+/// Reconcile the universe rows from the curated CSV on every boot — local only,
+/// no network. Upserts every listed symbol and prunes curated rows dropped from
+/// the CSV, so a `starter.csv` edit takes effect on deploy without a manual
+/// re-seed (user-added `is_seeded = 0` rows are never touched).
 ///
-/// `seed::run` is itself idempotent (symbols are upserted) and resumable
-/// (symbols that already hold history are skipped), so re-running it on each
-/// boot until the seed completes is cheap. Afterwards the incremental history
-/// job is deferred one full interval so it does not re-fetch, on this same
-/// boot, the handful of symbols the seed just touched.
-async fn run_boot_seed(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Result<()> {
-    if get_meta(pool, "seed_completed").await?.as_deref() == Some("1") {
-        // The full backfill is done, but still reconcile the curated list each
-        // boot so a CSV edit (symbols added to or dropped from the universe)
-        // takes effect on deploy without a manual re-seed. This is local-only
-        // and cheap; any newly-added symbol's history is backfilled by the
-        // incremental `run_history` job (it picks up `history_synced_at IS NULL`).
-        match seed::sync_universe(pool, config).await {
-            Ok(r) if r.pruned > 0 => {
-                tracing::info!("[scheduler] universe sync: {} symbols, {} pruned", r.total, r.pruned)
-            }
-            Ok(_) => {}
-            Err(e) => tracing::warn!("[scheduler] universe sync: {e:#}"),
-        }
-        // Run the history job promptly (next tick) rather than waiting out the
-        // remaining interval from before the restart. A deploy that adds symbols
-        // or ships a history fix should reconcile data soon, not up to
-        // HISTORY_INTERVAL_SECS later: the job backfills freshly-added symbols
-        // and self-heals any coarse stored series. It is a cheap no-op when
-        // nothing needs work.
-        schedule_next(pool, "history", now_ms()).await?;
-        return Ok(());
+/// Unlike before the demand-only refocus, this no longer backfills any history:
+/// a symbol's deep daily history and SEC data fill in the first time its page is
+/// viewed and found stale (Phase B), or via an explicit `make seed` run.
+async fn run_boot_seed(pool: &SqlitePool, config: &Config) -> anyhow::Result<()> {
+    match seed::sync_universe(pool, config).await {
+        Ok(r) => tracing::info!(
+            "[scheduler] universe sync: {} symbols, {} pruned",
+            r.total,
+            r.pruned
+        ),
+        Err(e) => tracing::warn!("[scheduler] universe sync: {e:#}"),
     }
-    tracing::info!("[scheduler] seed_completed unset: running first-run seed");
-
-    let started = now_ms();
-    mark_fetching(pool, "seed").await?;
-    notify_health(hub);
-    let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let t0 = Instant::now();
-    let result = seed::run(pool, config, &yahoo).await;
-    let dur = t0.elapsed().as_millis() as i64;
-
-    match &result {
-        Ok(()) => {
-            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM symbols WHERE is_seeded = 1")
-                .fetch_one(pool)
-                .await?;
-            let with_history: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM symbols WHERE is_seeded = 1 AND history_last_date IS NOT NULL",
-            )
-            .fetch_one(pool)
-            .await?;
-            let detail = format!("{with_history}/{total} seeded symbols have history");
-            log_fetch(pool, "seed", "yahoo", "ok", Some(&detail), Some(with_history), dur, started)
-                .await?;
-            mark_ok(pool, "seed", None).await?;
-        }
-        Err(e) => {
-            let msg = format!("{e:#}");
-            log_fetch(pool, "seed", "yahoo", "error", Some(&msg), None, dur, started).await?;
-            mark_error(pool, "seed", &msg, None).await?;
-        }
-    }
-
-    // Defer the first incremental refresh: it would otherwise re-fetch the same
-    // still-stale symbols the seed just handled.
-    schedule_next(pool, "history", now_ms() + HISTORY_INTERVAL_SECS * 1000).await?;
-    notify_health(hub);
-    result
-}
-
-/// Incremental daily-history refresh: re-fetch only the symbols whose stored
-/// history has gone stale, asking Yahoo for the window since each symbol's
-/// last stored bar. Paced and circuit-broken like the seed.
-///
-/// This is a backstop: on a normal trading day the `daily_close` job already
-/// appends each symbol's bar (and stamps `history_synced_at`), so nothing is
-/// stale here. It still earns its keep for symbols missed while the server was
-/// down at the close, weekends, and freshly added tickers.
-/// True when a stored daily series is actually coarser than daily, judged from
-/// its *recent* density: `recent_bars` is the number of bars in the trailing 90
-/// days of the series, which is ~63 for a genuine daily series (trading days),
-/// ~13 for weekly and ~3 for monthly — so under 30 means coarser than daily.
-/// Only judged once the series spans more than 180 days, so a young-but-daily
-/// symbol is not flagged for merely having a short history. Mirrors the SQL test
-/// in [`run_history`]'s selection query.
-fn is_coarser_than_daily(first: &Option<String>, last: &Option<String>, recent_bars: i64) -> bool {
-    let (Some(f), Some(l)) = (first, last) else {
-        return false;
-    };
-    if f == l {
-        return false;
-    }
-    let (Ok(fd), Ok(ld)) = (
-        chrono::NaiveDate::parse_from_str(f, "%Y-%m-%d"),
-        chrono::NaiveDate::parse_from_str(l, "%Y-%m-%d"),
-    ) else {
-        return false;
-    };
-    (ld - fd).num_days() > 180 && recent_bars < 30
-}
-
-async fn run_history(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Result<()> {
-    let started = now_ms();
-    let next = started + HISTORY_INTERVAL_SECS * 1000;
-    mark_fetching(pool, "history").await?;
-    notify_health(hub);
-
-    // Every symbol we track, curated or user-added, is eligible: a symbol
-    // added through the Phase 9 add-symbol flow needs its history backfilled
-    // exactly as a seeded one does. (The seed itself stays curated-list-only;
-    // it is the only job that keys on `is_seeded`.) Futures are included now —
-    // Yahoo serves `=F` daily history, unlike the Stooq source this replaced.
-    // A symbol is refreshed when any of these hold:
-    //   - its history has gone stale (the normal incremental case);
-    //   - it holds a single stored bar (`history_first_date = history_last_date`)
-    //     — a symbol added after the initial seed whose `history_last_date` was
-    //     stamped by a `daily_close` snapshot before any range=max backfill ran,
-    //     so the incremental window can never reach its deep history;
-    //   - its stored history is coarser than daily. Yahoo silently downsamples
-    //     `interval=1d` to weekly / monthly bars when a range spans many years
-    //     (see `YahooProvider::is_downsampled`), so a symbol first backfilled via
-    //     range=max can hold monthly bars. Detect it by *recent* density — the
-    //     bar count in the trailing 90 days of the series: a daily series carries
-    //     ~63 (trading days), a weekly one ~13, a monthly one ~3, so fewer than
-    //     30 means coarser than daily. The trailing window (rather than whole-
-    //     span density) is what keeps a deep symbol with a sparse pre-modern tail
-    //     — e.g. ^SPX, daily for decades but with century-old gaps — from being
-    //     misread as coarse. Only judged once a symbol spans over 180 days, so a
-    //     young-but-daily symbol is not flagged for its short history.
-    // The last two are selected regardless of staleness so the heal is not gated
-    // behind the stale cutoff; both are repaired with a full daily re-fetch (the
-    // `deep` branch below). `recent_bars` rides along so the same test can pick
-    // the fetch window without a second query.
-    let cutoff = started - HISTORY_STALE_SECS * 1000;
-    let stale: Vec<(String, Option<String>, Option<String>, i64)> = sqlx::query_as(
-        "SELECT s.ticker, s.history_first_date, s.history_last_date, \
-                (SELECT COUNT(*) FROM daily_prices d WHERE d.ticker = s.ticker \
-                   AND d.d >= date(s.history_last_date, '-90 days')) AS recent_bars \
-         FROM symbols s \
-         WHERE s.history_synced_at IS NULL OR s.history_synced_at < ? \
-            OR s.history_first_date = s.history_last_date \
-            OR (s.history_last_date IS NOT NULL \
-                AND julianday(s.history_last_date) - julianday(s.history_first_date) > 180 \
-                AND (SELECT COUNT(*) FROM daily_prices d WHERE d.ticker = s.ticker \
-                       AND d.d >= date(s.history_last_date, '-90 days')) < 30) \
-         ORDER BY s.ticker",
-    )
-    .bind(cutoff)
-    .fetch_all(pool)
-    .await?;
-
-    if stale.is_empty() {
-        log_fetch(pool, "history", "yahoo", "ok", Some("no stale symbols"), Some(0), 0, started)
-            .await?;
-        mark_ok(pool, "history", Some(next)).await?;
-        notify_health(hub);
-        return Ok(());
-    }
-    tracing::info!("[scheduler] history: refreshing {} stale symbols", stale.len());
-
-    let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let t0 = Instant::now();
-
-    // Route every request through the persistent endpoint guard: it paces the
-    // loop and refuses requests once the breaker opens or the hourly budget is
-    // spent, so the job stops cleanly instead of hammering a guarded endpoint.
-    // History shares the `yahoo` guard with live quotes, so build it with the
-    // same budget rather than the 200-default `new` ceiling.
-    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
-    let mut ok = 0usize;
-    let mut total_bars = 0i64;
-    let mut stopped: Option<String> = None;
-
-    for (ticker, first_date, last_date, recent_bars) in &stale {
-        match guard.acquire().await? {
-            Permit::Granted => {}
-            Permit::Denied(why) => {
-                stopped = Some(why);
-                break;
-            }
-        }
-        // Decide the fetch window. A symbol with no full daily history yet —
-        // none stored, a single bar, or a coarser-than-daily series — needs a
-        // deep re-fetch, so ask for range=max (`None`); the provider re-asks a
-        // bounded window when Yahoo downsamples it. Everything else just wants
-        // the incremental window since its last stored bar.
-        let single_bar = first_date.is_some() && first_date == last_date;
-        let coarse = is_coarser_than_daily(first_date, last_date, *recent_bars);
-        let deep = last_date.is_none() || single_bar || coarse;
-        let since = if deep { None } else { last_date.as_deref() };
-        match yahoo.daily(ticker, since).await {
-            Ok(bars) if !bars.is_empty() => {
-                guard.record_success().await?;
-                // A coarse series is replaced, not merged: drop its weekly /
-                // monthly bars so the fresh daily ones do not interleave with
-                // leftover old-granularity bars. Done only once we have new
-                // bars in hand, so the symbol is never left empty.
-                if coarse {
-                    sqlx::query("DELETE FROM daily_prices WHERE ticker = ?")
-                        .bind(ticker)
-                        .execute(pool)
-                        .await?;
-                }
-                total_bars += bars.len() as i64;
-                seed::store_daily(pool, ticker, &bars).await?;
-                ok += 1;
-            }
-            Ok(_) => {
-                // A valid but empty response: the request succeeded and the
-                // endpoint simply had nothing new. Stamp the symbol checked so
-                // it is not re-fetched until it goes stale again.
-                guard.record_success().await?;
-                mark_history_checked(pool, ticker).await?;
-            }
-            Err(e) => {
-                guard.record_failure(&e).await?;
-                tracing::warn!("[scheduler] history {ticker} failed: {e:#}");
-            }
-        }
-    }
-
-    let dur = t0.elapsed().as_millis() as i64;
-    match stopped {
-        Some(why) => {
-            // The guard cut the run short (breaker open or hourly budget
-            // spent). That is the guard doing its job, not a failure of this
-            // job: record it as `skipped` and let the next cycle retry.
-            let detail = format!(
-                "stopped early ({why}); {ok}/{} refreshed, {total_bars} bars",
-                stale.len()
-            );
-            tracing::warn!("[scheduler] history: {detail}");
-            log_fetch(pool, "history", "yahoo", "skipped", Some(&detail), Some(total_bars), dur, started)
-                .await?;
-            // Work remains, so retry soon rather than after the full interval.
-            mark_ok(pool, "history", Some(started + HISTORY_RETRY_SECS * 1000)).await?;
-        }
-        None => {
-            let detail = format!("{ok}/{} symbols refreshed, {total_bars} bars", stale.len());
-            tracing::info!("[scheduler] history: {detail}");
-            log_fetch(pool, "history", "yahoo", "ok", Some(&detail), Some(total_bars), dur, started)
-                .await?;
-            mark_ok(pool, "history", Some(next)).await?;
-        }
-    }
-    notify_health(hub);
     Ok(())
 }
 
@@ -673,7 +230,7 @@ async fn run_intraday(
         return Ok(());
     }
     // Inside a session, poll every viewed symbol; outside it, only the futures.
-    let targets: Vec<String> = if session.is_open() {
+    let mut targets: Vec<String> = if session.is_open() {
         viewed
     } else {
         let futures: HashSet<String> =
@@ -684,6 +241,25 @@ async fn run_intraday(
                 .collect();
         viewed.into_iter().filter(|t| futures.contains(t)).collect()
     };
+    if targets.is_empty() {
+        return Ok(());
+    }
+    // Throttle to a ~5-minute per-symbol cadence (PLAN.md Phase C): the loop
+    // ticks every 60s, but a symbol quoted within the last few minutes is left
+    // alone, so a dashboard left open polls each watchlist symbol about once
+    // every five minutes rather than every minute — light on the budget, and
+    // plenty "real-time" for delayed data. A symbol never quoted is always
+    // eligible. The set is small (only viewed symbols), so the lookup is cheap.
+    let throttle_cutoff = now_ms() - INTRADAY_MIN_INTERVAL_SECS * 1000;
+    let recent: HashSet<String> = sqlx::query_scalar(
+        "SELECT ticker FROM symbols WHERE last_quote_at IS NOT NULL AND last_quote_at >= ?",
+    )
+    .bind(throttle_cutoff)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .collect();
+    targets.retain(|t| !recent.contains(t));
     if targets.is_empty() {
         return Ok(());
     }
@@ -750,618 +326,6 @@ async fn run_intraday(
         mark_ok(pool, "intraday", None).await?;
     }
 
-    // If this sweep touched a symbol that moves the dashboard verdict (the broad
-    // index or ^VIX), recompute and push the market summary so an open dashboard
-    // re-reads its hero + figures live. The curated stocks behind breadth don't
-    // move intraday (they only price at the daily close), so a sweep that hit
-    // only a viewed stock page leaves the summary unchanged and we skip it.
-    if ok > 0 {
-        let pulse = summary::pulse_tickers(session);
-        if targets.iter().any(|t| pulse.contains(&t.as_str())) {
-            hub.publish(StreamEvent::Summary(summary::market_summary(pool, session).await));
-        }
-    }
-
-    notify_health(hub);
-    Ok(())
-}
-
-/// Build a daily OHLCV bar from a closing quote. `close` is the quote's last
-/// price; open/high/low fall back to the close when Yahoo's `meta` left them
-/// null (some indexes carry only a level), and volume defaults to 0.
-fn daily_bar_from_quote(date: &str, q: &Quote) -> DailyBar {
-    let close = q.price;
-    DailyBar {
-        d: date.to_string(),
-        open: q.open.unwrap_or(close),
-        high: q.day_high.unwrap_or(close),
-        low: q.day_low.unwrap_or(close),
-        close,
-        volume: q.volume.unwrap_or(0),
-    }
-}
-
-/// Once-a-day closing snapshot of the whole universe.
-///
-/// Shortly after the regular session closes (>= 16:05 ET on a weekday), fetch
-/// a Yahoo quote for every seeded symbol so each one carries a same-day close
-/// even if nobody viewed it. Keyed on the ET trading date in `meta` so it runs
-/// exactly once per day; a guard stop leaves the date unset so the next cycle
-/// finishes the rest.
-async fn run_daily_close_if_due(
-    pool: &SqlitePool,
-    config: &Config,
-    hub: &Hub,
-) -> anyhow::Result<()> {
-    let now = chrono::Utc::now();
-    if !market::is_et_weekday(now) || !market::after_close(now) {
-        return Ok(());
-    }
-    let date = market::et_date(now);
-    if get_meta(pool, "daily_close_date").await?.as_deref() == Some(date.as_str()) {
-        return Ok(());
-    }
-
-    // The whole tracked universe, curated and user-added alike, so every
-    // symbol carries a same-day close even if nobody viewed it.
-    let symbols: Vec<String> =
-        sqlx::query_scalar("SELECT ticker FROM symbols ORDER BY ticker")
-            .fetch_all(pool)
-            .await?;
-    if symbols.is_empty() {
-        return Ok(());
-    }
-    tracing::info!("[scheduler] daily close: snapshotting {} symbols for {date}", symbols.len());
-
-    let started = now_ms();
-    mark_fetching(pool, "daily_close").await?;
-    notify_health(hub);
-    let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
-    let t0 = Instant::now();
-
-    let mut ok = 0i64;
-    let mut errors = 0i64;
-    let mut stopped: Option<String> = None;
-
-    for ticker in &symbols {
-        match guard.acquire().await? {
-            Permit::Granted => {}
-            Permit::Denied(why) => {
-                stopped = Some(why);
-                break;
-            }
-        }
-        match yahoo.quote(ticker).await {
-            Ok(data) => {
-                guard.record_success().await?;
-                store_quote(pool, ticker, &data.quote).await?;
-                if !data.bars.is_empty() {
-                    store_intraday(pool, ticker, &data.bars).await?;
-                }
-                // Append today's daily bar from the same quote (no extra
-                // request), so `daily_prices` stays current with Yahoo as the
-                // sole price source — no separate per-symbol history sweep.
-                seed::store_daily(pool, ticker, &[daily_bar_from_quote(&date, &data.quote)])
-                    .await?;
-                hub.publish(StreamEvent::Quote(QuoteUpdate::new(
-                    ticker.clone(),
-                    data.quote.price,
-                    data.quote.prev_close,
-                    data.quote.market_state.clone(),
-                )));
-                ok += 1;
-            }
-            Err(e) => {
-                guard.record_failure(&e).await?;
-                errors += 1;
-                tracing::warn!("[scheduler] daily close {ticker} failed: {e:#}");
-            }
-        }
-    }
-
-    let dur = t0.elapsed().as_millis() as i64;
-    match stopped {
-        Some(why) => {
-            // Leave `daily_close_date` unset: the next cycle retries and
-            // finishes the symbols this run did not reach.
-            let detail = format!("stopped early ({why}); {ok}/{} done", symbols.len());
-            tracing::warn!("[scheduler] daily close: {detail}");
-            log_fetch(pool, "daily_close", "yahoo", "skipped", Some(&detail), Some(ok), dur, started)
-                .await?;
-            mark_ok(pool, "daily_close", None).await?;
-        }
-        None => {
-            set_meta(pool, "daily_close_date", &date).await?;
-            let detail = format!("{ok}/{} symbols, {errors} errors", symbols.len());
-            tracing::info!("[scheduler] daily close: {detail}");
-            log_fetch(pool, "daily_close", "yahoo", "ok", Some(&detail), Some(ok), dur, started)
-                .await?;
-            mark_ok(pool, "daily_close", None).await?;
-        }
-    }
-
-    // The close just re-priced the whole universe, so breadth and the verdict
-    // have moved — push a fresh summary for any dashboard still open after the
-    // bell. Use the live session so the lead index resolves the same way the
-    // page would (the close runs just after 16:00 ET, in the post session).
-    if ok > 0 {
-        let session = market::session_at(chrono::Utc::now());
-        hub.publish(StreamEvent::Summary(summary::market_summary(pool, session).await));
-    }
-
-    notify_health(hub);
-    Ok(())
-}
-
-/// SEC fundamentals, filings & ETF fund-profile sweep.
-///
-/// On the first run (and whenever new symbols appear) two bulk ticker-map
-/// fetches fill in CIKs — `company_tickers.json` for stocks,
-/// `company_tickers_mf.json` for ETFs. Then every symbol whose SEC data has
-/// gone stale is refreshed:
-///  - a stock's XBRL `companyfacts` into `fundamentals`, its submission
-///    history into `filings`;
-///  - an ETF's latest N-PORT into `fund_profiles` + `fund_holdings`, its
-///    filing history into `filings`. A physical-commodity grantor trust files
-///    no N-PORT, so its AUM comes from `companyfacts` instead.
-///  - a stock's officer/board roster into `leadership`, parsed from its recent
-///    Form 3/4/5 ownership filings (Phase 14, on a slower monthly cadence).
-/// Indexes are skipped; they do not file with the SEC.
-///
-/// Resumable like the history job: each symbol's sync timestamps are stamped
-/// only on a successful fetch, so a guard stop simply leaves the rest for the
-/// next cycle.
-async fn run_sec(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Result<()> {
-    let started = now_ms();
-    let next = started + SEC_INTERVAL_SECS * 1000;
-    mark_fetching(pool, "sec").await?;
-    notify_health(hub);
-
-    let sec = SecProvider::new(providers::http::build_sec_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), sec.name(), SEC_BUDGET);
-    let t0 = Instant::now();
-
-    // 1. Stock CIK resolution. One bulk call maps the whole market; only
-    //    needed while some stock still lacks a CIK.
-    let missing: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM symbols WHERE kind = 'stock' AND cik IS NULL",
-    )
-    .fetch_one(pool)
-    .await?;
-    if missing > 0 {
-        match guard.acquire().await? {
-            Permit::Granted => match sec.cik_map().await {
-                Ok(map) => {
-                    guard.record_success().await?;
-                    let resolved = resolve_ciks(pool, &map).await?;
-                    tracing::info!("[scheduler] sec: resolved {resolved}/{missing} CIKs");
-                }
-                Err(e) => {
-                    guard.record_failure(&e).await?;
-                    let msg = format!("CIK map: {e:#}");
-                    let dur = t0.elapsed().as_millis() as i64;
-                    log_fetch(pool, "sec", "sec", "error", Some(&msg), None, dur, started).await?;
-                    mark_error(pool, "sec", &msg, Some(next)).await?;
-                    notify_health(hub);
-                    return Ok(());
-                }
-            },
-            Permit::Denied(why) => {
-                let dur = t0.elapsed().as_millis() as i64;
-                let detail = format!("stopped before CIK map ({why})");
-                log_fetch(pool, "sec", "sec", "skipped", Some(&detail), Some(0), dur, started)
-                    .await?;
-                mark_ok(pool, "sec", Some(next)).await?;
-                notify_health(hub);
-                return Ok(());
-            }
-        }
-    }
-
-    // 1b. ETF fund-CIK resolution from the mutual-fund ticker map. Best-effort:
-    //     a guard stop or error here only leaves the ETFs for a later cycle,
-    //     rather than aborting the stock sweep below.
-    let etfs_missing: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM symbols WHERE kind = 'etf' AND cik IS NULL",
-    )
-    .fetch_one(pool)
-    .await?;
-    if etfs_missing > 0 {
-        match guard.acquire().await? {
-            Permit::Granted => match sec.fund_ticker_map().await {
-                Ok(map) => {
-                    guard.record_success().await?;
-                    let resolved = resolve_fund_ciks(pool, &map).await?;
-                    tracing::info!("[scheduler] sec: resolved {resolved}/{etfs_missing} fund CIKs");
-                }
-                Err(e) => {
-                    guard.record_failure(&e).await?;
-                    tracing::warn!("[scheduler] sec fund CIK map: {e:#}");
-                }
-            },
-            Permit::Denied(why) => {
-                tracing::info!("[scheduler] sec: fund CIK map skipped ({why})");
-            }
-        }
-    }
-
-    // 2. Stale sweep. A symbol is due when one of its SEC timestamps is unset
-    //    or older than the staleness window.
-    let cutoff = started - SEC_STALE_SECS * 1000;
-    let stale_stocks: Vec<(String, String, Option<i64>, Option<i64>)> = sqlx::query_as(
-        "SELECT ticker, cik, fundamentals_synced_at, filings_synced_at FROM symbols \
-         WHERE kind = 'stock' AND cik IS NOT NULL \
-           AND (fundamentals_synced_at IS NULL OR filings_synced_at IS NULL \
-                OR fundamentals_synced_at < ? OR filings_synced_at < ?) \
-         ORDER BY ticker",
-    )
-    .bind(cutoff)
-    .bind(cutoff)
-    .fetch_all(pool)
-    .await?;
-    let stale_etfs: Vec<(String, String, Option<String>)> = sqlx::query_as(
-        "SELECT ticker, cik, series_id FROM symbols \
-         WHERE kind = 'etf' AND cik IS NOT NULL \
-           AND (fund_synced_at IS NULL OR fund_synced_at < ?) \
-         ORDER BY ticker",
-    )
-    .bind(cutoff)
-    .fetch_all(pool)
-    .await?;
-    // Leadership has its own, longer staleness window (see LEADERSHIP_STALE_SECS).
-    let leadership_cutoff = started - LEADERSHIP_STALE_SECS * 1000;
-    let stale_leadership: Vec<(String, String, Option<i64>)> = sqlx::query_as(
-        "SELECT ticker, cik, leadership_synced_at FROM symbols \
-         WHERE kind = 'stock' AND cik IS NOT NULL \
-           AND (leadership_synced_at IS NULL OR leadership_synced_at < ?) \
-         ORDER BY ticker",
-    )
-    .bind(leadership_cutoff)
-    .fetch_all(pool)
-    .await?;
-
-    if stale_stocks.is_empty() && stale_etfs.is_empty() && stale_leadership.is_empty() {
-        log_fetch(pool, "sec", "sec", "ok", Some("no stale companies or funds"), Some(0), 0, started)
-            .await?;
-        mark_ok(pool, "sec", Some(next)).await?;
-        notify_health(hub);
-        return Ok(());
-    }
-    tracing::info!(
-        "[scheduler] sec: refreshing {} companies, {} funds, {} rosters",
-        stale_stocks.len(),
-        stale_etfs.len(),
-        stale_leadership.len()
-    );
-
-    // A metric is due when its timestamp is unset or past the cutoff.
-    let due = |at: Option<i64>| at.map_or(true, |t| t < cutoff);
-    let mut funds_ok = 0i64;
-    let mut filings_ok = 0i64;
-    let mut etfs_ok = 0i64;
-    let mut leaders_ok = 0i64;
-    let mut errors = 0i64;
-    let mut stopped: Option<String> = None;
-
-    'stocks: for (ticker, cik, f_at, fl_at) in &stale_stocks {
-        if due(*f_at) {
-            match guard.acquire().await? {
-                Permit::Granted => match sec.facts(cik).await {
-                    Ok(facts) => {
-                        guard.record_success().await?;
-                        store_fundamentals(pool, ticker, &facts).await?;
-                        mark_sec_synced(pool, ticker, "fundamentals_synced_at").await?;
-                        funds_ok += 1;
-                    }
-                    Err(e) => {
-                        guard.record_failure(&e).await?;
-                        errors += 1;
-                        tracing::warn!("[scheduler] sec facts {ticker} failed: {e:#}");
-                    }
-                },
-                Permit::Denied(why) => {
-                    stopped = Some(why);
-                    break 'stocks;
-                }
-            }
-        }
-        if due(*fl_at) {
-            match guard.acquire().await? {
-                Permit::Granted => match sec.filings(cik).await {
-                    Ok(filings) => {
-                        guard.record_success().await?;
-                        store_filings(pool, ticker, &filings).await?;
-                        mark_sec_synced(pool, ticker, "filings_synced_at").await?;
-                        filings_ok += 1;
-                    }
-                    Err(e) => {
-                        guard.record_failure(&e).await?;
-                        errors += 1;
-                        tracing::warn!("[scheduler] sec filings {ticker} failed: {e:#}");
-                    }
-                },
-                Permit::Denied(why) => {
-                    stopped = Some(why);
-                    break 'stocks;
-                }
-            }
-        }
-    }
-
-    // 3. ETF fund-profile sweep, sharing the guard and the early-exit. Skipped
-    //    wholesale if the stock sweep above already hit a guard stop.
-    if stopped.is_none() {
-        'funds: for (ticker, cik, series_id) in &stale_etfs {
-            let id = FundId {
-                cik: cik.clone(),
-                series_id: series_id.clone(),
-            };
-            // 3a. The filing list, and what it says about the fund's shape.
-            let shape = match guard.acquire().await? {
-                Permit::Granted => match sec.fund_filings(&id).await {
-                    Ok(ff) => {
-                        guard.record_success().await?;
-                        store_filings(pool, ticker, &ff.filings).await?;
-                        ff.shape
-                    }
-                    Err(e) => {
-                        guard.record_failure(&e).await?;
-                        errors += 1;
-                        tracing::warn!("[scheduler] sec fund_filings {ticker} failed: {e:#}");
-                        continue 'funds;
-                    }
-                },
-                Permit::Denied(why) => {
-                    stopped = Some(why);
-                    break 'funds;
-                }
-            };
-            // 3b. Holdings from N-PORT, or AUM for a commodity trust.
-            match shape {
-                FundShape::Portfolio { nport_href } => match guard.acquire().await? {
-                    Permit::Granted => match sec.fund_portfolio(&nport_href).await {
-                        Ok(portfolio) => {
-                            guard.record_success().await?;
-                            store_fund_portfolio(pool, ticker, &portfolio).await?;
-                            mark_fund_synced(pool, ticker).await?;
-                            etfs_ok += 1;
-                        }
-                        Err(e) => {
-                            guard.record_failure(&e).await?;
-                            errors += 1;
-                            tracing::warn!("[scheduler] sec fund_portfolio {ticker} failed: {e:#}");
-                        }
-                    },
-                    Permit::Denied(why) => {
-                        stopped = Some(why);
-                        break 'funds;
-                    }
-                },
-                FundShape::CommodityTrust => match guard.acquire().await? {
-                    Permit::Granted => match sec.fund_aum(cik).await {
-                        Ok(aum) => {
-                            guard.record_success().await?;
-                            store_fund_commodity(pool, ticker, aum).await?;
-                            mark_fund_synced(pool, ticker).await?;
-                            etfs_ok += 1;
-                        }
-                        Err(e) => {
-                            guard.record_failure(&e).await?;
-                            errors += 1;
-                            tracing::warn!("[scheduler] sec fund_aum {ticker} failed: {e:#}");
-                        }
-                    },
-                    Permit::Denied(why) => {
-                        stopped = Some(why);
-                        break 'funds;
-                    }
-                },
-                FundShape::Unknown => {
-                    // The filing list synced but there is no portfolio to
-                    // record. Stamp it so it is not retried until next stale.
-                    mark_fund_synced(pool, ticker).await?;
-                    etfs_ok += 1;
-                }
-            }
-        }
-    }
-
-    // 4. Leadership sweep (Phase 14): for each stale stock, parse a window of
-    //    its recent Form 3/4/5 ownership filings into the officer/board roster.
-    //    Shares the guard and the early-exit; skipped wholesale once the sweeps
-    //    above have already hit a guard stop.
-    if stopped.is_none() {
-        'leaders: for (ticker, cik, lead_at) in &stale_leadership {
-            // The company's recent ownership filings, newest first.
-            let index = match guard.acquire().await? {
-                Permit::Granted => match sec.ownership_index(cik).await {
-                    Ok(idx) => {
-                        guard.record_success().await?;
-                        idx
-                    }
-                    Err(e) => {
-                        guard.record_failure(&e).await?;
-                        errors += 1;
-                        tracing::warn!("[scheduler] sec ownership_index {ticker} failed: {e:#}");
-                        continue 'leaders;
-                    }
-                },
-                Permit::Denied(why) => {
-                    stopped = Some(why);
-                    break 'leaders;
-                }
-            };
-            // First sweep (no prior sync): the most recent filings. Later
-            // sweeps: only filings since the last sync, with a few days' slack,
-            // so the steady-state cost is a handful of requests per company.
-            let since: Option<String> = lead_at.and_then(|ms| {
-                chrono::DateTime::from_timestamp_millis(ms - 5 * 86_400_000)
-                    .map(|dt| dt.format("%Y-%m-%d").to_string())
-            });
-            let to_parse: Vec<_> = index
-                .into_iter()
-                .filter(|f| since.as_deref().map_or(true, |s| f.filed_at.as_str() >= s))
-                .take(LEADERSHIP_MAX_FILINGS)
-                .collect();
-
-            // Parse each filing's XML, keeping the directors and officers (a
-            // filer who is only a >10% owner is not leadership and is dropped).
-            let mut roster: Vec<(OwnershipPerson, String)> = Vec::new();
-            for f in &to_parse {
-                match guard.acquire().await? {
-                    Permit::Granted => {
-                        match sec.ownership_doc(cik, &f.accession, &f.primary_doc).await {
-                            Ok(people) => {
-                                guard.record_success().await?;
-                                for p in people {
-                                    if p.is_director || p.is_officer {
-                                        roster.push((p, f.filed_at.clone()));
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                guard.record_failure(&e).await?;
-                                errors += 1;
-                                tracing::warn!(
-                                    "[scheduler] sec ownership_doc {ticker} failed: {e:#}"
-                                );
-                            }
-                        }
-                    }
-                    Permit::Denied(why) => {
-                        stopped = Some(why);
-                        break;
-                    }
-                }
-            }
-
-            // Upsert what was gathered. A guard stop mid-company still stores
-            // the partial roster (the upsert is idempotent) but leaves
-            // `leadership_synced_at` unset so the next cycle finishes the rest.
-            store_leadership(pool, ticker, &roster).await?;
-            if stopped.is_some() {
-                break 'leaders;
-            }
-            mark_sec_synced(pool, ticker, "leadership_synced_at").await?;
-            leaders_ok += 1;
-        }
-    }
-
-    let dur = t0.elapsed().as_millis() as i64;
-    let counts = format!(
-        "{funds_ok} fundamentals, {filings_ok} filings, {etfs_ok} fund profiles, \
-         {leaders_ok} rosters, {errors} errors"
-    );
-    match stopped {
-        Some(why) => {
-            let detail = format!("stopped early ({why}); {counts}");
-            tracing::warn!("[scheduler] sec: {detail}");
-            log_fetch(pool, "sec", "sec", "skipped", Some(&detail), Some(funds_ok), dur, started)
-                .await?;
-        }
-        None => {
-            tracing::info!("[scheduler] sec: {counts}");
-            log_fetch(pool, "sec", "sec", "ok", Some(&counts), Some(funds_ok), dur, started)
-                .await?;
-        }
-    }
-    mark_ok(pool, "sec", Some(next)).await?;
-    notify_health(hub);
-    Ok(())
-}
-
-/// Dividend payout sweep (Phase 26).
-///
-/// For every stock whose dividend history is stale, ask Yahoo for the last
-/// five years of declared dividends and upsert them. Stocks only — ETFs,
-/// indexes and futures do not pay regular dividends in this app's sense; an
-/// ETF's distributions live in the fund profile, not here. Routed through the
-/// shared `yahoo` `EndpointGuard` so it shares pacing and the per-hour budget
-/// with the intraday and daily-close jobs.
-///
-/// Resumable in the same way as the SEC job: each stock's
-/// `dividends_synced_at` is stamped only on a successful fetch, so a guard
-/// stop leaves the rest for the next cycle.
-async fn run_dividends(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Result<()> {
-    let started = now_ms();
-    let next = started + DIVIDENDS_INTERVAL_SECS * 1000;
-    let cutoff = started - DIVIDENDS_STALE_SECS * 1000;
-    // Phase 28: dividends now covers ETF distributions too — same Yahoo
-    // event series, same store path. Indexes and futures still skipped (the
-    // former do not pay anything, the latter have no concept of dividends).
-    let stale: Vec<String> = sqlx::query_scalar(
-        "SELECT ticker FROM symbols \
-         WHERE kind IN ('stock', 'etf') \
-           AND (dividends_synced_at IS NULL OR dividends_synced_at < ?) \
-         ORDER BY ticker",
-    )
-    .bind(cutoff)
-    .fetch_all(pool)
-    .await?;
-
-    if stale.is_empty() {
-        // The fast path: nothing stale, nothing to do. No fetching banner.
-        mark_ok(pool, "dividends", Some(next)).await?;
-        return Ok(());
-    }
-
-    mark_fetching(pool, "dividends").await?;
-    notify_health(hub);
-    tracing::info!("[scheduler] dividends: refreshing {} symbols", stale.len());
-
-    let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
-    let t0 = Instant::now();
-    let mut ok = 0i64;
-    let mut payouts = 0i64;
-    let mut errors = 0i64;
-    let mut stopped: Option<String> = None;
-
-    for ticker in &stale {
-        match guard.acquire().await? {
-            Permit::Granted => {}
-            Permit::Denied(why) => {
-                stopped = Some(why);
-                break;
-            }
-        }
-        match yahoo.dividends(ticker).await {
-            Ok(events) => {
-                guard.record_success().await?;
-                payouts += events.len() as i64;
-                if let Err(e) = store_dividends(pool, ticker, &events).await {
-                    tracing::warn!("[scheduler] dividends store {ticker}: {e:#}");
-                    errors += 1;
-                    continue;
-                }
-                mark_dividends_synced(pool, ticker).await?;
-                ok += 1;
-            }
-            Err(e) => {
-                guard.record_failure(&e).await?;
-                errors += 1;
-                tracing::warn!("[scheduler] dividends {ticker}: {e:#}");
-            }
-        }
-    }
-
-    let dur = t0.elapsed().as_millis() as i64;
-    let detail = format!("{ok}/{} symbols, {payouts} payouts, {errors} errors", stale.len());
-    match stopped {
-        Some(why) => {
-            let full = format!("stopped early ({why}); {detail}");
-            tracing::warn!("[scheduler] dividends: {full}");
-            log_fetch(pool, "dividends", "yahoo", "skipped", Some(&full), Some(ok), dur, started)
-                .await?;
-        }
-        None => {
-            tracing::info!("[scheduler] dividends: {detail}");
-            log_fetch(pool, "dividends", "yahoo", "ok", Some(&detail), Some(ok), dur, started)
-                .await?;
-        }
-    }
-    mark_ok(pool, "dividends", Some(next)).await?;
     notify_health(hub);
     Ok(())
 }
@@ -1407,108 +371,6 @@ async fn mark_dividends_synced(pool: &SqlitePool, ticker: &str) -> sqlx::Result<
     Ok(())
 }
 
-// ────────────────── ETF fund_metadata sweep (Phase 28) ────────────────────
-
-/// Sweep ETFs whose Yahoo `quoteSummary` snapshot has gone stale (monthly).
-/// One request per ETF through the shared `yahoo` `EndpointGuard`; expense
-/// ratio, distribution yield, NAV, inception, category, fund family, and
-/// the strategy paragraph are all returned by one request, so even the full
-/// 28-ETF sweep is well inside the hourly budget. Mirrors `run_dividends`'s
-/// shape — guard-paced, resumable, broadcast-to-/health.
-async fn run_fund_metadata(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Result<()> {
-    let started = now_ms();
-    let next = started + FUND_METADATA_INTERVAL_SECS * 1000;
-    let cutoff = started - FUND_METADATA_STALE_SECS * 1000;
-    let stale: Vec<String> = sqlx::query_scalar(
-        "SELECT ticker FROM symbols \
-         WHERE kind = 'etf' \
-           AND (fund_metadata_synced_at IS NULL OR fund_metadata_synced_at < ?) \
-         ORDER BY ticker",
-    )
-    .bind(cutoff)
-    .fetch_all(pool)
-    .await?;
-
-    if stale.is_empty() {
-        // Fast path: no ETFs need refreshing. No fetching banner, no log row.
-        mark_ok(pool, "fund_metadata", Some(next)).await?;
-        return Ok(());
-    }
-
-    mark_fetching(pool, "fund_metadata").await?;
-    notify_health(hub);
-    tracing::info!("[scheduler] fund_metadata: refreshing {} ETFs", stale.len());
-
-    let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
-    let t0 = Instant::now();
-    let mut ok = 0i64;
-    let mut empty = 0i64;
-    let mut errors = 0i64;
-    let mut stopped: Option<String> = None;
-
-    for ticker in &stale {
-        match guard.acquire().await? {
-            Permit::Granted => {}
-            Permit::Denied(why) => {
-                stopped = Some(why);
-                break;
-            }
-        }
-        match yahoo.fund_metadata(ticker).await {
-            Ok(Some(meta)) => {
-                guard.record_success().await?;
-                if let Err(e) = store_fund_metadata(pool, ticker, &meta).await {
-                    tracing::warn!("[scheduler] fund_metadata store {ticker}: {e:#}");
-                    errors += 1;
-                    continue;
-                }
-                mark_fund_metadata_synced(pool, ticker).await?;
-                ok += 1;
-            }
-            // Yahoo answered cleanly but the ETF has no fund modules (a tiny
-            // or obscure ticker): stamp it checked so we do not re-fetch the
-            // same empty answer next tick, but log the empty.
-            Ok(None) => {
-                guard.record_success().await?;
-                mark_fund_metadata_synced(pool, ticker).await?;
-                empty += 1;
-            }
-            Err(e) => {
-                guard.record_failure(&e).await?;
-                errors += 1;
-                tracing::warn!("[scheduler] fund_metadata {ticker}: {e:#}");
-            }
-        }
-    }
-
-    let dur = t0.elapsed().as_millis() as i64;
-    let detail = format!(
-        "{ok}/{} ETFs ({empty} empty, {errors} errors)",
-        stale.len()
-    );
-    match stopped {
-        Some(why) => {
-            let full = format!("stopped early ({why}); {detail}");
-            tracing::warn!("[scheduler] fund_metadata: {full}");
-            log_fetch(
-                pool, "fund_metadata", "yahoo", "skipped",
-                Some(&full), Some(ok), dur, started,
-            ).await?;
-        }
-        None => {
-            tracing::info!("[scheduler] fund_metadata: {detail}");
-            log_fetch(
-                pool, "fund_metadata", "yahoo", "ok",
-                Some(&detail), Some(ok), dur, started,
-            ).await?;
-        }
-    }
-    mark_ok(pool, "fund_metadata", Some(next)).await?;
-    notify_health(hub);
-    Ok(())
-}
-
 /// Upsert one ETF's Yahoo `quoteSummary` metadata. Yahoo serves the full
 /// current snapshot each call, so the row is replaced wholesale: a field
 /// Yahoo no longer carries on a refresh becomes `NULL` here, rather than
@@ -1549,130 +411,6 @@ pub(crate) async fn store_fund_metadata(
     Ok(())
 }
 
-// ─────────────────────── ETF NAV daily refresh (Phase 4) ──────────────────
-
-/// Refresh every ETF's NAV daily so the price-vs-NAV premium behind the ETF
-/// quality read's "tracking" factor (Phase 4) stays current. NAV is struck once
-/// per trading day; the 30-day `fund_metadata` sweep carries a NAV too but far
-/// too stale to read a premium against, so this job owns the daily nav_price +
-/// nav_synced_at on its own cadence, leaving the slow static fields alone. One
-/// lightweight `quoteSummary` request per ETF through the shared `yahoo` guard.
-/// Mirrors `run_fund_metadata`'s shape — guard-paced, resumable, /health-aware.
-async fn run_fund_nav(pool: &SqlitePool, config: &Config, hub: &Hub) -> anyhow::Result<()> {
-    let started = now_ms();
-    let next = started + FUND_NAV_INTERVAL_SECS * 1000;
-    let cutoff = started - FUND_NAV_STALE_SECS * 1000;
-    let stale: Vec<String> = sqlx::query_scalar(
-        "SELECT s.ticker FROM symbols s \
-         LEFT JOIN fund_metadata m ON m.ticker = s.ticker \
-         WHERE s.kind = 'etf' \
-           AND (m.nav_synced_at IS NULL OR m.nav_synced_at < ?) \
-         ORDER BY s.ticker",
-    )
-    .bind(cutoff)
-    .fetch_all(pool)
-    .await?;
-
-    if stale.is_empty() {
-        // Fast path: every ETF's NAV is fresh. No fetching banner, no log row.
-        mark_ok(pool, "fund_nav", Some(next)).await?;
-        return Ok(());
-    }
-
-    mark_fetching(pool, "fund_nav").await?;
-    notify_health(hub);
-    tracing::info!("[scheduler] fund_nav: refreshing {} ETFs", stale.len());
-
-    let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
-    let t0 = Instant::now();
-    let mut ok = 0i64;
-    let mut empty = 0i64;
-    let mut errors = 0i64;
-    let mut stopped: Option<String> = None;
-
-    for ticker in &stale {
-        match guard.acquire().await? {
-            Permit::Granted => {}
-            Permit::Denied(why) => {
-                stopped = Some(why);
-                break;
-            }
-        }
-        match yahoo.fund_nav(ticker).await {
-            Ok(nav) => {
-                guard.record_success().await?;
-                // `nav` may be None (Yahoo knows the symbol but carries no NAV
-                // today): still stamp nav_synced_at so we do not re-fetch the
-                // same empty next tick — the freshness gate then simply finds no
-                // premium and the tracking factor drops out.
-                if let Err(e) = store_fund_nav(pool, ticker, nav).await {
-                    tracing::warn!("[scheduler] fund_nav store {ticker}: {e:#}");
-                    errors += 1;
-                    continue;
-                }
-                if nav.is_some() {
-                    ok += 1;
-                } else {
-                    empty += 1;
-                }
-            }
-            Err(e) => {
-                guard.record_failure(&e).await?;
-                errors += 1;
-                tracing::warn!("[scheduler] fund_nav {ticker}: {e:#}");
-            }
-        }
-    }
-
-    let dur = t0.elapsed().as_millis() as i64;
-    let detail = format!("{ok}/{} ETFs ({empty} no NAV, {errors} errors)", stale.len());
-    match stopped {
-        Some(why) => {
-            let full = format!("stopped early ({why}); {detail}");
-            tracing::warn!("[scheduler] fund_nav: {full}");
-            log_fetch(
-                pool, "fund_nav", "yahoo", "skipped",
-                Some(&full), Some(ok), dur, started,
-            ).await?;
-        }
-        None => {
-            tracing::info!("[scheduler] fund_nav: {detail}");
-            log_fetch(
-                pool, "fund_nav", "yahoo", "ok",
-                Some(&detail), Some(ok), dur, started,
-            ).await?;
-        }
-    }
-    mark_ok(pool, "fund_nav", Some(next)).await?;
-    notify_health(hub);
-    Ok(())
-}
-
-/// Upsert one ETF's freshly-fetched NAV + its sync stamp, touching only the NAV
-/// columns so the static fields the 30-day `fund_metadata` sweep owns are left
-/// intact. Inserts a NAV-only row if the metadata sweep has not reached this
-/// ETF yet (the other columns fill in on its next run). A `None` nav clears any
-/// prior NAV — honest: we have no fresh value to read a premium against.
-async fn store_fund_nav(pool: &SqlitePool, ticker: &str, nav: Option<f64>) -> sqlx::Result<()> {
-    let now = now_ms();
-    sqlx::query(
-        "INSERT INTO fund_metadata (ticker, nav_price, nav_synced_at, updated_at) \
-         VALUES (?, ?, ?, ?) \
-         ON CONFLICT(ticker) DO UPDATE SET \
-           nav_price = excluded.nav_price, \
-           nav_synced_at = excluded.nav_synced_at, \
-           updated_at = excluded.updated_at",
-    )
-    .bind(ticker)
-    .bind(nav)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
 /// Stamp an ETF as freshly fund-metadata-synced. ETFs only — the column is
 /// `NULL` forever on every non-ETF row.
 async fn mark_fund_metadata_synced(pool: &SqlitePool, ticker: &str) -> sqlx::Result<()> {
@@ -1685,125 +423,6 @@ async fn mark_fund_metadata_synced(pool: &SqlitePool, ticker: &str) -> sqlx::Res
     .bind(ticker)
     .execute(pool)
     .await?;
-    Ok(())
-}
-
-// ────────────── stock earnings calendar sweep (Phase 25) ──────────────────
-
-/// Sweep stocks whose next-expected earnings date has gone stale (monthly)
-/// or already passed. One request per stock through the shared `yahoo`
-/// `EndpointGuard`; mirrors `run_fund_metadata`'s shape — guard-paced,
-/// resumable, broadcast-to-/health.
-async fn run_earnings_calendar(
-    pool: &SqlitePool,
-    config: &Config,
-    hub: &Hub,
-) -> anyhow::Result<()> {
-    let started = now_ms();
-    let next = started + EARNINGS_INTERVAL_SECS * 1000;
-    let cutoff = started - EARNINGS_STALE_SECS * 1000;
-    // Refresh a stock when either its sync-timestamp has aged out OR its
-    // stored next date has already passed (the print landed; Yahoo should
-    // carry the following quarter's date by now).
-    let stale: Vec<String> = sqlx::query_scalar(
-        "SELECT ticker FROM symbols \
-         WHERE kind = 'stock' \
-           AND ( \
-                earnings_synced_at IS NULL OR earnings_synced_at < ? \
-                OR (next_earnings_at IS NOT NULL AND next_earnings_at < ?) \
-           ) \
-         ORDER BY ticker",
-    )
-    .bind(cutoff)
-    .bind(started)
-    .fetch_all(pool)
-    .await?;
-
-    if stale.is_empty() {
-        mark_ok(pool, "earnings_calendar", Some(next)).await?;
-        return Ok(());
-    }
-
-    mark_fetching(pool, "earnings_calendar").await?;
-    notify_health(hub);
-    tracing::info!(
-        "[scheduler] earnings_calendar: refreshing {} stocks",
-        stale.len()
-    );
-
-    let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
-    let t0 = Instant::now();
-    let mut ok = 0i64;
-    let mut empty = 0i64;
-    let mut errors = 0i64;
-    let mut stopped: Option<String> = None;
-
-    for ticker in &stale {
-        match guard.acquire().await? {
-            Permit::Granted => {}
-            Permit::Denied(why) => {
-                stopped = Some(why);
-                break;
-            }
-        }
-        match yahoo.earnings_calendar(ticker).await {
-            Ok(Some(ts_ms)) => {
-                guard.record_success().await?;
-                if let Err(e) = store_earnings_next(pool, ticker, Some(ts_ms)).await {
-                    tracing::warn!("[scheduler] earnings_calendar store {ticker}: {e:#}");
-                    errors += 1;
-                    continue;
-                }
-                ok += 1;
-            }
-            // Yahoo answered cleanly but has no upcoming date for this
-            // stock (uneven coverage). Clear the stored next date so the
-            // symbol page falls back to a cadence estimate, and stamp the
-            // sync so the next sweep does not re-fetch the same empty.
-            Ok(None) => {
-                guard.record_success().await?;
-                if let Err(e) = store_earnings_next(pool, ticker, None).await {
-                    tracing::warn!("[scheduler] earnings_calendar store {ticker}: {e:#}");
-                    errors += 1;
-                    continue;
-                }
-                empty += 1;
-            }
-            Err(e) => {
-                guard.record_failure(&e).await?;
-                errors += 1;
-                tracing::warn!("[scheduler] earnings_calendar {ticker}: {e:#}");
-            }
-        }
-    }
-
-    let dur = t0.elapsed().as_millis() as i64;
-    let detail = format!(
-        "{ok}/{} stocks ({empty} empty, {errors} errors)",
-        stale.len()
-    );
-    match stopped {
-        Some(why) => {
-            let full = format!("stopped early ({why}); {detail}");
-            tracing::warn!("[scheduler] earnings_calendar: {full}");
-            log_fetch(
-                pool, "earnings_calendar", "yahoo", "skipped",
-                Some(&full), Some(ok), dur, started,
-            )
-            .await?;
-        }
-        None => {
-            tracing::info!("[scheduler] earnings_calendar: {detail}");
-            log_fetch(
-                pool, "earnings_calendar", "yahoo", "ok",
-                Some(&detail), Some(ok), dur, started,
-            )
-            .await?;
-        }
-    }
-    mark_ok(pool, "earnings_calendar", Some(next)).await?;
-    notify_health(hub);
     Ok(())
 }
 
@@ -1828,115 +447,6 @@ pub(crate) async fn store_earnings_next(
     .bind(ticker)
     .execute(pool)
     .await?;
-    Ok(())
-}
-
-// ────────────── stock asset profile sweep (Phase 15) ──────────────────────
-
-/// Sweep stocks whose Yahoo `quoteSummary.assetProfile` snapshot has gone
-/// stale (monthly), refreshing each stock's sector and industry. One request
-/// per stock through the shared `yahoo` `EndpointGuard`; mirrors the
-/// `earnings_calendar` shape — guard-paced, resumable, broadcast-to-/health.
-///
-/// A stock Yahoo cleanly knows but has no `assetProfile` module for (uneven
-/// coverage on small caps) is still stamped synced, so the sweep does not
-/// re-fetch the same empty answer every cycle.
-async fn run_asset_profile(
-    pool: &SqlitePool,
-    config: &Config,
-    hub: &Hub,
-) -> anyhow::Result<()> {
-    let started = now_ms();
-    let next = started + ASSET_PROFILE_INTERVAL_SECS * 1000;
-    let cutoff = started - ASSET_PROFILE_STALE_SECS * 1000;
-    let stale: Vec<String> = sqlx::query_scalar(
-        "SELECT ticker FROM symbols \
-         WHERE kind = 'stock' \
-           AND (asset_profile_synced_at IS NULL OR asset_profile_synced_at < ?) \
-         ORDER BY ticker",
-    )
-    .bind(cutoff)
-    .fetch_all(pool)
-    .await?;
-
-    if stale.is_empty() {
-        mark_ok(pool, "asset_profile", Some(next)).await?;
-        return Ok(());
-    }
-
-    mark_fetching(pool, "asset_profile").await?;
-    notify_health(hub);
-    tracing::info!(
-        "[scheduler] asset_profile: refreshing {} stocks",
-        stale.len()
-    );
-
-    let yahoo = YahooProvider::new(providers::http::build_client(config));
-    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
-    let t0 = Instant::now();
-    let mut ok = 0i64;
-    let mut empty = 0i64;
-    let mut errors = 0i64;
-    let mut stopped: Option<String> = None;
-
-    for ticker in &stale {
-        match guard.acquire().await? {
-            Permit::Granted => {}
-            Permit::Denied(why) => {
-                stopped = Some(why);
-                break;
-            }
-        }
-        match yahoo.asset_profile(ticker).await {
-            Ok(Some(profile)) => {
-                guard.record_success().await?;
-                if let Err(e) = store_asset_profile(pool, ticker, &profile).await {
-                    tracing::warn!("[scheduler] asset_profile store {ticker}: {e:#}");
-                    errors += 1;
-                    continue;
-                }
-                ok += 1;
-            }
-            // Yahoo answered cleanly but had no profile for this stock —
-            // stamp it checked so the next sweep does not re-fetch the
-            // same empty answer.
-            Ok(None) => {
-                guard.record_success().await?;
-                let _ = mark_asset_profile_synced(pool, ticker).await;
-                empty += 1;
-            }
-            Err(e) => {
-                guard.record_failure(&e).await?;
-                errors += 1;
-                tracing::warn!("[scheduler] asset_profile {ticker}: {e:#}");
-            }
-        }
-    }
-
-    let dur = t0.elapsed().as_millis() as i64;
-    let detail = format!(
-        "{ok}/{} stocks ({empty} empty, {errors} errors)",
-        stale.len()
-    );
-    match stopped {
-        Some(why) => {
-            let full = format!("stopped early ({why}); {detail}");
-            tracing::warn!("[scheduler] asset_profile: {full}");
-            log_fetch(
-                pool, "asset_profile", "yahoo", "skipped",
-                Some(&full), Some(ok), dur, started,
-            ).await?;
-        }
-        None => {
-            tracing::info!("[scheduler] asset_profile: {detail}");
-            log_fetch(
-                pool, "asset_profile", "yahoo", "ok",
-                Some(&detail), Some(ok), dur, started,
-            ).await?;
-        }
-    }
-    mark_ok(pool, "asset_profile", Some(next)).await?;
-    notify_health(hub);
     Ok(())
 }
 
@@ -2773,42 +1283,6 @@ async fn mark_error(
     Ok(())
 }
 
-/// Set only a job's `next_run_at` (creating an `idle` row if absent), leaving
-/// any existing state untouched. `pub(crate)`: the add-symbol route uses it to
-/// bring the history job forward so a newly added symbol is backfilled within
-/// a tick instead of waiting out the ~6h interval.
-pub(crate) async fn schedule_next(
-    pool: &SqlitePool,
-    job: &str,
-    next_run_at: i64,
-) -> sqlx::Result<()> {
-    let now = now_ms();
-    sqlx::query(
-        "INSERT INTO data_status (job, state, next_run_at, updated_at) VALUES (?, 'idle', ?, ?) \
-         ON CONFLICT(job) DO UPDATE SET \
-           next_run_at = excluded.next_run_at, updated_at = excluded.updated_at",
-    )
-    .bind(job)
-    .bind(next_run_at)
-    .bind(now)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// Whether `job` is due: no row yet, a null `next_run_at`, or one in the past.
-async fn is_due(pool: &SqlitePool, job: &str, now: i64) -> sqlx::Result<bool> {
-    let next: Option<Option<i64>> =
-        sqlx::query_scalar("SELECT next_run_at FROM data_status WHERE job = ?")
-            .bind(job)
-            .fetch_optional(pool)
-            .await?;
-    Ok(match next {
-        None | Some(None) => true,
-        Some(Some(t)) => t <= now,
-    })
-}
-
 /// Stamp a symbol as history-checked without storing bars: used when the
 /// upstream returned a valid response that simply held nothing new.
 async fn mark_history_checked(pool: &SqlitePool, ticker: &str) -> sqlx::Result<()> {
@@ -2848,6 +1322,289 @@ async fn log_fetch(
     .bind(duration_ms)
     .bind(started_at)
     .bind(now_ms())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+// ───────────────────── on-demand refresh pipeline (Phase B) ─────────────────
+//
+// Since the demand-only refocus there are no timed sweeps: a viewed symbol's
+// data is pulled here, on demand, when its page loads (the fast price steps
+// always run; the slow SEC / metadata steps run only when their stored copy is
+// stale) or when the user hits Refresh (`force`, which runs everything). The
+// symbol-page SSE route (`routes::symbols::refresh_stream`) drives it: it asks
+// `refresh_plan` which steps will run, then runs each via `refresh_step`,
+// streaming progress to the page's loading bar. Each step reuses the same
+// guarded `backfill_*` helpers the add-symbol flow already uses.
+
+/// On-demand staleness windows for the gated (slow) steps. The always-run price
+/// steps (quote + history) carry no window — they run on every load.
+const REFRESH_SEC_STALE_SECS: i64 = 7 * 24 * 3600;
+const REFRESH_LEADERSHIP_STALE_SECS: i64 = 30 * 24 * 3600;
+const REFRESH_META_STALE_SECS: i64 = 7 * 24 * 3600;
+
+/// One step in a symbol's refresh, shown on the page's loading bar.
+pub(crate) struct RefreshStep {
+    /// Stable key the route passes back to `refresh_step`.
+    pub key: &'static str,
+    /// Human label for the loading bar.
+    pub label: &'static str,
+    /// Whether this refreshes a server-rendered "deep" section — if any deep
+    /// step ran, the page reloads to show it; a load that runs only the (live)
+    /// price steps patches the price in place instead.
+    pub deep: bool,
+}
+
+const fn step(key: &'static str, label: &'static str, deep: bool) -> RefreshStep {
+    RefreshStep { key, label, deep }
+}
+
+/// Decide which steps a symbol's refresh will run. The two price steps always
+/// run; the slow steps are included only when stale (or `force`). An index /
+/// future / unknown kind gets just the price steps.
+pub(crate) async fn refresh_plan(
+    pool: &SqlitePool,
+    config: &Config,
+    ticker: &str,
+    kind: &str,
+    force: bool,
+) -> Vec<RefreshStep> {
+    let mut steps = vec![
+        step("quote", "Live quote", false),
+        step("history", "Daily history", false),
+    ];
+    let Some(s) =
+        sqlx::query_as::<_, crate::models::SymbolRow>("SELECT * FROM symbols WHERE ticker = ?")
+            .bind(ticker)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+    else {
+        return steps;
+    };
+    let now = now_ms();
+    let stale = |at: Option<i64>, secs: i64| force || at.map_or(true, |t| now - t > secs * 1000);
+    let sec_ok = !config.sec_contact_email.is_empty();
+    match kind {
+        "stock" => {
+            if sec_ok
+                && (stale(s.fundamentals_synced_at, REFRESH_SEC_STALE_SECS)
+                    || stale(s.filings_synced_at, REFRESH_SEC_STALE_SECS)
+                    || stale(s.leadership_synced_at, REFRESH_LEADERSHIP_STALE_SECS))
+            {
+                steps.push(step("sec", "Fundamentals, filings & leadership", true));
+            }
+            if stale(s.earnings_synced_at, REFRESH_META_STALE_SECS) {
+                steps.push(step("earnings", "Earnings date", true));
+            }
+            if stale(s.asset_profile_synced_at, REFRESH_META_STALE_SECS) {
+                steps.push(step("profile", "Sector & industry", true));
+            }
+            if stale(s.dividends_synced_at, REFRESH_META_STALE_SECS) {
+                steps.push(step("dividends", "Dividends", true));
+            }
+        }
+        "etf" => {
+            if sec_ok && stale(s.fund_synced_at, REFRESH_SEC_STALE_SECS) {
+                steps.push(step("fund_sec", "Holdings & filings", true));
+            }
+            if stale(s.fund_metadata_synced_at, REFRESH_META_STALE_SECS) {
+                steps.push(step("fund_meta", "Fund details & NAV", true));
+            }
+            if stale(s.dividends_synced_at, REFRESH_META_STALE_SECS) {
+                steps.push(step("dividends", "Distributions", true));
+            }
+        }
+        _ => {}
+    }
+    steps
+}
+
+/// Run one refresh step by key. Returns a short status for the loading bar:
+/// "ok" when it ran, "skipped" when the guard denied it (breaker open / budget
+/// spent). The backfill helpers are best-effort and swallow their own errors,
+/// so the deep steps report "ok" once attempted; the price steps, which this
+/// runs inline through the guard, distinguish a guard denial.
+pub(crate) async fn refresh_step(
+    pool: &SqlitePool,
+    config: &Config,
+    hub: &Hub,
+    ticker: &str,
+    kind: &str,
+    key: &str,
+) -> &'static str {
+    let _ = kind;
+    match key {
+        "quote" => refresh_quote(pool, config, hub, ticker).await,
+        "history" => refresh_history_incremental(pool, config, ticker).await,
+        "sec" => refresh_sec(pool, config, ticker, false).await,
+        "fund_sec" => refresh_sec(pool, config, ticker, true).await,
+        "earnings" => {
+            backfill_earnings_calendar(pool, config, ticker).await;
+            "ok"
+        }
+        "profile" => {
+            backfill_asset_profile(pool, config, ticker).await;
+            "ok"
+        }
+        "dividends" => {
+            backfill_dividends(pool, config, ticker).await;
+            "ok"
+        }
+        "fund_meta" => refresh_fund_meta(pool, config, ticker).await,
+        _ => "ok",
+    }
+}
+
+/// Pull fresh quotes for a set of dashboard symbols on demand — the dashboard's
+/// on-open refresh (PLAN.md Phase C polish). A symbol quoted within the last few
+/// minutes is skipped, so a reload (or the add/remove reload) does not re-hit
+/// Yahoo, and overnight the gate keeps a re-open from re-polling the same frozen
+/// close. Runs regardless of session: opening the dashboard after the close
+/// should still confirm the latest (closing) prices rather than show a stale
+/// snapshot. Each fetch publishes to the hub so open cards live-tick. Returns how
+/// many symbols were actually refreshed.
+pub(crate) async fn refresh_quotes(
+    pool: &SqlitePool,
+    config: &Config,
+    hub: &Hub,
+    tickers: &[String],
+) -> usize {
+    let cutoff = now_ms() - INTRADAY_MIN_INTERVAL_SECS * 1000;
+    let mut refreshed = 0;
+    for t in tickers {
+        // Skip a symbol with a quote younger than the throttle window.
+        let fresh: Option<i64> = sqlx::query_scalar(
+            "SELECT last_quote_at FROM symbols WHERE ticker = ? AND last_quote_at >= ?",
+        )
+        .bind(t)
+        .bind(cutoff)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+        if fresh.is_some() {
+            continue;
+        }
+        if refresh_quote(pool, config, hub, t).await == "ok" {
+            refreshed += 1;
+        }
+    }
+    refreshed
+}
+
+/// Pull one live quote + its intraday bars and publish it to the hub so an open
+/// page patches its price in place (mirrors `run_intraday`'s per-symbol body).
+async fn refresh_quote(pool: &SqlitePool, config: &Config, hub: &Hub, ticker: &str) -> &'static str {
+    let yahoo = YahooProvider::new(providers::http::build_client(config));
+    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
+    match guarded(&guard, yahoo.quote(ticker)).await {
+        Some(Ok(data)) => {
+            let _ = store_quote(pool, ticker, &data.quote).await;
+            if !data.bars.is_empty() {
+                let _ = store_intraday(pool, ticker, &data.bars).await;
+            }
+            hub.publish(StreamEvent::Quote(QuoteUpdate::new(
+                ticker.to_string(),
+                data.quote.price,
+                data.quote.prev_close,
+                data.quote.market_state.clone(),
+            )));
+            "ok"
+        }
+        Some(Err(e)) => {
+            tracing::warn!("[refresh] quote {ticker}: {e:#}");
+            "error"
+        }
+        None => "skipped",
+    }
+}
+
+/// Pull the daily history a viewed symbol is missing: the window since its last
+/// stored bar (incremental) when it already has history, else a full
+/// `range=max` backfill. Cheaper than the deep re-fetch on a routine load.
+async fn refresh_history_incremental(
+    pool: &SqlitePool,
+    config: &Config,
+    ticker: &str,
+) -> &'static str {
+    let last: Option<String> =
+        sqlx::query_scalar("SELECT history_last_date FROM symbols WHERE ticker = ?")
+            .bind(ticker)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    let yahoo = YahooProvider::new(providers::http::build_client(config));
+    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
+    match guarded(&guard, yahoo.daily(ticker, last.as_deref())).await {
+        Some(Ok(bars)) if !bars.is_empty() => {
+            let _ = seed::store_daily(pool, ticker, &bars).await;
+            "ok"
+        }
+        Some(Ok(_)) => {
+            let _ = mark_history_checked(pool, ticker).await;
+            "ok"
+        }
+        Some(Err(e)) => {
+            tracing::warn!("[refresh] history {ticker}: {e:#}");
+            "error"
+        }
+        None => "skipped",
+    }
+}
+
+/// Backfill a viewed symbol's SEC data on demand (stock fundamentals/filings/
+/// leadership, or an ETF's holdings/filings). Skipped cleanly with no contact
+/// email configured, as the old sweep was.
+async fn refresh_sec(pool: &SqlitePool, config: &Config, ticker: &str, fund: bool) -> &'static str {
+    if config.sec_contact_email.is_empty() {
+        return "skipped";
+    }
+    let sec = SecProvider::new(providers::http::build_sec_client(config));
+    let guard = EndpointGuard::with_budget(pool.clone(), sec.name(), SEC_BUDGET);
+    if fund {
+        backfill_etf_sec(pool, &sec, &guard, ticker).await;
+    } else {
+        backfill_stock_sec(pool, &sec, &guard, ticker).await;
+    }
+    "ok"
+}
+
+/// Refresh an ETF's Yahoo fund metadata and its NAV (the price-vs-NAV premium
+/// behind the quality read's tracking factor needs a fresh NAV; see the
+/// hard-won lesson in PLAN.md). Two cheap `quoteSummary` calls through the
+/// Yahoo guard.
+async fn refresh_fund_meta(pool: &SqlitePool, config: &Config, ticker: &str) -> &'static str {
+    backfill_fund_metadata(pool, config, ticker).await;
+    let yahoo = YahooProvider::new(providers::http::build_client(config));
+    let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
+    if let Some(Ok(nav)) = guarded(&guard, yahoo.fund_nav(ticker)).await {
+        let _ = store_fund_nav(pool, ticker, nav).await;
+    }
+    "ok"
+}
+
+/// Upsert an ETF's freshly-fetched NAV + its sync stamp, touching only the NAV
+/// columns so the static fields stay intact. A `None` nav clears any prior NAV
+/// (honest: no fresh value to read a premium against). Re-added for the Phase-B
+/// on-demand NAV pull after the daily `fund_nav` job was removed in Phase A.
+async fn store_fund_nav(pool: &SqlitePool, ticker: &str, nav: Option<f64>) -> sqlx::Result<()> {
+    let now = now_ms();
+    sqlx::query(
+        "INSERT INTO fund_metadata (ticker, nav_price, nav_synced_at, updated_at) \
+         VALUES (?, ?, ?, ?) \
+         ON CONFLICT(ticker) DO UPDATE SET \
+           nav_price = excluded.nav_price, \
+           nav_synced_at = excluded.nav_synced_at, \
+           updated_at = excluded.updated_at",
+    )
+    .bind(ticker)
+    .bind(nav)
+    .bind(now)
+    .bind(now)
     .execute(pool)
     .await?;
     Ok(())
