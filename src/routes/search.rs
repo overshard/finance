@@ -53,7 +53,7 @@ async fn search_page(Query(sq): Query<SearchQuery>, State(state): State<AppState
     let query = raw.trim().to_uppercase();
     // Normalise the kind filter to one of the three known kinds, else "all".
     let kind = match sq.kind.as_deref().map(str::trim).unwrap_or("") {
-        k @ ("index" | "future" | "etf" | "stock") => k,
+        k @ ("index" | "future" | "crypto" | "etf" | "stock") => k,
         _ => "",
     };
 
@@ -78,7 +78,7 @@ async fn search_page(Query(sq): Query<SearchQuery>, State(state): State<AppState
            AND (? = '' OR s.kind = ?) \
          ORDER BY (s.ticker = ?) DESC, (s.ticker LIKE ? ESCAPE '\\') DESC, \
                   CASE s.kind WHEN 'index' THEN 0 WHEN 'future' THEN 1 \
-                              WHEN 'etf' THEN 2 ELSE 3 END, s.ticker \
+                              WHEN 'crypto' THEN 2 WHEN 'etf' THEN 3 ELSE 4 END, s.ticker \
          LIMIT 240",
     )
     .bind(&query)

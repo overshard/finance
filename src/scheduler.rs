@@ -211,10 +211,11 @@ async fn run_boot_seed(pool: &SqlitePool, config: &Config) -> anyhow::Result<()>
 ///
 /// Which viewed symbols are polled depends on the session. Inside any trading
 /// session (pre, regular, post) every viewed symbol is fair game. Outside it,
-/// only viewed futures are polled: index futures and commodities trade nearly
-/// around the clock, while indexes, stocks and ETFs sit frozen until the next
-/// session, so polling them off-hours would only re-fetch a flat quote. This
-/// is what keeps the dashboard's commodity cards live overnight.
+/// only viewed symbols that trade ~around the clock are polled — index futures,
+/// commodities, and crypto (BTC) — while indexes, stocks and ETFs sit frozen
+/// until the next session, so polling them off-hours would only re-fetch a flat
+/// quote. This is what keeps the dashboard's overview futures/commodity/BTC
+/// lines live overnight.
 ///
 /// A clean run is recorded only in `data_status` (plus each `quotes.fetched_at`
 /// row); a `fetch_log` row is written only for a notable run, an error or a
@@ -233,13 +234,19 @@ async fn run_intraday(
     let mut targets: Vec<String> = if session.is_open() {
         viewed
     } else {
-        let futures: HashSet<String> =
-            sqlx::query_scalar("SELECT ticker FROM symbols WHERE kind = 'future'")
+        // Off-hours, only poll symbols that trade ~24h: index futures (and
+        // commodities) plus crypto (BTC). Cash indexes / stocks / ETFs are
+        // frozen, so polling them outside the session just burns budget.
+        let around_clock: HashSet<String> =
+            sqlx::query_scalar("SELECT ticker FROM symbols WHERE kind IN ('future', 'crypto')")
                 .fetch_all(pool)
                 .await?
                 .into_iter()
                 .collect();
-        viewed.into_iter().filter(|t| futures.contains(t)).collect()
+        viewed
+            .into_iter()
+            .filter(|t| around_clock.contains(t))
+            .collect()
     };
     if targets.is_empty() {
         return Ok(());

@@ -32,9 +32,58 @@ commit + auto-deploy (`git push server master`) and a clean breakpoint.
 
 ## Status
 
-_Last updated: 2026-06-04 (Phases A-D all built + verified on dev; roadmap
-complete; everything uncommitted, holding per the user's call to batch the
-commit/deploy)._
+_Last updated: 2026-06-04 (Phases A-E all done + deployed. Phases A-D shipped in
+`818cf58`; **Phase E — market-overview graph — committed + deployed** this round
+per new user direction.)_
+
+Phase E outcome (market-overview graph, split from the watchlist):
+- **Top graph is now a fixed, session-aware market overview**, not the watchlist.
+  `src/routes/home.rs` carries an `OVERVIEW` slot table + `overview_for(session)`;
+  `/api/dashboard` feeds the normalized %-from-open overlay from it (S&P the ink
+  baseline). Verified at the close (session=closed): the graph drew the seven
+  futures-mode lines — `ES=F` ("S&P 500"), `YM=F` (Dow), `NQ=F` (Nasdaq 100),
+  `RTY=F` (Russell 2000), `GC=F` (Gold), `CL=F` (Crude Oil), `BTC-USD` (Bitcoin) —
+  and the note read "% change from the open · index futures (off-hours)". During
+  the regular session the four index slots swap to the cash indexes (`^SPX` etc.).
+- **Watchlist fully separate.** Its cards render below as before and are no longer
+  on the graph; copy dropped the "S&P stays on the graph as baseline" line.
+- **VIX read-only** (off the overlay, where it would squash the scale); the reads
+  strip was trimmed to VIX / Market volume / S&P 50-200 trend (dropped the
+  now-redundant S&P price tile), desktop grid → 3 cols.
+- **Polling.** Overview tickers render as hidden `data-ticker` nodes so the stream
+  registers them; `run_intraday`'s off-hours filter widened from `kind = 'future'`
+  to `kind IN ('future','crypto')` so `BTC-USD` keeps polling overnight.
+  `/api/dashboard/refresh` (on-open) now pulls the session's overview + `^VIX` +
+  `SPY` + the watchlist (verified `refreshed: 14`).
+- **`BTC-USD` added** to `universe/starter.csv` as `kind = 'crypto'` (gets a real
+  daily chart, unlike `=F` futures); `crypto` handled like index/future in search
+  (filter pill + ordering), the refresh plan (price-only steps), and backfill (no
+  SEC). `ES=F` already existed.
+- **Verified on dev:** `cargo build` + `vite build` clean, zero warnings; boot
+  synced 563 symbols (BTC-USD added); `/api/dashboard` returns the futures-mode
+  series with friendly names + S&P baseline and the trimmed reads; Playwright at
+  1280 and 390 rendered the overview graph, the off-hours note, the 3-tile reads
+  strip, and the separate watchlist with **zero console errors**.
+- **Known rough edge (polish backlog):** the futures' overnight session boundary
+  shows a small x-axis gap/step in the overlay (the ~23h window spans a settlement
+  break, and a just-seeded symbol like BTC starts with few bars); lines align
+  better once polled together during live hours. Same class of gap noted in Phase
+  C; a candidate for the eventual polish pass, not a correctness issue.
+
+**Phase E direction (decided 2026-06-04).** After living with the Phase C
+dashboard the user wants the top graph to stop being the watchlist and become a
+fixed **market overview** ("at a glance, how is the whole market doing"), with
+the **watchlist kept entirely separate** (its cards stay where they are, but are
+no longer drawn on the top graph). The overview is a fixed, non-editable set of
+the things the user usually tracks, and it is **session-aware**: cash indexes
+during the regular session, the E-mini futures during pre / after-hours / closed
+(so the overview keeps moving overnight and shows where the market is heading).
+Answered four design questions (see the Decisions log): VIX stays a **read only**
+(it swings ~10x the indexes and would squash a normalized overlay); Nasdaq tracks
+the **Nasdaq 100 (^NDX → NQ=F)** so the cash/futures swap is the same index; the
+reads strip is **kept but trimmed** (drop the now-redundant S&P price tile, keep
+VIX / Market volume / S&P 50-200 trend); the overview set is **fixed** (the
+watchlist stays the only editable list). See Phase E in the Roadmap for the build.
 
 **Major refocus in progress (the "demand-only" rewrite).** The previous roadmap
 (the "distill + ETF-first" rewrite, Phases 1-7, all deployed at `645b351`) shipped
@@ -435,6 +484,52 @@ Rebuild home around the watchlist and the day graph.
   each session; watchlist refreshes on the ~5-minute cadence with live data-age;
   nothing polls once the dashboard tab is closed.
 
+### Phase E — Market-overview graph (split from the watchlist)  ✅ DONE — committed + deployed
+Make the top graph a fixed, session-aware **market overview** and keep the
+**watchlist** entirely separate (cards only, off the graph).
+
+- **Overview set (fixed, non-editable), session-aware.** Seven slots, each shown
+  as its cash instrument during the **regular** session and its E-mini future
+  during **pre / after-hours / closed**; instruments that already trade ~24h use
+  one ticker in both states:
+  | Slot | Regular | Off-hours |
+  |---|---|---|
+  | S&P 500 | `^SPX` | `ES=F` |
+  | Dow | `^DJI` | `YM=F` |
+  | Nasdaq 100 | `^NDX` | `NQ=F` |
+  | Russell 2000 | `^RUT` | `RTY=F` |
+  | Gold | `GC=F` | `GC=F` |
+  | Crude Oil | `CL=F` | `CL=F` |
+  | Bitcoin | `BTC-USD` | `BTC-USD` |
+  The S&P slot is the chart's ink baseline line; the rest take the palette. VIX is
+  **not** on the graph (read only).
+- **Graph = the existing normalized %-from-open overlay**, just fed the overview
+  set (via `overview_for(session)`) instead of the watchlist. Header copy becomes
+  "Market overview", with an "index futures (off-hours)" note when the session is
+  not regular (kept live by `hero.js`).
+- **Watchlist** is unchanged structurally (session cookie, add/remove, spark
+  cards) but no longer appears on the top graph; its copy drops the "S&P stays on
+  the graph as the baseline" line.
+- **Reads strip trimmed:** drop the S&P price tile (it's on the graph); keep VIX,
+  Market volume, and the S&P 50/200-day trend. Desktop grid → 3 columns.
+- **Polling.** The page renders the overview tickers as hidden `data-ticker`
+  nodes so the live stream registers them with the interest registry; the
+  demand-driven `run_intraday` then keeps their intraday bars fresh while the
+  dashboard is open. Off-hours `run_intraday` already restricts to symbols that
+  trade ~24h — widened from `kind = 'future'` to `kind IN ('future','crypto')` so
+  `BTC-USD` keeps polling overnight. `/api/dashboard/refresh` (on-open) pulls the
+  session's overview set + `^VIX` + `SPY` + the watchlist.
+- **New universe rows:** `BTC-USD` (`kind = 'crypto'`; gets a real daily chart,
+  unlike `=F` futures). `ES=F` already existed. `crypto` is handled like
+  `index`/`future` everywhere it matters (search filter + ordering, refresh plan
+  price-only steps, no SEC).
+- **Verify:** during the regular session the graph shows the four cash indexes +
+  gold/crude/BTC; off-hours it swaps the four to ES/YM/NQ/RTY and the note reads
+  "index futures (off-hours)"; VIX shows only in the reads strip; the watchlist
+  cards render below and are absent from the graph; off-hours the overview keeps
+  ticking (futures + BTC) while VIX/SPY/watchlist hold; zero console errors at
+  mobile + desktop; `cargo build` + `vite build` clean.
+
 ### Phase D — Cohesion + polish pass  ✅ DONE on dev (commit + deploy pending)
 Removed the dead Summary machinery, trimmed `/health` to the demand-only job set +
 copy, added a "Prices as of" age to the dashboard reads, and fixed a verdict
@@ -453,6 +548,25 @@ block above for the full outcome. **This completes the demand-only roadmap.**
 ---
 
 ## Decisions log
+
+**2026-06-04 — Phase E: split the dashboard into a market overview + a separate
+watchlist.** The user wanted the top graph to read "how is the whole market
+doing" at a glance, not show the watchlist; the watchlist stays as its own
+section (cards) and comes off the graph. The overview is a fixed set the user
+tracks — S&P, Dow, Nasdaq, Russell 2000, gold, BTC, crude — plus VIX, and is
+**session-aware**: live cash indexes during regular hours, the E-mini futures
+(S&P mini, etc.) off-hours so it keeps moving overnight. Four questions answered:
+1. **VIX = read only, not on the graph.** On a normalized %-from-open overlay VIX
+   swings ~10x the indexes and squashes the scale; it stays a headline read.
+2. **Nasdaq = Nasdaq 100 (`^NDX` → `NQ=F`).** Pairs cleanly with the E-mini so the
+   cash/futures swap is the same index (not the Composite, which has no exact
+   future).
+3. **Reads strip kept but trimmed.** Drop the now-redundant S&P price tile (it's on
+   the graph); keep VIX, Market volume, and the S&P 50/200-day trend.
+4. **Overview set is fixed/non-editable.** The watchlist stays the only editable
+   list; the overview is the user's curated market read.
+Budgeted into Phase E above. `BTC-USD` added to the universe as `kind = 'crypto'`
+(handled like index/future); `ES=F` already existed.
 
 **2026-06-03 — The "demand-only refocus" kickoff.** The user steered a focus shift
 away from the broad always-on dashboard: the app could not source enough live data

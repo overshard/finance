@@ -158,7 +158,9 @@
 }
 @media (min-width: $bp-sm) {
   .reads {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    // Three reads since Phase E (VIX, Market volume, S&P trend): the S&P price
+    // tile moved onto the overview graph.
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 

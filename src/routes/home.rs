@@ -31,7 +31,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/dashboard/refresh", get(dashboard_refresh))
 }
 
-/// The S&P 500 cash index — the day graph's baseline and the headline read.
+/// The S&P 500 cash index — the SMA-trend read and the day graph's baseline.
 const BASELINE: &str = "^SPX";
 /// The volatility gauge behind the VIX read.
 const VIX: &str = "^VIX";
@@ -39,6 +39,44 @@ const VIX: &str = "^VIX";
 /// real share volume on Yahoo, so the dashboard reads volume off SPY. Polled
 /// while the dashboard is open (it carries a `data-ticker`) so it stays fresh.
 const VOLUME_PROXY: &str = "SPY";
+
+/// One slot in the fixed market-overview graph (Phase E). During the **regular**
+/// session the `cash` ticker is drawn (the live cash index); outside it (pre /
+/// after-hours / closed) the `off` ticker is drawn instead — the E-mini future,
+/// which trades nearly 24h, so the overview keeps moving overnight and shows
+/// where the market is heading. Instruments that already trade ~24h (gold, crude,
+/// BTC) use the same ticker in both states.
+struct OverviewSlot {
+    cash: &'static str,
+    off: &'static str,
+    name: &'static str,
+    /// The S&P slot is drawn as the chart's ink baseline line.
+    baseline: bool,
+}
+
+/// The market overview: a fixed, non-editable read of "how is the whole market
+/// doing", separate from the personal watchlist (which is cards only and no
+/// longer on this graph). VIX is deliberately absent — it swings ~10x the indexes
+/// and would squash a normalized %-from-open overlay; it stays a read instead.
+const OVERVIEW: &[OverviewSlot] = &[
+    OverviewSlot { cash: "^SPX", off: "ES=F", name: "S&P 500", baseline: true },
+    OverviewSlot { cash: "^DJI", off: "YM=F", name: "Dow", baseline: false },
+    OverviewSlot { cash: "^NDX", off: "NQ=F", name: "Nasdaq 100", baseline: false },
+    OverviewSlot { cash: "^RUT", off: "RTY=F", name: "Russell 2000", baseline: false },
+    OverviewSlot { cash: "GC=F", off: "GC=F", name: "Gold", baseline: false },
+    OverviewSlot { cash: "CL=F", off: "CL=F", name: "Crude Oil", baseline: false },
+    OverviewSlot { cash: "BTC-USD", off: "BTC-USD", name: "Bitcoin", baseline: false },
+];
+
+/// The overview tickers + display names for `session`: cash indexes during the
+/// regular session, the E-mini futures (and the ~24h instruments) otherwise.
+fn overview_for(session: market::Session) -> Vec<(&'static str, &'static str, bool)> {
+    let regular = session == market::Session::Regular;
+    OVERVIEW
+        .iter()
+        .map(|s| (if regular { s.cash } else { s.off }, s.name, s.baseline))
+        .collect()
+}
 
 /// A symbol's latest session = the intraday bars within this window of its most
 /// recent bar (regular+extended spans ~16h; the prior session sits ~24h back).
@@ -68,9 +106,6 @@ struct SparkCard {
 /// as a dash and is simply skipped by the live patcher.
 #[derive(Serialize, Default)]
 struct MarketReads {
-    /// S&P 500 level + day move.
-    spx_price: Option<f64>,
-    spx_pct: Option<f64>,
     /// VIX level, its tone bucket (calm/steady/elevated/stressed), and a label.
     vix_level: Option<f64>,
     vix_tone: Option<String>,
@@ -127,14 +162,22 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let reads = market_reads(&state).await;
     let market_session = market::session_at(chrono::Utc::now());
 
+    // The overview tickers for this session, rendered as hidden `data-ticker`
+    // nodes so the live stream registers them with the interest registry and the
+    // demand-driven intraday poll keeps their bars fresh while the page is open.
+    let overview_tickers: Vec<&str> = overview_for(market_session)
+        .into_iter()
+        .map(|(t, _, _)| t)
+        .collect();
+
     let extra = minijinja::context! {
         title => "Markets",
         cards => cards,
         empty => tickers.is_empty(),
         reads => reads,
-        baseline => BASELINE,
         vix => VIX,
         volume_proxy => VOLUME_PROXY,
+        overview_tickers => overview_tickers,
         session => market_session.as_str(),
         session_label => session_label(market_session),
     };
@@ -157,34 +200,28 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response {
 /// page (~every minute) so the chart and reads stay live without a reload. The
 /// series are normalized %-from-open so the watchlist and the S&P baseline share
 /// one axis (the TradingView/Google "compare" shape).
-async fn dashboard_api(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let session = watchlist::resolve(&state.pool, &headers).await;
-    let tickers = watchlist::list(&state.pool, &session.sid).await;
+async fn dashboard_api(State(state): State<AppState>) -> Response {
+    // No session needed: the overview is fixed, not per-browser. (The watchlist
+    // cards live-tick over the base stream; they are not on this graph.)
+    let market_session = market::session_at(chrono::Utc::now());
 
-    // The baseline leads, then each watchlist symbol.
-    let mut series = Vec::with_capacity(tickers.len() + 1);
-    if let Some(s) = pct_series(&state, BASELINE, "S&P 500", true).await {
-        series.push(s);
-    }
-    for t in &tickers {
-        if let Some(s) = pct_series(&state, t, t, false).await {
+    // The market-overview set for this session: cash indexes during the regular
+    // session, the E-mini futures otherwise. The baseline (S&P) leads.
+    let overview = overview_for(market_session);
+    let mut series = Vec::with_capacity(overview.len());
+    for (ticker, name, baseline) in overview {
+        if let Some(s) = pct_series(&state, ticker, name, baseline).await {
             series.push(s);
         }
     }
 
     let data = DashboardData {
-        session: market::session_at(chrono::Utc::now()).as_str().to_string(),
+        session: market_session.as_str().to_string(),
         reads: market_reads(&state).await,
         series,
     };
 
-    let mut resp = Json(data).into_response();
-    if let Some(c) = session.set_cookie {
-        if let Ok(v) = header::HeaderValue::from_str(&c) {
-            resp.headers_mut().insert(header::SET_COOKIE, v);
-        }
-    }
-    resp
+    Json(data).into_response()
 }
 
 /// `GET /api/dashboard/refresh` — the dashboard's on-open refresh. Pulls fresh
@@ -194,8 +231,13 @@ async fn dashboard_api(State(state): State<AppState>, headers: HeaderMap) -> Res
 /// reload doesn't re-hit Yahoo. Published quotes live-tick the open cards.
 async fn dashboard_refresh(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let session = watchlist::resolve(&state.pool, &headers).await;
+    // The watchlist cards, the session's overview symbols, and the VIX / volume
+    // reads — everything the open dashboard shows gets a fresh quote.
     let mut tickers = watchlist::list(&state.pool, &session.sid).await;
-    for b in [BASELINE, VIX, VOLUME_PROXY] {
+    for (t, _, _) in overview_for(market::session_at(chrono::Utc::now())) {
+        tickers.push(t.to_string());
+    }
+    for b in [VIX, VOLUME_PROXY] {
         tickers.push(b.to_string());
     }
     let refreshed =
@@ -265,14 +307,6 @@ async fn pct_series(state: &AppState, ticker: &str, name: &str, baseline: bool) 
 /// stance.
 async fn market_reads(state: &AppState) -> MarketReads {
     let mut r = MarketReads::default();
-
-    // S&P 500 level + day move.
-    if let Some((last, prev)) = last_and_prev(state, BASELINE).await {
-        r.spx_price = last;
-        if let (Some(l), Some(p)) = (last, prev) {
-            r.spx_pct = Some(compute::change(l, p).pct);
-        }
-    }
 
     // VIX level + tone.
     if let Some((Some(level), _)) = last_and_prev(state, VIX).await {

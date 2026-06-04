@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Markets{% endblock %}
-{% block description %}A live, normalized view of your watchlist against the S&P 500, with market hours, volume, and volatility.{% endblock %}
+{% block description %}A live market overview — the major indexes, gold, crude, and bitcoin normalized for the day (index futures off-hours) — plus your personal watchlist.{% endblock %}
 {% block extra_css %}<link rel="stylesheet" href="{{ vite_asset('static_src/home/index.js', 'css') }}">{% endblock %}
 
 {% block main %}
@@ -14,13 +14,14 @@
     <span class="dash-banner__sub" data-role="session-note">{% if session == 'closed' %}Prices update during market hours &middot; ET{% else %}US equities &middot; all times ET{% endif %}</span>
   </div>
 
-  {# The hero day graph: every watchlist symbol plus the S&P 500, each as %
-     change from today's open, on one axis. Drawn by hero.js from /api/dashboard;
+  {# The market-overview graph: the major indexes + gold, crude and bitcoin, each
+     as % change from today's open, on one axis. Cash indexes during the regular
+     session, the E-mini futures off-hours. Drawn by hero.js from /api/dashboard;
      this is its mount point and a no-JS fallback line. #}
   <section class="hero-graph">
     <div class="hero-graph__head">
-      <h1 class="hero-graph__title">Today, vs the S&amp;P 500</h1>
-      <span class="hero-graph__note">% change from the open &middot; <span class="hero-graph__base">S&amp;P 500 baseline</span></span>
+      <h1 class="hero-graph__title">Market overview</h1>
+      <span class="hero-graph__note">% change from the open<span class="hero-graph__mode" data-role="overview-mode">{% if session != 'regular' %} &middot; index futures (off-hours){% endif %}</span></span>
     </div>
     <div class="hero-graph__chart" data-role="hero-chart">
       <p class="hero-graph__empty" data-role="hero-empty">Loading today&rsquo;s session&hellip;</p>
@@ -28,19 +29,21 @@
     <div class="hero-graph__legend" data-role="hero-legend"></div>
   </section>
 
-  {# Headline market reads. S&P carries data-ticker/data-field so the base stream
-     client live-patches its price; VIX and SPY carry data-ticker only (to keep
-     them polled) and are patched by hero.js, which also fills volume + trend. #}
+  {# Overview symbols as hidden data-ticker nodes: the live stream registers them
+     with the interest registry so the demand-driven intraday poll keeps their
+     bars fresh while the dashboard is open. The graph itself is drawn from
+     /api/dashboard; these carry no fields, so quote events no-op on them. #}
+  <div class="overview-interest" hidden aria-hidden="true">
+    {% for t in overview_tickers %}<span data-ticker="{{ t }}"></span>{% endfor %}
+  </div>
+
+  {# Headline market reads (context the graph doesn't carry). VIX and SPY carry
+     data-ticker only (to keep them polled) and are patched by hero.js, which also
+     fills volume + the S&P trend. The S&P price itself lives on the graph now. #}
   <div class="reads-head">
     <span class="reads-head__asof" data-role="reads-asof">{% if reads.asof %}Prices as of {{ reads.asof|asof }}{% else %}Awaiting first quotes&hellip;{% endif %}</span>
   </div>
   <section class="reads">
-    <div class="read" data-ticker="{{ baseline }}">
-      <div class="read__label">S&amp;P 500</div>
-      <div class="read__value num" data-field="price">{{ reads.spx_price|money }}</div>
-      <div class="read__sub num{% if reads.spx_pct is none %} is-flat{% elif reads.spx_pct >= 0 %} is-up{% else %} is-down{% endif %}" data-field="change_pct">{{ reads.spx_pct|pct }}</div>
-    </div>
-
     <div class="read" data-ticker="{{ vix }}">
       <div class="read__label">Volatility &middot; VIX</div>
       <div class="read__value num" data-role="vix-level">{{ reads.vix_level|round(2) if reads.vix_level is not none else "—" }}</div>
@@ -107,8 +110,7 @@
     </div>
     {% else %}
     <p class="watch-empty">Your watchlist is empty. Add a stock or ETF above, or
-      <a href="/search">browse the universe</a> to find one. The S&amp;P 500 stays
-      on the graph as the baseline.</p>
+      <a href="/search">browse the universe</a> to find one.</p>
     {% endif %}
   </section>
 </div>

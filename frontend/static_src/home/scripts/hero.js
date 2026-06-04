@@ -1,14 +1,16 @@
-// The dashboard's hero day graph + market reads (Phase C).
+// The dashboard's market-overview graph + market reads (Phase C / E).
 //
-// Draws every watchlist symbol plus the S&P 500 on one chart, each as % change
-// from today's open (the TradingView/Google "compare" shape), and fills the
-// headline reads. Both come from /api/dashboard, re-fetched ~every minute (and
-// on tab focus) so the chart and reads stay live without a reload — the
-// watchlist cards below already live-tick via the base stream client.
+// Draws the market overview — the major indexes plus gold, crude and bitcoin
+// (cash indexes during the regular session, the E-mini futures off-hours) — on
+// one chart, each as % change from today's open (the TradingView/Google
+// "compare" shape), and fills the headline reads. Both come from /api/dashboard,
+// re-fetched ~every minute (and on tab focus) so the chart and reads stay live
+// without a reload. The personal watchlist is a separate section below and is
+// not on this graph; its cards live-tick via the base stream client.
 
 import { createChart, LineSeries, ColorType } from "lightweight-charts";
 
-// Non-semantic line palette for the watchlist (green/amber/red stay reserved
+// Non-semantic line palette for the overview (green/amber/red stay reserved
 // for good/ok/bad reads elsewhere). Chosen to spread across the wheel so
 // adjacent lines stay tellable apart; the S&P baseline is drawn in ink.
 const PALETTE = [
@@ -24,8 +26,9 @@ const PALETTE = [
 const INK = "#211f1a";
 const DASH = "·";
 
-// Display name for a ticker on the axis label and legend.
-const displayName = (ticker) => (ticker === "^SPX" ? "S&P 500" : ticker);
+// The server sends a friendly `name` per series (e.g. "S&P 500", "Gold"); fall
+// back to the raw ticker if one is ever missing.
+const displayName = (s) => s.name || s.ticker;
 
 const SESSION_LABELS = {
   regular: "Regular session",
@@ -132,7 +135,7 @@ export function initHero() {
           lineWidth: s.baseline ? 2 : 1.75,
           // The title labels the line at its last value on the price axis, so
           // each line is identifiable without decoding the colour.
-          title: displayName(s.ticker),
+          title: displayName(s),
           priceLineVisible: false,
           lastValueVisible: true,
           crosshairMarkerRadius: 3,
@@ -140,11 +143,11 @@ export function initHero() {
         entry = { series };
         seriesByTicker.set(s.ticker, entry);
       } else {
-        entry.series.applyOptions({ color, title: displayName(s.ticker) });
+        entry.series.applyOptions({ color, title: displayName(s) });
       }
       entry.series.setData(s.points.map((p) => ({ time: p.t, value: p.v })));
       const last = s.points.length ? s.points[s.points.length - 1].v : null;
-      legend.push({ ticker: s.ticker, color, baseline: s.baseline, last });
+      legend.push({ name: displayName(s), color, baseline: s.baseline, last });
     }
 
     // Drop series whose ticker is no longer in the payload.
@@ -170,7 +173,7 @@ export function initHero() {
       sw.className = "legend-item__swatch";
       sw.style.background = it.color;
       const name = document.createElement("span");
-      name.textContent = it.ticker === "^SPX" ? "S&P 500" : it.ticker;
+      name.textContent = it.name;
       const pct = document.createElement("span");
       pct.className = "legend-item__pct";
       pct.textContent = it.last == null ? "" : pctFmt(it.last);
@@ -205,6 +208,12 @@ export function initHero() {
       session === "closed"
         ? "Prices update during market hours " + DASH + " ET"
         : "US equities " + DASH + " all times ET",
+    );
+    // Mirror the overview's cash-vs-futures state on the graph note: outside the
+    // regular session the indexes are drawn from their E-mini futures.
+    setText(
+      "overview-mode",
+      session === "regular" ? "" : " " + DASH + " index futures (off-hours)",
     );
   }
 
