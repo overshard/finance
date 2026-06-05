@@ -1960,3 +1960,194 @@ a.anomaly__link:hover .anomaly__body {
     transition: none;
   }
 }
+
+/* ---------- indicator read (under the chart) ----------
+   A colour-coded read of the chart's indicators: an overall trend verdict, an
+   RSI momentum gauge, and one signal tile per moving average. */
+
+/* Tone helper: each toned element exposes its semantic ink + soft wash as vars
+   so the gauge / tiles can paint from one place. */
+.ind-tone--up    { --tone: var(--up);   --tone-soft: var(--up-soft); }
+.ind-tone--down  { --tone: var(--down); --tone-soft: var(--down-soft); }
+.ind-tone--warn  { --tone: var(--warn); --tone-soft: var(--warn-soft); }
+.ind-tone--steady { --tone: var(--ink-dim); --tone-soft: rgba(33, 31, 26, 0.07); }
+
+.ind-read {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.ind-read__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
+}
+.ind-read__title {
+  @include serif;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+/* Overall verdict pill. */
+.ind-verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 10px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: var(--fs-sm);
+  color: var(--tone);
+  background: var(--tone-soft);
+}
+.ind-verdict--up { color: var(--up); background: var(--up-soft); }
+.ind-verdict--down { color: var(--down); background: var(--down-soft); }
+.ind-verdict--warn { color: var(--warn); background: var(--warn-soft); }
+.ind-verdict--steady { color: var(--ink-dim); background: rgba(33, 31, 26, 0.07); }
+.ind-verdict__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.ind-verdict__note {
+  font-weight: 500;
+  font-size: var(--fs-xs);
+  opacity: 0.85;
+}
+
+/* RSI momentum gauge. */
+.ind-rsi {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ind-rsi__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+.ind-rsi__label {
+  @include eyebrow;
+}
+.ind-rsi__verdict {
+  font-weight: 700;
+  font-size: var(--fs-sm);
+  color: var(--tone);
+}
+.ind-rsi__track {
+  position: relative;
+  height: 8px;
+  margin-top: 26px;
+  border-radius: 999px;
+  background: var(--rule);
+}
+.ind-rsi__zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+.ind-rsi__zone--under {
+  left: 0;
+  width: 30%;
+  background: var(--up-soft);
+  border-radius: 999px 0 0 999px;
+}
+.ind-rsi__zone--over {
+  left: 70%;
+  right: 0;
+  background: var(--down-soft);
+  border-radius: 0 999px 999px 0;
+}
+.ind-rsi__marker {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  background: var(--tone);
+  border-radius: 1px;
+}
+.ind-rsi__bubble {
+  position: absolute;
+  bottom: 14px;
+  left: 0;
+  transform: translateX(-50%);
+  padding: 2px 7px;
+  border-radius: 7px;
+  background: var(--tone);
+  color: var(--surface);
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+}
+.ind-rsi__scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 7px;
+  font-size: var(--fs-2xs);
+  color: var(--ink-faint);
+}
+.ind-rsi__note {
+  margin-top: 4px;
+  font-size: var(--fs-sm);
+  color: var(--ink-dim);
+  line-height: 1.4;
+}
+
+/* Trend signal tiles. */
+.ind-signals {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+@media (min-width: $bp-sm) {
+  .ind-signals {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  }
+}
+.ind-sig {
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--tone);
+  border-radius: var(--radius-sm);
+  background: var(--tone-soft);
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ind-sig__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+.ind-sig__label {
+  @include eyebrow;
+}
+.ind-sig__value {
+  @include mono;
+  font-size: var(--fs-2xs);
+  color: var(--ink-dim);
+}
+.ind-sig__status {
+  @include mono;
+  font-weight: 700;
+  font-size: var(--fs-md);
+  color: var(--tone);
+  line-height: 1.1;
+}
+.ind-sig__note {
+  font-size: var(--fs-2xs);
+  color: var(--ink-dim);
+}
+
+.ind-read__foot {
+  font-size: var(--fs-xs);
+  color: var(--ink-faint);
+}

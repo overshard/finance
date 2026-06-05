@@ -1,34 +1,23 @@
-// The dashboard's market-overview graph + market reads (Phase C / E).
+// The dashboard's market-overview + watchlist charts (Phase F).
 //
-// Draws the market overview — the major indexes plus gold, crude and bitcoin
-// (cash indexes during the regular session, the E-mini futures off-hours) — on
-// one chart, each as % change from today's open (the TradingView/Google
-// "compare" shape), and fills the headline reads. Both come from /api/dashboard,
-// re-fetched ~every minute (and on tab focus) so the chart and reads stay live
-// without a reload. The personal watchlist is a separate section below and is
-// not on this graph; its cards live-tick via the base stream client.
+// Both the fixed market overview and the personal watchlist are drawn as the
+// same per-instrument chart card: one Schwab trading day (7 AM–8 PM ET), an
+// area line coloured green/red by the day's direction, pre-market / after-hours
+// shaded, and a headline value + % change vs the previous close (the
+// universally-quoted number). Everything comes from /api/dashboard, re-fetched
+// ~every minute and on tab focus. Overview cards are built here; watchlist cards
+// are server-rendered shells (for the link + remove button) that we draw into.
 
-import { createChart, LineSeries, ColorType } from "lightweight-charts";
+import { createChart, AreaSeries, ColorType } from "lightweight-charts";
 
-// Non-semantic line palette for the overview (green/amber/red stay reserved
-// for good/ok/bad reads elsewhere). Chosen to spread across the wheel so
-// adjacent lines stay tellable apart; the S&P baseline is drawn in ink.
-const PALETTE = [
-  "#2f6fb0", // blue
-  "#e07b29", // orange
-  "#8a4fb3", // purple
-  "#0f8b8d", // teal
-  "#c2407a", // magenta
-  "#8c6239", // brown
-  "#3b4a9c", // indigo
-  "#6b8e23", // olive
-];
-const INK = "#211f1a";
+// Semantic day-direction colours (the Paper Ledger up/down inks) + soft fills
+// that match the watchlist spark-card aesthetic.
+const UP = "#2f7d4f";
+const DOWN = "#b23b32";
+const UP_FILL = "rgba(47, 125, 79, 0.15)";
+const DOWN_FILL = "rgba(178, 59, 50, 0.15)";
+const REF = "rgba(33, 31, 26, 0.28)"; // dashed previous-close line
 const DASH = "·";
-
-// The server sends a friendly `name` per series (e.g. "S&P 500", "Gold"); fall
-// back to the raw ticker if one is ever missing.
-const displayName = (s) => s.name || s.ticker;
 
 const SESSION_LABELS = {
   regular: "Regular session",
@@ -37,19 +26,28 @@ const SESSION_LABELS = {
   closed: "Market closed",
 };
 
-const pctFmt = (v) => (v >= 0 ? "+" : "") + v.toFixed(2) + "%";
-
-function fmtMoney(n) {
+// ── formatters ─────────────────────────────────────────────────────────────
+function fmtValue(n, unit) {
   if (n == null || Number.isNaN(n)) return DASH;
-  return "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const s = n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return unit === "$" ? "$" + s : s;
 }
 function fmtPct(n) {
   if (n == null || Number.isNaN(n)) return DASH;
-  return n.toLocaleString("en-US", {
-    minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: "exceptZero",
-  }) + "%";
+  return (
+    n.toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+      signDisplay: "exceptZero",
+    }) + "%"
+  );
 }
-// Compact volume: 1.2M / 853K, matching the server-side `compact` filter shape.
+function fmtSigned(n, unit) {
+  if (n == null || Number.isNaN(n)) return DASH;
+  const s = Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const sign = n >= 0 ? "+" : "-";
+  return unit === "$" ? `${sign}$${s}` : `${sign}${s}`;
+}
 function fmtCompact(n) {
   if (n == null || Number.isNaN(n)) return DASH;
   const abs = Math.abs(n);
@@ -59,13 +57,30 @@ function fmtCompact(n) {
   return String(n);
 }
 const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
-// A fixed timestamp as an ET clock time, matching the server `asof` filter.
+
+// 12-hour AM/PM ET clock for the axis ticks and crosshair (never 24-hour).
+function fmtAxisTime(tSec) {
+  return new Date(tSec * 1000).toLocaleTimeString("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+function fmtCrosshairTime(tSec) {
+  return new Date(tSec * 1000).toLocaleString("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
 function fmtClock(ms) {
   if (!ms) return null;
   return new Date(ms)
-    .toLocaleTimeString("en-US", {
-      timeZone: "America/New_York", hour: "numeric", minute: "2-digit",
-    })
+    .toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" })
     .replace(/\s/g, "")
     .toLowerCase();
 }
@@ -83,103 +98,383 @@ function setTone(role, tone, prefix) {
   el.classList.add(prefix + tone);
 }
 
-export function initHero() {
-  const mount = document.querySelector('[data-role="hero-chart"]');
-  if (!mount) return;
+// ── extended-hours shading ───────────────────────────────────────────────────
+// US regular session in ET minutes-of-day (9:30 AM – 4:00 PM). Everything else
+// is "extended" (pre-market / after-hours / overnight) and gets shaded.
+const REG_START = 9 * 60 + 30;
+const REG_END = 16 * 60;
+function etMinutes(tSec) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(tSec * 1000));
+  let h = 0;
+  let m = 0;
+  for (const p of parts) {
+    if (p.type === "hour") h = parseInt(p.value, 10);
+    else if (p.type === "minute") m = parseInt(p.value, 10);
+  }
+  if (h === 24) h = 0;
+  return h * 60 + m;
+}
+const isExtended = (tSec) => {
+  const x = etMinutes(tSec);
+  return x < REG_START || x >= REG_END;
+};
 
-  const chart = createChart(mount, {
+// Shade the extended-hours spans behind a chart's line (pointer-transparent
+// overlay divs), recomputed on every relayout.
+function renderBands(entry) {
+  const box = entry.bandsEl;
+  if (!box) return;
+  box.innerHTML = "";
+  const times = entry.times;
+  if (!times || times.length < 2) return;
+  const ts = entry.chart.timeScale();
+  const w = entry.chartEl.clientWidth;
+  const coords = times.map((p) => ts.timeToCoordinate(p.t));
+  let sum = 0;
+  let n = 0;
+  for (let k = 1; k < coords.length; k++) {
+    if (coords[k] != null && coords[k - 1] != null) {
+      sum += coords[k] - coords[k - 1];
+      n++;
+    }
+  }
+  const half = (n ? sum / n : 6) / 2;
+  let i = 0;
+  while (i < times.length) {
+    if (!times[i].ext || coords[i] == null) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j + 1 < times.length && times[j + 1].ext && coords[j + 1] != null) j++;
+    const left = Math.max(0, coords[i] - half);
+    const right = Math.min(w, coords[j] + half);
+    if (right > left) {
+      const band = document.createElement("div");
+      band.className = "ov-band";
+      band.style.left = `${left}px`;
+      band.style.width = `${right - left}px`;
+      box.appendChild(band);
+    }
+    i = j + 1;
+  }
+}
+
+// ── chart card ───────────────────────────────────────────────────────────────
+// Attach a lightweight-charts area chart to a card's `.ov-card__chart` mount.
+function attachChart(chartEl) {
+  const bandsEl = document.createElement("div");
+  bandsEl.className = "ov-bands";
+  chartEl.appendChild(bandsEl);
+
+  const chart = createChart(chartEl, {
     autoSize: true,
     handleScroll: false,
     handleScale: false,
     layout: {
       background: { type: ColorType.Solid, color: "transparent" },
-      textColor: "#6b6456",
+      textColor: "#8a8372",
       fontFamily: "'JetBrains Mono', monospace",
+      fontSize: 10,
       attributionLogo: false,
     },
     grid: {
-      vertLines: { color: "rgba(33,31,26,0.06)" },
-      horzLines: { color: "rgba(33,31,26,0.07)" },
+      vertLines: { visible: false },
+      horzLines: { color: "rgba(33,31,26,0.05)" },
     },
-    rightPriceScale: { borderColor: "rgba(33,31,26,0.16)" },
+    rightPriceScale: {
+      borderVisible: false,
+      scaleMargins: { top: 0.16, bottom: 0.08 },
+    },
     timeScale: {
-      borderColor: "rgba(33,31,26,0.16)",
+      borderColor: "rgba(33,31,26,0.12)",
       timeVisible: true,
       secondsVisible: false,
+      tickMarkFormatter: (t) => fmtAxisTime(t),
     },
-    crosshair: { mode: 1 },
-    localization: { priceFormatter: pctFmt },
+    crosshair: {
+      mode: 1,
+      vertLine: { labelVisible: true, width: 1, color: "rgba(33,31,26,0.25)", style: 3 },
+      horzLine: { labelVisible: true, color: "rgba(33,31,26,0.25)", style: 3 },
+    },
+    localization: { timeFormatter: (t) => fmtCrosshairTime(t) },
   });
 
-  const seriesByTicker = new Map(); // ticker -> { series }
+  const series = chart.addSeries(AreaSeries, {
+    lineWidth: 2,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    crosshairMarkerRadius: 3,
+    crosshairMarkerBorderWidth: 0,
+  });
 
-  function drawSeries(list) {
+  const entry = { chart, series, chartEl, bandsEl, refLine: null, times: [], points: [], unit: "pts" };
+  attachMeasure(entry);
+  // Keep the shading + measure band glued to the data on every relayout.
+  chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+    renderBands(entry);
+    if (entry.renderMeasure) entry.renderMeasure();
+  });
+  return entry;
+}
+
+// Click-drag measure tool: a shaded band + a readout chip showing the % and
+// value change between the two bars under the drag (the symbol chart's gesture,
+// ported to the mini charts). Snaps to real bars; suppresses the navigating
+// click on watchlist cards when a drag actually happened.
+function attachMeasure(entry) {
+  const el = entry.chartEl;
+  const band = document.createElement("div");
+  band.className = "ov-measure-band";
+  band.hidden = true;
+  const readout = document.createElement("div");
+  readout.className = "ov-measure-readout";
+  readout.hidden = true;
+  el.append(band, readout);
+
+  let dragging = false;
+  let anchorX = null;
+  let curX = null;
+  let moved = false;
+  const localX = (e) => e.clientX - el.getBoundingClientRect().left;
+
+  // Real (valued) bars and their current x-coordinates; whitespace is ignored.
+  function realCoords() {
+    const ts = entry.chart.timeScale();
+    const out = [];
+    for (const p of entry.points) {
+      const x = ts.timeToCoordinate(p.t);
+      if (x != null) out.push({ p, x });
+    }
+    return out;
+  }
+  function nearest(coords, x) {
+    let best = null;
+    let bd = Infinity;
+    for (const o of coords) {
+      const d = Math.abs(o.x - x);
+      if (d < bd) {
+        bd = d;
+        best = o;
+      }
+    }
+    return best;
+  }
+
+  function render() {
+    if (anchorX == null || curX == null) {
+      band.hidden = true;
+      readout.hidden = true;
+      return;
+    }
+    const coords = realCoords();
+    const a = nearest(coords, anchorX);
+    const b = nearest(coords, curX);
+    if (!a || !b || a.p.t === b.p.t) {
+      band.hidden = true;
+      readout.hidden = true;
+      return;
+    }
+    const left = Math.min(a.x, b.x);
+    const right = Math.max(a.x, b.x);
+    band.style.left = `${left}px`;
+    band.style.width = `${right - left}px`;
+    band.hidden = false;
+
+    const start = a.p.t < b.p.t ? a.p : b.p;
+    const end = a.p.t < b.p.t ? b.p : a.p;
+    const abs = end.v - start.v;
+    const pct = start.v !== 0 ? (abs / start.v) * 100 : 0;
+    const up = abs >= 0;
+    readout.dataset.dir = up ? "up" : "down";
+    readout.innerHTML =
+      `<span class="ov-measure__pct">${up ? "▲" : "▼"} ${up ? "+" : ""}${pct.toFixed(2)}%</span>` +
+      `<span class="ov-measure__sub">${fmtSigned(abs, entry.unit)}</span>`;
+    readout.hidden = false;
+    const mid = (left + right) / 2;
+    const rw = readout.offsetWidth;
+    const max = el.clientWidth - rw - 4;
+    readout.style.left = `${Math.min(max, Math.max(4, mid - rw / 2))}px`;
+  }
+  entry.renderMeasure = render;
+
+  el.addEventListener("pointerdown", (e) => {
+    if (!entry.points || entry.points.length < 2) return;
+    dragging = true;
+    moved = false;
+    anchorX = localX(e);
+    curX = anchorX;
+    try {
+      el.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    render();
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    curX = localX(e);
+    if (Math.abs(curX - anchorX) > 3) moved = true;
+    render();
+  });
+  function end(e) {
+    if (!dragging) return;
+    dragging = false;
+    try {
+      el.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    // A click with no drag clears the selection.
+    if (!moved) {
+      anchorX = null;
+      curX = null;
+      render();
+    }
+  }
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", end);
+  // Suppress the watchlist card's navigation when the pointerup ended a drag.
+  el.addEventListener(
+    "click",
+    (e) => {
+      if (moved) {
+        e.preventDefault();
+        e.stopPropagation();
+        moved = false;
+      }
+    },
+    true,
+  );
+}
+
+// Draw/update a series into an attached chart entry.
+function drawSeries(entry, s) {
+  entry.points = s.points; // real bars, for the measure tool
+  entry.unit = s.unit;
+  const color = s.up ? UP : DOWN;
+  entry.series.applyOptions({
+    lineColor: color,
+    topColor: s.up ? UP_FILL : DOWN_FILL,
+    bottomColor: "transparent",
+    crosshairMarkerBackgroundColor: color,
+  });
+  entry.chart.applyOptions({
+    localization: { priceFormatter: (v) => fmtValue(v, s.unit), timeFormatter: (t) => fmtCrosshairTime(t) },
+  });
+
+  // Frame exactly the Schwab day [start_t, end_t]: pad whitespace (time only)
+  // before the first bar and after the last so a partial day plots from the left.
+  const pts = s.points;
+  const step = pts.length > 1 ? pts[1].t - pts[0].t : 900;
+  const data = [];
+  if (pts.length) {
+    for (let t = s.start_t; t < pts[0].t; t += step) data.push({ time: t });
+    for (const p of pts) data.push({ time: p.t, value: p.v });
+    for (let t = pts[pts.length - 1].t + step; t <= s.end_t; t += step) data.push({ time: t });
+  } else {
+    for (let t = s.start_t; t <= s.end_t; t += step) data.push({ time: t });
+  }
+  entry.series.setData(data);
+  entry.times = data.map((d) => ({ t: d.time, ext: isExtended(d.time) }));
+
+  if (entry.refLine) entry.series.removePriceLine(entry.refLine);
+  entry.refLine = entry.series.createPriceLine({
+    price: s.base,
+    color: REF,
+    lineWidth: 1,
+    lineStyle: 2,
+    axisLabelVisible: false,
+  });
+
+  entry.chart.timeScale().fitContent();
+  renderBands(entry);
+}
+
+// Update a card's header value + % pill.
+function setHead(root, s) {
+  const v = root.querySelector(".ov-card__value");
+  if (v) v.textContent = fmtValue(s.last, s.unit);
+  const c = root.querySelector(".ov-card__chg");
+  if (c) {
+    c.textContent = fmtPct(s.change_pct);
+    c.classList.remove("is-up", "is-down", "is-flat");
+    c.classList.add(s.change_pct == null ? "is-flat" : s.change_pct >= 0 ? "is-up" : "is-down");
+  }
+}
+
+const escapeHtml = (s) =>
+  String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+export function initHero() {
+  const overviewGrid = document.querySelector('[data-role="overview-grid"]');
+  const overviewCards = new Map(); // ticker -> { root, entry }
+  const watchCards = new Map(); // ticker -> { root, entry }
+
+  function makeOverviewCard(s) {
+    const root = document.createElement("div");
+    root.className = "ov-card";
+    root.dataset.ticker = s.ticker;
+    root.innerHTML =
+      `<div class="ov-card__head">` +
+      `<div class="ov-card__id"><span class="ov-card__name">${escapeHtml(s.name)}</span></div>` +
+      `<div class="ov-card__nums"><span class="ov-card__value num"></span>` +
+      `<span class="ov-card__chg num"></span></div></div>` +
+      `<div class="ov-card__chart"></div>`;
+    overviewGrid.appendChild(root);
+    const entry = attachChart(root.querySelector(".ov-card__chart"));
+    return { root, entry };
+  }
+
+  function drawOverview(list) {
     const empty = document.querySelector('[data-role="hero-empty"]');
+    if (!overviewGrid) return;
     if (!list || !list.length) {
       if (empty) empty.hidden = false;
       return;
     }
     if (empty) empty.hidden = true;
-
     const seen = new Set();
-    const legend = [];
-    let ci = 0;
-
     for (const s of list) {
       seen.add(s.ticker);
-      const color = s.baseline ? INK : PALETTE[ci++ % PALETTE.length];
-      let entry = seriesByTicker.get(s.ticker);
-      if (!entry) {
-        const series = chart.addSeries(LineSeries, {
-          color,
-          lineWidth: s.baseline ? 2 : 1.75,
-          // The title labels the line at its last value on the price axis, so
-          // each line is identifiable without decoding the colour.
-          title: displayName(s),
-          priceLineVisible: false,
-          lastValueVisible: true,
-          crosshairMarkerRadius: 3,
-        });
-        entry = { series };
-        seriesByTicker.set(s.ticker, entry);
-      } else {
-        entry.series.applyOptions({ color, title: displayName(s) });
+      let c = overviewCards.get(s.ticker);
+      if (!c) {
+        c = makeOverviewCard(s);
+        overviewCards.set(s.ticker, c);
       }
-      entry.series.setData(s.points.map((p) => ({ time: p.t, value: p.v })));
-      const last = s.points.length ? s.points[s.points.length - 1].v : null;
-      legend.push({ name: displayName(s), color, baseline: s.baseline, last });
+      setHead(c.root, s);
+      drawSeries(c.entry, s);
     }
-
-    // Drop series whose ticker is no longer in the payload.
-    for (const [t, entry] of seriesByTicker) {
+    for (const [t, c] of overviewCards) {
       if (!seen.has(t)) {
-        chart.removeSeries(entry.series);
-        seriesByTicker.delete(t);
+        c.entry.chart.remove();
+        c.root.remove();
+        overviewCards.delete(t);
       }
     }
-
-    chart.timeScale().fitContent();
-    renderLegend(legend);
   }
 
-  function renderLegend(items) {
-    const box = document.querySelector('[data-role="hero-legend"]');
-    if (!box) return;
-    box.innerHTML = "";
-    for (const it of items) {
-      const el = document.createElement("span");
-      el.className = "legend-item" + (it.baseline ? " legend-item--baseline" : "");
-      const sw = document.createElement("span");
-      sw.className = "legend-item__swatch";
-      sw.style.background = it.color;
-      const name = document.createElement("span");
-      name.textContent = it.name;
-      const pct = document.createElement("span");
-      pct.className = "legend-item__pct";
-      pct.textContent = it.last == null ? "" : pctFmt(it.last);
-      el.append(sw, name, pct);
-      box.appendChild(el);
-    }
+  // Watchlist cards are server-rendered shells; draw the chart into each and
+  // refresh its value/%. A card with no series (no intraday bars) keeps its
+  // server-rendered figures and simply shows no line.
+  function drawWatchlist(list) {
+    const byTicker = new Map((list || []).map((s) => [s.ticker, s]));
+    document.querySelectorAll(".watch-grid .ov-card").forEach((root) => {
+      const s = byTicker.get(root.dataset.ticker);
+      if (!s) return;
+      let c = watchCards.get(root.dataset.ticker);
+      if (!c) {
+        c = { root, entry: attachChart(root.querySelector(".ov-card__chart")) };
+        watchCards.set(root.dataset.ticker, c);
+      }
+      setHead(root, s);
+      drawSeries(c.entry, s);
+    });
   }
 
   function patchReads(r) {
@@ -209,12 +504,6 @@ export function initHero() {
         ? "Prices update during market hours " + DASH + " ET"
         : "US equities " + DASH + " all times ET",
     );
-    // Mirror the overview's cash-vs-futures state on the graph note: outside the
-    // regular session the indexes are drawn from their E-mini futures.
-    setText(
-      "overview-mode",
-      session === "regular" ? "" : " " + DASH + " index futures (off-hours)",
-    );
   }
 
   async function refresh() {
@@ -226,16 +515,12 @@ export function initHero() {
     } catch {
       return;
     }
-    drawSeries(data.series);
+    drawOverview(data.series);
+    drawWatchlist(data.watchlist);
     patchReads(data.reads);
     patchSession(data.session);
   }
 
-  // Draw immediately from stored data, then pull fresh quotes once on open (the
-  // dashboard otherwise only updates via the market-hours intraday poll, so it
-  // can look stale on open — especially after the close) and redraw. The 60s
-  // loop keeps the chart/reads live; the watchlist cards live-tick over the
-  // stream from the quotes the open refresh publishes.
   refresh();
   fetch("/api/dashboard/refresh")
     .catch(() => {})

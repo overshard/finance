@@ -192,12 +192,12 @@
   {% if stats %}
   <section class="panel chart-panel">
     <div class="chart-bar">
-      {# 1D / 1W are the intraday ranges (Phase 6): today's / the week's 15m
-         bars on a minute axis, live-ticked from the quote stream. The rest are
-         daily. A hairline after 1W sets the two groups apart. #}
+      {# Daily-candle ranges. Default 1Y. (The old 1D / 1W intraday ranges were
+         dropped — the demand-only model can't keep enough 15m bars to draw them
+         legibly; short-range detail comes from the denser-candle ranges.) #}
       <div class="range-bar">
-        {% for r in ["1D", "1W", "1M", "6M", "YTD", "1Y", "5Y", "MAX"] %}
-        <button type="button" class="range-btn{% if r == '1W' %} range-btn--group-end{% endif %}{% if r == '1Y' %} is-active{% endif %}" data-range="{{ r }}">{{ r }}</button>
+        {% for r in ["YTD", "1M", "3M", "6M", "1Y", "3Y", "5Y", "MAX"] %}
+        <button type="button" class="range-btn{% if r == '1Y' %} is-active{% endif %}" data-range="{{ r }}">{{ r }}</button>
         {% endfor %}
       </div>
       {# Filled by chart.js after each load: the % / absolute move over the
@@ -210,9 +210,9 @@
       {% for ind in [
         {"key": "sma50",  "label": "SMA 50",  "on": true,  "dot": true,  "hide": false},
         {"key": "sma200", "label": "SMA 200", "on": true,  "dot": true,  "hide": false},
-        {"key": "ema21",  "label": "EMA 21",  "on": false, "dot": true,  "hide": false},
+        {"key": "ema21",  "label": "EMA 21",  "on": true,  "dot": true,  "hide": false},
         {"key": "volume", "label": "Volume",  "on": true,  "dot": false, "hide": false},
-        {"key": "rsi",    "label": "RSI",     "on": false, "dot": true,  "hide": false},
+        {"key": "rsi",    "label": "RSI",     "on": true,  "dot": true,  "hide": false},
         {"key": "benchmark", "label": (symbol.benchmark or "Benchmark"), "on": true, "dot": true, "hide": (not symbol.benchmark)}
       ] %}
       <button type="button" class="ind-btn{% if ind.on %} is-active{% endif %}"
@@ -224,6 +224,57 @@
     </div>
     <div id="chart" data-ticker="{{ symbol.ticker }}"></div>
   </section>
+
+  {# Colour-coded read of the chart's indicators: an overall trend verdict, an
+     RSI momentum gauge, and one tile per moving-average signal. Mechanical, not
+     advice. #}
+  {% if indicators %}
+  <section class="panel ind-read">
+    <div class="ind-read__head">
+      <h2 class="ind-read__title">What the indicators say</h2>
+      <span class="ind-verdict ind-verdict--{{ indicators.verdict_tone }}">
+        <span class="ind-verdict__dot" aria-hidden="true"></span>{{ indicators.verdict }}
+        <span class="ind-verdict__note">{{ indicators.verdict_note }}</span>
+      </span>
+    </div>
+
+    {# RSI momentum gauge: a 0–100 track with oversold / overbought zones and a
+       marker at the current value, coloured by its zone. #}
+    <div class="ind-rsi ind-tone--{{ indicators.rsi_tone }}">
+      <div class="ind-rsi__top">
+        <span class="ind-rsi__label">Momentum &middot; RSI 14</span>
+        <span class="ind-rsi__verdict">{{ indicators.rsi_label }}</span>
+      </div>
+      <div class="ind-rsi__track">
+        <span class="ind-rsi__zone ind-rsi__zone--over"></span>
+        <span class="ind-rsi__zone ind-rsi__zone--under"></span>
+        <span class="ind-rsi__marker" style="left: {{ indicators.rsi_pos }}%">
+          <span class="ind-rsi__bubble num">{{ indicators.rsi|round(0)|int }}</span>
+        </span>
+      </div>
+      <div class="ind-rsi__scale">
+        <span>0</span><span>oversold 30</span><span>overbought 70</span><span>100</span>
+      </div>
+      <p class="ind-rsi__note">{{ indicators.rsi_note }}</p>
+    </div>
+
+    {# Trend signal tiles, colour-coded bullish / bearish. #}
+    <div class="ind-signals">
+      {% for sig in indicators.signals %}
+      <div class="ind-sig ind-tone--{{ sig.tone }}">
+        <div class="ind-sig__top">
+          <span class="ind-sig__label">{{ sig.label }}</span>
+          {% if sig.value %}<span class="ind-sig__value num">{{ sig.value }}</span>{% endif %}
+        </div>
+        <div class="ind-sig__status">{{ sig.status }}</div>
+        <div class="ind-sig__note">{{ sig.note }}</div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <p class="ind-read__foot">A mechanical reading of the chart&rsquo;s indicators &mdash; not investment advice.</p>
+  </section>
+  {% endif %}
 
   <h2 class="section-title">Key stats<span class="section-title__asof">as of {{ stats.date|shortdate }}</span></h2>
   <section class="keystats">

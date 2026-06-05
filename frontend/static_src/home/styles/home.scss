@@ -79,19 +79,26 @@
   font-size: var(--fs-xs);
   color: var(--ink-faint);
 }
-.hero-graph__base {
-  color: var(--ink-dim);
-  font-weight: 600;
-}
 
-.hero-graph__chart {
+/* The overview + watchlist grids: one mini chart per instrument. One column on
+   a phone, two on a tablet, three on desktop. Explicit columns (rather than
+   auto-fill) so the overview (inside the padded hero card) and the watchlist
+   (full width) both land on the same 3-up on desktop. */
+.overview-grid {
   position: relative;
-  width: 100%;
-  height: 300px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 11px;
+  min-height: 120px;
 }
-@media (min-width: $bp-sm) {
-  .hero-graph__chart {
-    height: 380px;
+@media (min-width: $bp-md) {
+  .overview-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (min-width: $bp-lg) {
+  .overview-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -105,39 +112,206 @@
   font-size: var(--fs-sm);
 }
 /* Re-assert [hidden] — the display:flex above otherwise beats the UA rule, so
-   the placeholder would linger over the drawn chart (cf. the symbol page's
+   the placeholder would linger over the drawn charts (cf. the symbol page's
    .ind-btn[hidden] fix). */
 .hero-graph__empty[hidden] {
   display: none;
 }
 
-.hero-graph__legend {
+/* ---------- one instrument's chart card (overview + watchlist) ---------- */
+.ov-card {
+  @include card;
+  position: relative;
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-1) var(--sp-3);
-  padding-top: var(--sp-1);
+  flex-direction: column;
+  gap: 10px;
+  padding: 13px 14px 10px;
+  transition: border-color 0.14s, transform 0.14s, box-shadow 0.14s;
 }
 
-.legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4em;
-  font-size: var(--fs-xs);
+/* The card's inner stack. Overview cards stack directly; watchlist cards wrap
+   the same stack in a navigating link. */
+.ov-card__link {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: inherit;
+}
+
+.ov-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.ov-card__id {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ov-card__name {
+  @include serif;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ov-card__sub {
+  font-size: var(--fs-2xs);
   color: var(--ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.legend-item--baseline {
-  font-weight: 700;
-  color: var(--ink);
-}
-.legend-item__swatch {
-  width: 14px;
-  height: 3px;
-  border-radius: 2px;
+
+.ov-card__nums {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
   flex: none;
 }
-.legend-item__pct {
+.ov-card__value {
+  font-size: var(--fs-md);
+  font-weight: 700;
+  line-height: 1;
+}
+/* The % move as a tinted pill — the card's at-a-glance good/bad signal. */
+.ov-card__chg {
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--ink-wash, rgba(33, 31, 26, 0.06));
+  color: var(--ink-dim);
+}
+.ov-card__chg.is-up {
+  color: var(--up);
+  background: var(--up-soft);
+}
+.ov-card__chg.is-down {
+  color: var(--down);
+  background: var(--down-soft);
+}
+
+.ov-card__chart {
+  position: relative;
+  width: 100%;
+  height: 156px;
+}
+
+/* ---------- watchlist card extras (link + remove) ---------- */
+.ov-card--watch:hover {
+  border-color: var(--rule-strong);
+  transform: translateY(-2px);
+  box-shadow: var(--lift-hover);
+}
+.ov-card__remove {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.05rem;
+  line-height: 1;
+  color: var(--ink-faint);
+  background: var(--surface);
+  border: 1px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+}
+.ov-card--watch:hover .ov-card__remove,
+.ov-card__remove:focus-visible {
+  opacity: 1;
+}
+.ov-card__remove:hover {
+  color: var(--down);
+  border-color: var(--down);
+}
+.ov-card__remove:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+/* Extended-hours (pre-market / after-hours / overnight) shading. A subtle,
+   non-semantic ink tint over those spans so the clear regular-session window
+   stands out. Pointer-transparent so the crosshair still reads through. The
+   bottom inset keeps the tint off the time-axis labels. */
+.ov-bands {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 22px;
+  left: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.ov-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(33, 31, 26, 0.05);
+}
+
+/* Click-drag measure tool (mirrors the symbol chart): a shaded band between two
+   bars + a readout chip with the % and value change. Both pointer-transparent. */
+.ov-measure-band {
+  position: absolute;
+  top: 0;
+  bottom: 22px;
+  z-index: 3;
+  background: rgba(33, 31, 26, 0.08);
+  border-left: 1px solid var(--rule-strong);
+  border-right: 1px solid var(--rule-strong);
+  pointer-events: none;
+}
+.ov-measure-band[hidden] {
+  display: none;
+}
+.ov-measure-readout {
+  position: absolute;
+  top: 4px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 3px 7px;
+  background: var(--surface);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--lift-hover);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.ov-measure-readout[hidden] {
+  display: none;
+}
+.ov-measure__pct {
   @include mono;
-  font-weight: 600;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+}
+.ov-measure-readout[data-dir="up"] .ov-measure__pct {
+  color: var(--up);
+}
+.ov-measure-readout[data-dir="down"] .ov-measure__pct {
+  color: var(--down);
+}
+.ov-measure__sub {
+  @include mono;
+  font-size: var(--fs-2xs);
+  color: var(--ink-faint);
 }
 
 /* ---------- headline market reads ---------- */
@@ -270,161 +444,8 @@
   font-size: var(--fs-sm);
 }
 
+/* The watchlist reuses the overview grid + chart cards (`.overview-grid` +
+   `.ov-card--watch`); it only needs the top margin under its header. */
 .watch-grid {
   margin-top: var(--sp-3);
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 11px;
-}
-@media (min-width: $bp-sm) {
-  .watch-grid {
-    grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
-  }
-}
-
-/* The watch card wraps a sparkline card (`.spark-card` styles below) in a
-   relative box so a remove button can float in its corner without nesting an
-   interactive control inside the navigating link. */
-.watch-card {
-  position: relative;
-}
-.watch-card__link {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  color: inherit;
-}
-.watch-card__remove {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 22px;
-  height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.05rem;
-  line-height: 1;
-  color: var(--ink-faint);
-  background: var(--surface);
-  border: 1px solid transparent;
-  border-radius: 50%;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
-}
-.watch-card:hover .watch-card__remove,
-.watch-card__remove:focus-visible {
-  opacity: 1;
-}
-.watch-card__remove:hover {
-  color: var(--down);
-  border-color: var(--down);
-}
-.watch-card__remove:disabled {
-  cursor: default;
-  opacity: 0.4;
-}
-
-/* ---------- shared sparkline card (also used by the live stream client) ---- */
-.spark-card {
-  @include card;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  padding: 13px 14px;
-  color: var(--ink);
-  transition: border-color 0.14s, transform 0.14s, box-shadow 0.14s;
-}
-.spark-card:hover {
-  color: var(--ink);
-  border-color: var(--rule-strong);
-  transform: translateY(-2px);
-  box-shadow: var(--lift-hover);
-}
-
-.spark-card__head {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-2);
-}
-.spark-card__sym {
-  @include mono;
-  font-weight: 700;
-  font-size: var(--fs-md);
-}
-.spark-card__name {
-  font-size: var(--fs-2xs);
-  color: var(--ink-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
-
-.spark {
-  display: block;
-  width: 100%;
-  height: 46px;
-}
-.spark__line {
-  fill: none;
-  stroke-width: 1.6;
-  stroke-linejoin: round;
-  stroke-linecap: round;
-  vector-effect: non-scaling-stroke;
-}
-.spark__area {
-  stroke: none;
-}
-.spark__base {
-  stroke: var(--ink-faint);
-  stroke-width: 1;
-  stroke-dasharray: 2 2;
-  opacity: 0.7;
-  vector-effect: non-scaling-stroke;
-}
-.is-up-card .spark__line {
-  stroke: var(--up);
-}
-.is-up-card .spark__area {
-  fill: var(--up-soft);
-}
-.is-down-card .spark__line {
-  stroke: var(--down);
-}
-.is-down-card .spark__area {
-  fill: var(--down-soft);
-}
-.spark--empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 46px;
-  color: var(--ink-faint);
-  font-size: 0.72rem;
-}
-
-.spark-card__foot {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--rule);
-}
-.spark-card__price {
-  font-size: var(--fs-md);
-  font-weight: 700;
-}
-.spark-card__chg {
-  font-size: var(--fs-sm);
-  font-weight: 700;
-}
-
-.spark-card.flash-up {
-  animation: flash-up 0.7s ease-out;
-}
-.spark-card.flash-down {
-  animation: flash-down 0.7s ease-out;
 }

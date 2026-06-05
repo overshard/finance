@@ -63,6 +63,152 @@ struct Stats {
     vol_ratio: Option<f64>,
 }
 
+/// The chart's indicators distilled into a colour-coded read: an overall
+/// trend verdict, an RSI momentum gauge, and one signal tile per moving average
+/// (where the price sits vs it) plus the 50/200 cross. Built from the daily
+/// closes; `None` until a symbol has enough history.
+#[derive(Serialize)]
+struct IndicatorRead {
+    /// Overall trend verdict ("Bullish" / "Mixed" / "Bearish") + its tone and a
+    /// one-line tally ("3 of 4 trend signals bullish").
+    verdict: String,
+    verdict_tone: String,
+    verdict_note: String,
+    /// RSI(14): the value, its 0–100 position (for the gauge), bucket label,
+    /// tone, and a plain-language verdict.
+    rsi: f64,
+    rsi_pos: f64,
+    rsi_label: String,
+    rsi_tone: String,
+    rsi_note: String,
+    /// One colour-coded tile per moving-average signal.
+    signals: Vec<IndicatorSignal>,
+}
+
+/// One signal tile: the indicator label, its current value, a short status word
+/// (Above / Below / Golden cross / …), the tone colour, and a plain meaning.
+#[derive(Serialize)]
+struct IndicatorSignal {
+    label: String,
+    value: String,
+    status: String,
+    tone: String,
+    note: String,
+}
+
+/// Build the colour-coded indicator read from the daily closes (oldest first),
+/// the current price, and whether the symbol is dollar-priced. Needs enough
+/// history for RSI(14)/EMA(21); the 50/200 averages join once they exist.
+fn build_indicator_read(closes: &[f64], price: f64, dollar: bool) -> Option<IndicatorRead> {
+    if closes.len() < 30 || price <= 0.0 {
+        return None;
+    }
+    let rsi = compute::rsi(closes, 14).last().copied().flatten()?;
+    let fmt = |v: f64| {
+        let n = format!("{v:.2}");
+        if dollar {
+            format!("${n}")
+        } else {
+            n
+        }
+    };
+
+    // RSI verdict: 70+/30- are the textbook overbought/oversold extremes; the
+    // 45–55 middle is balanced, with a "leaning" read on either side.
+    let (rsi_label, rsi_tone, rsi_note) = if rsi >= 70.0 {
+        ("Overbought", "down",
+         format!("RSI {rsi:.0} — overbought: momentum is stretched and may be due for a pullback."))
+    } else if rsi <= 30.0 {
+        ("Oversold", "up",
+         format!("RSI {rsi:.0} — oversold: selling looks stretched and may be due for a bounce."))
+    } else if rsi >= 55.0 {
+        ("Leaning bullish", "up",
+         format!("RSI {rsi:.0} — firm momentum, not yet overbought."))
+    } else if rsi <= 45.0 {
+        ("Leaning bearish", "down",
+         format!("RSI {rsi:.0} — soft momentum, not yet oversold."))
+    } else {
+        ("Neutral", "steady",
+         format!("RSI {rsi:.0} — momentum is balanced between buyers and sellers."))
+    };
+
+    let ema21 = compute::ema(closes, 21).last().copied().flatten();
+    let sma50 = compute::sma(closes, 50).last().copied().flatten();
+    let sma200 = compute::sma(closes, 200).last().copied().flatten();
+
+    // One tile per average that exists, each relating the current price to it.
+    let mut signals = Vec::new();
+    let mut bull = 0u32;
+    let mut total = 0u32;
+    let mut ma_tile = |label: &str, val: f64, span: &str| {
+        let above = price >= val;
+        if above {
+            bull += 1;
+        }
+        total += 1;
+        signals.push(IndicatorSignal {
+            label: label.to_string(),
+            value: fmt(val),
+            status: if above { "Above" } else { "Below" }.to_string(),
+            tone: if above { "up" } else { "down" }.to_string(),
+            note: format!("{span} trend is {}", if above { "up" } else { "down" }),
+        });
+    };
+    if let Some(v) = ema21 {
+        ma_tile("EMA 21", v, "Near-term");
+    }
+    if let Some(v) = sma50 {
+        ma_tile("SMA 50", v, "Medium-term");
+    }
+    if let Some(v) = sma200 {
+        ma_tile("SMA 200", v, "Long-term");
+    }
+
+    // The 50-vs-200 posture (the golden/death-cross regime).
+    if let (Some(f), Some(s)) = (sma50, sma200) {
+        let golden = f >= s;
+        if golden {
+            bull += 1;
+        }
+        total += 1;
+        signals.push(IndicatorSignal {
+            label: "50 / 200-day".to_string(),
+            value: String::new(),
+            status: if golden { "Golden cross" } else { "Death cross" }.to_string(),
+            tone: if golden { "up" } else { "down" }.to_string(),
+            note: if golden {
+                "50-day above the 200-day — bullish".to_string()
+            } else {
+                "50-day below the 200-day — bearish".to_string()
+            },
+        });
+    }
+
+    // Overall verdict from the trend tally.
+    let (verdict, verdict_tone) = if total == 0 {
+        ("No signal", "steady")
+    } else if bull == total {
+        ("Bullish", "up")
+    } else if bull == 0 {
+        ("Bearish", "down")
+    } else {
+        ("Mixed", "warn")
+    };
+    let verdict_note = format!("{bull} of {total} trend signals bullish");
+
+    Some(IndicatorRead {
+        verdict: verdict.to_string(),
+        verdict_tone: verdict_tone.to_string(),
+        verdict_note,
+        rsi,
+        rsi_pos: rsi.clamp(0.0, 100.0),
+        rsi_label: rsi_label.to_string(),
+        rsi_tone: rsi_tone.to_string(),
+        rsi_note,
+        signals,
+    })
+}
+
 /// The live quote shown in the symbol header, when one exists. The header
 /// carries `data-field` hooks, so the stream client patches these in place as
 /// fresh quotes arrive; this is just the server-rendered starting point.
@@ -1241,6 +1387,14 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         .map(|q| q.price)
         .or_else(|| stats.as_ref().map(|s| s.close));
 
+    // Plain-language read of the chart's indicators (RSI verdict + price vs each
+    // moving average), shown beneath the chart. Built from the daily closes
+    // (oldest first) against the current price; `None` without enough history.
+    let indicators = price.and_then(|p| {
+        let closes: Vec<f64> = bars.iter().rev().map(|b| b.4).collect();
+        build_indicator_read(&closes, p, symbol.kind != "index")
+    });
+
     // Stock fundamentals are loaded once and shared by the ratio cards
     // (`build_fundamentals`) and the anomaly feed's YoY detector
     // (`build_anomalies` via `models::fundamentals_anomalies`).
@@ -1500,6 +1654,7 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         title => ticker,
         symbol => symbol,
         stats => stats,
+        indicators => indicators,
         quote => quote,
         fundamentals => fundamentals,
         standing => standing,
@@ -1610,6 +1765,7 @@ fn range_cutoff(range: &str) -> Option<String> {
         "1M" => Some((today - chrono::Duration::days(31)).to_string()),
         "3M" => Some((today - chrono::Duration::days(93)).to_string()),
         "6M" => Some((today - chrono::Duration::days(186)).to_string()),
+        "3Y" => Some((today - chrono::Duration::days(1098)).to_string()),
         "5Y" => Some((today - chrono::Duration::days(1830)).to_string()),
         // 1Y is the default for any unrecognised value.
         _ => Some((today - chrono::Duration::days(366)).to_string()),

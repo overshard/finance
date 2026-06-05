@@ -19,7 +19,7 @@ use axum::{
 };
 use serde::Serialize;
 
-use crate::compute::{self, Sparkline};
+use crate::compute;
 use crate::market;
 use crate::render::render_to_string;
 use crate::{watchlist, AppState};
@@ -40,47 +40,90 @@ const VIX: &str = "^VIX";
 /// while the dashboard is open (it carries a `data-ticker`) so it stays fresh.
 const VOLUME_PROXY: &str = "SPY";
 
-/// One slot in the fixed market-overview graph (Phase E). During the **regular**
-/// session the `cash` ticker is drawn (the live cash index); outside it (pre /
-/// after-hours / closed) the `off` ticker is drawn instead — the E-mini future,
-/// which trades nearly 24h, so the overview keeps moving overnight and shows
-/// where the market is heading. Instruments that already trade ~24h (gold, crude,
-/// BTC) use the same ticker in both states.
+/// One slot in the fixed market-overview grid. Two tickers, so each card can show
+/// the full extended-hours day *and* the universally-quoted number:
+/// - `chart` draws the line. For an index this is the E-mini **future**, which
+///   trades ~24h, so the chart shows pre-market + regular + after-hours movement.
+/// - `quote` drives the headline value + %. For an index this is the **cash
+///   index** (`regularMarketPrice` vs `chartPreviousClose`) — the number every
+///   market site shows, frozen at the closing change after 4pm.
+///
+/// Instruments that already trade ~24h (gold, crude, BTC) use one ticker for both.
 struct OverviewSlot {
-    cash: &'static str,
-    off: &'static str,
+    quote: &'static str,
+    chart: &'static str,
     name: &'static str,
-    /// The S&P slot is drawn as the chart's ink baseline line.
-    baseline: bool,
+    /// Priced in dollars (gold, crude, BTC) rather than index points — drives the
+    /// `$`-vs-`pts` unit hint the per-instrument chart formats its values with.
+    dollar: bool,
 }
 
 /// The market overview: a fixed, non-editable read of "how is the whole market
-/// doing", separate from the personal watchlist (which is cards only and no
-/// longer on this graph). VIX is deliberately absent — it swings ~10x the indexes
-/// and would squash a normalized %-from-open overlay; it stays a read instead.
+/// doing", separate from the personal watchlist. Each slot is its own chart
+/// (pts for indexes, $ for gold/crude/BTC). VIX is deliberately absent — it stays
+/// a headline read.
 const OVERVIEW: &[OverviewSlot] = &[
-    OverviewSlot { cash: "^SPX", off: "ES=F", name: "S&P 500", baseline: true },
-    OverviewSlot { cash: "^DJI", off: "YM=F", name: "Dow", baseline: false },
-    OverviewSlot { cash: "^NDX", off: "NQ=F", name: "Nasdaq 100", baseline: false },
-    OverviewSlot { cash: "^RUT", off: "RTY=F", name: "Russell 2000", baseline: false },
-    OverviewSlot { cash: "GC=F", off: "GC=F", name: "Gold", baseline: false },
-    OverviewSlot { cash: "CL=F", off: "CL=F", name: "Crude Oil", baseline: false },
-    OverviewSlot { cash: "BTC-USD", off: "BTC-USD", name: "Bitcoin", baseline: false },
+    OverviewSlot { quote: "^SPX", chart: "ES=F", name: "S&P 500", dollar: false },
+    OverviewSlot { quote: "^DJI", chart: "YM=F", name: "Dow", dollar: false },
+    OverviewSlot { quote: "^NDX", chart: "NQ=F", name: "Nasdaq 100", dollar: false },
+    OverviewSlot { quote: "GC=F", chart: "GC=F", name: "Gold", dollar: true },
+    OverviewSlot { quote: "CL=F", chart: "CL=F", name: "Crude Oil", dollar: true },
+    OverviewSlot { quote: "BTC-USD", chart: "BTC-USD", name: "Bitcoin", dollar: true },
 ];
 
-/// The overview tickers + display names for `session`: cash indexes during the
-/// regular session, the E-mini futures (and the ~24h instruments) otherwise.
-fn overview_for(session: market::Session) -> Vec<(&'static str, &'static str, bool)> {
-    let regular = session == market::Session::Regular;
-    OVERVIEW
-        .iter()
-        .map(|s| (if regular { s.cash } else { s.off }, s.name, s.baseline))
-        .collect()
+/// The overview slots as (quote ticker, chart ticker, display name, dollar unit).
+fn overview() -> Vec<(&'static str, &'static str, &'static str, bool)> {
+    OVERVIEW.iter().map(|s| (s.quote, s.chart, s.name, s.dollar)).collect()
 }
 
-/// A symbol's latest session = the intraday bars within this window of its most
-/// recent bar (regular+extended spans ~16h; the prior session sits ~24h back).
-const SESSION_WINDOW_MS: i64 = 23 * 3600 * 1000;
+/// Every ticker the overview needs polled / quoted — both the quote (cash) and
+/// chart (futures) tickers, de-duplicated in slot order.
+fn overview_tickers() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for s in OVERVIEW {
+        for t in [s.quote, s.chart] {
+            if !out.contains(&t) {
+                out.push(t);
+            }
+        }
+    }
+    out
+}
+
+/// The overview charts frame exactly one Schwab trading day: extended-hours open
+/// (7:00 AM ET) through extended-hours close (8:00 PM ET), so each chart shows
+/// just that day — pre-market, the regular session, and after-hours — and never
+/// bleeds into the previous day.
+const SCHWAB_OPEN_MIN: u32 = 7 * 60; // 7:00 AM ET
+const SCHWAB_CLOSE_MIN: u32 = 20 * 60; // 8:00 PM ET
+
+/// The Schwab trading-day window [open, close] in epoch-ms for the ET calendar
+/// day that `latest_ms` falls in (so a Friday-evening view frames Friday, a
+/// weekend view still frames Friday's last session, etc.).
+fn schwab_day_window(latest_ms: i64) -> Option<(i64, i64)> {
+    use chrono::TimeZone as _;
+    use chrono_tz::America::New_York;
+    let date = New_York.timestamp_millis_opt(latest_ms).single()?.date_naive();
+    let at = |min: u32| {
+        let naive = date.and_hms_opt(min / 60, min % 60, 0)?;
+        // Pick the earlier instant on a fall-back DST repeat; both are fine here.
+        New_York
+            .from_local_datetime(&naive)
+            .earliest()
+            .map(|dt| dt.timestamp_millis())
+    };
+    Some((at(SCHWAB_OPEN_MIN)?, at(SCHWAB_CLOSE_MIN)?))
+}
+
+/// The value unit for a symbol: index points for equity indexes, dollars for
+/// everything else (stocks, ETFs, crypto, dollar-priced commodity futures).
+fn unit_for(kind: &str) -> &'static str {
+    if kind == "index" {
+        "pts"
+    } else {
+        "$"
+    }
+}
 
 /// Calendar days of daily closes to pull for the 50/200-day SMA trend read.
 const SMA_LOOKBACK_DAYS: i64 = 320;
@@ -88,17 +131,20 @@ const SMA_LOOKBACK_DAYS: i64 = 320;
 /// Volume vs its recent average: this many trading days form the baseline.
 const VOLUME_AVG_DAYS: i64 = 65;
 
-/// One card on the dashboard: a symbol's price, day move, and intraday spark.
+/// One watchlist card shell, server-rendered for the initial paint, the symbol
+/// link, and the remove button. The Schwab-day chart + the live value/% are then
+/// drawn into it by `hero.js` from `/api/dashboard` (the same treatment as the
+/// overview cards), so a watchlist card and an overview card look identical.
 #[derive(Serialize, Clone)]
 struct SparkCard {
     ticker: String,
     name: String,
     price: Option<f64>,
     change_pct: Option<f64>,
-    /// Sparkline geometry, `None` until the symbol has intraday bars.
-    spark: Option<Sparkline>,
     /// Colour hook: true when the day's change is not negative (or unknown).
     up: bool,
+    /// "$" for dollar-priced symbols (stocks/ETFs/crypto), "pts" for indexes.
+    unit: &'static str,
 }
 
 /// The dashboard's headline market reads, server-rendered and then refreshed by
@@ -123,14 +169,28 @@ struct MarketReads {
     asof: Option<i64>,
 }
 
-/// One overlaid line on the day graph: a symbol's intraday move as % from the
-/// session's open, on a shared time axis.
+/// One instrument's own chart in the overview grid: its latest session's actual
+/// values (index points or dollars) on its own axis, plus the headline figures
+/// the card shows above the chart (last value + % change from the open).
 #[derive(Serialize)]
 struct Series {
     ticker: String,
     name: String,
-    /// True for the S&P baseline (drawn distinctly).
-    baseline: bool,
+    /// "$" for dollar-priced instruments (gold, crude, BTC), "pts" otherwise.
+    unit: &'static str,
+    /// The session's first-bar open — the chart's reference line and the % base.
+    base: f64,
+    /// The latest value (the card's headline figure).
+    last: f64,
+    /// % change from `base` (the day move shown beside the value).
+    change_pct: f64,
+    /// True when the day move is not negative — drives the green/red line colour.
+    up: bool,
+    /// UNIX seconds bounding the Schwab trading-day frame (extended-hours open
+    /// and close). The chart always spans exactly this one day, so a partial day
+    /// plots from the left rather than stretching across the width.
+    start_t: i64,
+    end_t: i64,
     points: Vec<SeriesPoint>,
 }
 
@@ -138,7 +198,7 @@ struct Series {
 struct SeriesPoint {
     /// UNIX seconds (lightweight-charts wants seconds, not ms).
     t: i64,
-    /// Percent change from the session's first bar.
+    /// The bar's actual close value (index points or dollars).
     v: f64,
 }
 
@@ -147,7 +207,11 @@ struct SeriesPoint {
 struct DashboardData {
     session: String,
     reads: MarketReads,
+    /// The fixed market-overview charts.
     series: Vec<Series>,
+    /// The session's watchlist, drawn with the same per-instrument chart
+    /// treatment as the overview (Schwab day, shading, % vs prev close).
+    watchlist: Vec<Series>,
 }
 
 async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -162,13 +226,10 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let reads = market_reads(&state).await;
     let market_session = market::session_at(chrono::Utc::now());
 
-    // The overview tickers for this session, rendered as hidden `data-ticker`
+    // The overview tickers (both cash + futures), rendered as hidden `data-ticker`
     // nodes so the live stream registers them with the interest registry and the
     // demand-driven intraday poll keeps their bars fresh while the page is open.
-    let overview_tickers: Vec<&str> = overview_for(market_session)
-        .into_iter()
-        .map(|(t, _, _)| t)
-        .collect();
+    let overview_tickers: Vec<&str> = overview_tickers();
 
     let extra = minijinja::context! {
         title => "Markets",
@@ -196,22 +257,31 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response {
     }
 }
 
-/// `GET /api/dashboard` — the day graph series + the market reads, polled by the
-/// page (~every minute) so the chart and reads stay live without a reload. The
-/// series are normalized %-from-open so the watchlist and the S&P baseline share
-/// one axis (the TradingView/Google "compare" shape).
-async fn dashboard_api(State(state): State<AppState>) -> Response {
-    // No session needed: the overview is fixed, not per-browser. (The watchlist
-    // cards live-tick over the base stream; they are not on this graph.)
+/// `GET /api/dashboard` — the per-instrument overview series + the market reads,
+/// polled by the page (~every minute) so the charts and reads stay live without a
+/// reload. Each series carries its own actual values (points or dollars) plus its
+/// last value and % change from the open; the page draws one chart per series.
+async fn dashboard_api(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let market_session = market::session_at(chrono::Utc::now());
 
-    // The market-overview set for this session: cash indexes during the regular
-    // session, the E-mini futures otherwise. The baseline (S&P) leads.
-    let overview = overview_for(market_session);
-    let mut series = Vec::with_capacity(overview.len());
-    for (ticker, name, baseline) in overview {
-        if let Some(s) = pct_series(&state, ticker, name, baseline).await {
+    // The fixed market-overview set. The S&P slot leads.
+    let slots = overview();
+    let mut series = Vec::with_capacity(slots.len());
+    for (quote, chart, name, dollar) in slots {
+        if let Some(s) = overview_series(&state, quote, chart, name, dollar).await {
             series.push(s);
+        }
+    }
+
+    // The session's watchlist, drawn with the same chart treatment as the
+    // overview. Each is a single-ticker series (the symbol is both quote + chart;
+    // stocks/ETFs carry their own pre/post bars via Yahoo's includePrePost).
+    let session = watchlist::resolve(&state.pool, &headers).await;
+    let wl = watchlist::list(&state.pool, &session.sid).await;
+    let mut watchlist = Vec::with_capacity(wl.len());
+    for t in &wl {
+        if let Some(s) = watchlist_series(&state, t).await {
+            watchlist.push(s);
         }
     }
 
@@ -219,9 +289,25 @@ async fn dashboard_api(State(state): State<AppState>) -> Response {
         session: market_session.as_str().to_string(),
         reads: market_reads(&state).await,
         series,
+        watchlist,
     };
 
     Json(data).into_response()
+}
+
+/// One watchlist symbol as a chart series, identical in shape to an overview
+/// slot: the symbol is its own quote + chart ticker, with the unit (points for an
+/// index, dollars otherwise) read off its kind.
+async fn watchlist_series(state: &AppState, ticker: &str) -> Option<Series> {
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT name, kind FROM symbols WHERE ticker = ?")
+            .bind(ticker)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
+    let (name, kind) = row?;
+    overview_series(state, ticker, ticker, &name, unit_for(&kind) == "$").await
 }
 
 /// `GET /api/dashboard/refresh` — the dashboard's on-open refresh. Pulls fresh
@@ -234,7 +320,7 @@ async fn dashboard_refresh(State(state): State<AppState>, headers: HeaderMap) ->
     // The watchlist cards, the session's overview symbols, and the VIX / volume
     // reads — everything the open dashboard shows gets a fresh quote.
     let mut tickers = watchlist::list(&state.pool, &session.sid).await;
-    for (t, _, _) in overview_for(market::session_at(chrono::Utc::now())) {
+    for t in overview_tickers() {
         tickers.push(t.to_string());
     }
     for b in [VIX, VOLUME_PROXY] {
@@ -262,42 +348,87 @@ fn session_label(s: market::Session) -> &'static str {
     }
 }
 
-/// Build one symbol's normalized intraday series: its latest session's 15-minute
-/// bars as % change from the session's first bar's open. `None` when the symbol
-/// has no intraday bars (e.g. never polled, or a holiday).
-async fn pct_series(state: &AppState, ticker: &str, name: &str, baseline: bool) -> Option<Series> {
+/// Build one slot's overview chart over a single Schwab trading day (extended
+/// open through extended close, framed by `start_t`/`end_t`). The **line** is the
+/// `chart` ticker's 15-minute bars (the future, so pre-market + regular +
+/// after-hours all show), while the headline **value + %** come from the `quote`
+/// ticker (the cash index, the universally-quoted number). `None` when the chart
+/// ticker has no intraday bars (e.g. never polled, or a holiday).
+async fn overview_series(
+    state: &AppState,
+    quote_ticker: &str,
+    chart_ticker: &str,
+    name: &str,
+    dollar: bool,
+) -> Option<Series> {
+    // Anchor to the Schwab day that the chart ticker's most recent bar falls in,
+    // so the chart shows just that one day and never the previous one.
+    let latest_ms: i64 =
+        sqlx::query_scalar("SELECT MAX(ts) FROM intraday_bars WHERE ticker = ?")
+            .bind(chart_ticker)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten()
+            .flatten()?;
+    let (start_ms, end_ms) = schwab_day_window(latest_ms)?;
+
     let rows: Vec<(i64, f64, f64)> = sqlx::query_as(
         "SELECT ts, open, close FROM intraday_bars \
-         WHERE ticker = ? \
-           AND ts >= (SELECT MAX(ts) FROM intraday_bars WHERE ticker = ?) - ? \
+         WHERE ticker = ? AND ts >= ? AND ts <= ? \
          ORDER BY ts",
     )
-    .bind(ticker)
-    .bind(ticker)
-    .bind(SESSION_WINDOW_MS)
+    .bind(chart_ticker)
+    .bind(start_ms)
+    .bind(end_ms)
     .fetch_all(&state.pool)
     .await
     .unwrap_or_default();
 
-    // Base off the first bar's open; fall back to its close if open is zero.
-    let base = rows.first().map(|r| if r.1 > 0.0 { r.1 } else { r.2 })?;
+    // Headline value + % come from the QUOTE ticker, exactly as every market site
+    // shows it: the latest price (`last_price` = Yahoo's regularMarketPrice)
+    // against the previous close (`prev_close` = chartPreviousClose). For the
+    // cash indexes this is the universally-quoted number — live during the
+    // session, frozen at the closing change after the close. `prev_close` is also
+    // the chart's dashed reference line. Both fall back to stored daily closes.
+    let quote: Option<(Option<f64>, Option<f64>)> = sqlx::query_as(
+        "SELECT \
+           COALESCE(s.last_price, \
+             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1)), \
+           COALESCE(s.prev_close, \
+             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1 OFFSET 1)) \
+         FROM symbols s WHERE s.ticker = ?",
+    )
+    .bind(quote_ticker)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten();
+    let (last_price, prev_close) = quote.unwrap_or((None, None));
+
+    // Last value: the quote price, else the last drawn bar's close.
+    let last = last_price.or_else(|| rows.last().map(|r| r.2))?;
+    // Reference: the previous close, else the session's first-bar open.
+    let open = rows.first().map(|r| if r.1 > 0.0 { r.1 } else { r.2 });
+    let base = prev_close.filter(|p| *p > 0.0).or(open)?;
     if base <= 0.0 {
         return None;
     }
     let points: Vec<SeriesPoint> = rows
         .iter()
-        .map(|(ts, _open, close)| SeriesPoint {
-            t: ts / 1000,
-            v: (close / base - 1.0) * 100.0,
-        })
+        .map(|(ts, _open, close)| SeriesPoint { t: ts / 1000, v: *close })
         .collect();
-    if points.is_empty() {
-        return None;
-    }
+    let change_pct = (last / base - 1.0) * 100.0;
     Some(Series {
-        ticker: ticker.to_string(),
+        ticker: quote_ticker.to_string(),
         name: name.to_string(),
-        baseline,
+        unit: if dollar { "$" } else { "pts" },
+        base,
+        last,
+        change_pct,
+        up: change_pct >= 0.0,
+        start_t: start_ms / 1000,
+        end_t: end_ms / 1000,
         points,
     })
 }
@@ -412,18 +543,19 @@ async fn last_and_prev(state: &AppState, ticker: &str) -> Option<(Option<f64>, O
     .flatten()
 }
 
-/// Build a sparkline card per ticker, in order: current price, the day's change,
-/// and a sparkline of the latest session's bars. A ticker the universe does not
-/// hold is skipped.
+/// Build a watchlist card shell per ticker, in order: ticker, name, current
+/// price, the day's change (vs prev close), and the points/dollars unit. The
+/// chart itself is drawn client-side from `/api/dashboard`. A ticker the universe
+/// does not hold is skipped.
 async fn spark_cards_for(state: &AppState, tickers: &[&str]) -> Vec<SparkCard> {
     if tickers.is_empty() {
         return Vec::new();
     }
     // One query for the price rows; the `IN` placeholder count matches `tickers`.
-    type SparkRow = (String, String, Option<f64>, Option<f64>);
+    type SparkRow = (String, String, String, Option<f64>, Option<f64>);
     let placeholders = vec!["?"; tickers.len()].join(",");
     let sql = format!(
-        "SELECT s.ticker, s.name, \
+        "SELECT s.ticker, s.name, s.kind, \
            COALESCE(s.last_price, \
              (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1)), \
            COALESCE(s.prev_close, \
@@ -440,23 +572,9 @@ async fn spark_cards_for(state: &AppState, tickers: &[&str]) -> Vec<SparkCard> {
 
     let mut cards = Vec::with_capacity(tickers.len());
     for &t in tickers {
-        let Some((ticker, name, last, prev)) = by_ticker.remove(t) else {
+        let Some((ticker, name, kind, last, prev)) = by_ticker.remove(t) else {
             continue;
         };
-        // The latest session's intraday closes, oldest first.
-        let closes: Vec<f64> = sqlx::query_scalar(
-            "SELECT close FROM intraday_bars \
-             WHERE ticker = ? \
-               AND ts >= (SELECT MAX(ts) FROM intraday_bars WHERE ticker = ?) - ? \
-             ORDER BY ts",
-        )
-        .bind(&ticker)
-        .bind(&ticker)
-        .bind(SESSION_WINDOW_MS)
-        .fetch_all(&state.pool)
-        .await
-        .unwrap_or_default();
-
         let change_pct = match (last, prev) {
             (Some(l), Some(p)) => Some(compute::change(l, p).pct),
             _ => None,
@@ -466,8 +584,8 @@ async fn spark_cards_for(state: &AppState, tickers: &[&str]) -> Vec<SparkCard> {
             name,
             price: last,
             change_pct,
-            spark: compute::sparkline(&closes, prev),
             up: change_pct.map_or(true, |p| p >= 0.0),
+            unit: unit_for(&kind),
         });
     }
     cards

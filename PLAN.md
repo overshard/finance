@@ -32,9 +32,88 @@ commit + auto-deploy (`git push server master`) and a clean breakpoint.
 
 ## Status
 
-_Last updated: 2026-06-04 (Phases A-E all done + deployed. Phases A-D shipped in
-`818cf58`; **Phase E — market-overview graph — committed + deployed** this round
-per new user direction.)_
+_Last updated: 2026-06-04 (**Phase F — overview split into per-instrument charts
++ symbol-page chart upgrades — done & verified on dev, uncommitted.** Phases A-E
+previously shipped; A-D in `818cf58`, E committed+deployed.)_
+
+Phase F outcome (per-instrument overview + symbol chart upgrades), all verified on
+dev (cargo + vite clean, zero warnings, zero console errors, desktop + mobile):
+- **Overview is now one chart per instrument**, not a single normalized overlay.
+  `/api/dashboard` returns, per instrument, its actual values (index points or
+  dollars), the last value, the % change, and the Schwab-day frame bounds;
+  `home/scripts/hero.js` builds a grid of small interactive lightweight-charts
+  (own axis, hover crosshair, no pan/zoom), each header showing the live value +
+  coloured % change. Line is **semantic green/red by day direction**.
+- **Overview set trimmed to 6** (dropped Russell 2000 per user): S&P, Dow,
+  Nasdaq 100, Gold, Crude, Bitcoin. Grid is **3-up on desktop** (auto-fill
+  minmax 260px), 1-up on mobile.
+- **Index slots are a HYBRID — futures line + cash headline.** Each
+  `OverviewSlot` now carries two tickers: the **chart** ticker (the E-mini
+  future, e.g. `ES=F`) draws the line, so the chart shows the full Schwab day —
+  pre-market + regular + after-hours movement; the **quote** ticker (the cash
+  index, e.g. `^SPX`) drives the headline value + %, taken from the quote
+  (`last_price`/`regularMarketPrice` vs `prev_close`/`chartPreviousClose`) so the
+  number matches every market site (e.g. S&P 500 +0.41% = 7584.31 / 7553.68). The
+  dashed reference line is the cash prev close. Gold/Crude/BTC use one ticker for
+  both (genuinely 24h). `overview_tickers()` returns both cash+futures so the
+  hidden interest nodes + `/api/dashboard/refresh` poll/refresh both.
+  - *Why hybrid:* "+0.41% (frozen cash close)" and "shows after-hours movement"
+    are mutually exclusive on one instrument — the cash index stops printing at
+    4pm. The futures line gives the movement; the cash quote gives the universal
+    number. On a big futures-vs-cash-basis day the line and headline can tell
+    slightly different stories, which the user accepted to "see all of it".
+- **% change is vs the previous close** (`chartPreviousClose`), which is also the
+  chart's dashed reference line. Note copy: "live value & % change vs prev close"
+  (dropped the "index futures (off-hours)" mode tag).
+- **Each chart frames exactly one Schwab trading day** — extended-hours open
+  (7:00 AM ET) through close (8:00 PM ET) of the most recent session, never the
+  previous day. `overview_series` anchors to the ET date of the latest bar via
+  `schwab_day_window()` and queries only that window; the frontend pads
+  whitespace before/after so a partial day plots from the left.
+- **Pre-market / after-hours are shaded** on each chart (a subtle neutral ink
+  band over <9:30 and ≥16:00 ET), leaving the regular session clear so the main
+  moves stand out. Drawn as pointer-transparent overlay bands, repositioned on
+  relayout.
+- **Time axis is 12-hour AM/PM** (tick + crosshair formatters), never 24-hour.
+- **Symbol page:** range buttons are now **YTD 1M 3M 6M 1Y 3Y 5Y MAX (default
+  1Y)** — the old 1D/1W intraday ranges were dropped (the demand-only model can't
+  keep enough 15m bars to draw them legibly). **EMA 21 and RSI now default ON**
+  (with SMA 50/200, Volume). Added the `3Y` cutoff.
+- **Indicator interpretation blurb under the symbol chart** (`build_indicator_read`
+  → `indicators` ctx → `templates/pages/symbol.html`): a direct RSI
+  overbought/oversold/neutral verdict (with a leaning-bullish/bearish middle),
+  then one plain-language line per moving average (price vs the 21-day EMA / 50-
+  / 200-day average, each green/red), and the 50-vs-200 golden/death-cross
+  posture. Closes with a "mechanical reading, not advice" note.
+- **Watchlist == overview cards.** The watchlist now uses the *same*
+  per-instrument chart card as the overview (Schwab-day frame, pre/after shading,
+  % vs prev close, AM/PM axis). `/api/dashboard` gained a `watchlist` array of the
+  same `Series` shape (single-ticker; unit from kind via `unit_for`); the
+  server still renders the card shells (link + remove + initial value/%), and
+  `hero.js` draws the chart + refreshes the figures into them. The old
+  `SparkCard` SVG sparkline + `compute::sparkline` were removed.
+- **Card design polish (cohesion).** Unified `ov-card` for both grids:
+  refined header (name/ticker + right-aligned value + a colour-coded **% pill**),
+  an **area fill** under the line (up/down soft tint, matching the Paper Ledger
+  spark aesthetic), softer grid/axis, hover lift on watchlist cards.
+- **Drag-to-measure on the home charts.** Ported the symbol chart's click-drag
+  measure gesture (shaded band + readout chip with % and value change between two
+  bars) to every overview + watchlist mini chart; snaps to real bars, and a drag
+  on a watchlist card suppresses its navigation click.
+- **Indicator blurb redesigned** (symbol page). `build_indicator_read` now
+  returns an overall **trend verdict** (Bullish/Mixed/Bearish + tally), an **RSI
+  gauge** (0–100 track with oversold/overbought zones + a coloured marker), and
+  colour-coded **signal tiles** (EMA 21 / SMA 50 / SMA 200 / 50-200 cross), each
+  green/red by bullish/bearish. Replaces the plain bulleted list.
+- **Git:** added the GitHub `origin` remote `git@github.com:overshard/finance.git`
+  (SSH, matching the sibling projects). Not pushed.
+
+Phase F still open — **denser candles for short ranges (1M / 3M)**, see Roadmap
+"Phase G" below. The user wants finer-than-daily candles on the short ranges
+(daily gives only ~20 bars at 1M, ~63 at 3M, which they find too sparse). This
+needs a new Yahoo intraday/hourly fetch + storage and is deferred for a design
+call (see the Decisions log entry) rather than built unsupervised, given the
+strict rate-limit policy.
 
 Phase E outcome (market-overview graph, split from the watchlist):
 - **Top graph is now a fixed, session-aware market overview**, not the watchlist.
@@ -537,6 +616,30 @@ pluralization. (Industries links were already removed in Phase A; the loading ba
 market-hours banner, and mobile hierarchy landed in Phases B/C.) See the Status
 block above for the full outcome. **This completes the demand-only roadmap.**
 
+### Phase F — Per-instrument overview + symbol chart upgrades  ✅ DONE on dev (uncommitted)
+Split the single normalized overview overlay into one actual-value chart per
+instrument; upgrade the symbol page's ranges, default indicators, and add an
+indicator-interpretation blurb. See the Status block above for the full outcome.
+
+### Phase G — Denser candles for short ranges (1M / 3M)  ⏳ DEFERRED (needs a design call)
+The user finds daily candles too sparse under ~6 months (1M ≈ 20 bars, 3M ≈ 63);
+they want finer-than-daily candles there. (The old broken 1D/1W intraday ranges
+were already removed in Phase F.)
+- **Source:** Yahoo `v8/finance/chart?interval=1h` (hourly bars, allowed up to a
+  ~730-day range) — one guarded call covers up to ~3 months of hourly candles
+  (~450 bars at 3M, ~150 at 1M). Finer intervals (15m/5m) only reach 60/60 days.
+- **Plan (recommended):** fetch hourly on demand through the `yahoo` guard (only
+  when a symbol is viewed and its hourly data is stale), store in a new
+  `hourly_bars` table (retention ~120d, pruned), and have `history_api` serve 1M
+  and 3M from it as intraday (UNIX-seconds) candles. **Keep the daily SMA/EMA/RSI
+  overlays** by plotting their daily points (converted to UNIX-seconds) over the
+  hourly candles, so the dense candles and the meaningful *daily* indicators
+  coexist (no conflict with the Phase F "EMA 21 + RSI default on" + blurb).
+- **Why deferred:** it adds a new outbound fetch type + table + scheduler step,
+  and the user considers *never hitting a rate limit* critical, so the interval
+  choice, retention, and guard-budget impact are a design call worth confirming
+  before building. Surfaced to the user; ready to execute on their go-ahead.
+
 ### Backlog / parked
 - Named multiple watchlists (only a single session list is planned for now).
 - A "popular non-S&P" quick-add set on the dashboard, if the curated catalog feels
@@ -548,6 +651,41 @@ block above for the full outcome. **This completes the demand-only roadmap.**
 ---
 
 ## Decisions log
+
+**2026-06-04 — Phase F: per-instrument overview + symbol chart upgrades.** Living
+with the single normalized overview overlay, the user found "everything on one
+normalized graph" confusing and wanted each instrument as its own chart showing
+its **actual value** (points / dollars) alongside the %. Decisions made this
+round (mostly via rapid iteration):
+1. **One interactive chart per instrument** (chosen over compact spark cards),
+   each its own axis + hover crosshair, **green/red line by day direction**.
+2. **% is vs the previous close** (not the session open); prev close is also the
+   dashed reference line. **Index slots are a hybrid:** the chart line is the
+   E-mini **future** (so pre/regular/after-hours all show — the user wanted to
+   "see all of it"), while the headline value + % are the **cash index** quote
+   (`regularMarketPrice` vs `chartPreviousClose`) so the number matches everyone
+   (S&P 500 +0.41% = `^GSPC` 7584.31/7553.68). Resolution of a back-and-forth:
+   first vs-open → vs-prev-close; then cash-only (matched +0.41% but lost
+   pre/post); then this hybrid (both). The unavoidable truth surfaced to the
+   user: the frozen +0.41% *is* frozen because cash stops at 4pm, so showing
+   after-hours movement means the line (futures) can diverge from the headline
+   (cash) on big-basis days. Gold/Crude/BTC stay single-ticker 24h.
+3. **Each chart frames exactly one Schwab day** = regular + extended hours
+   (7:00 AM–8:00 PM ET) of the most recent session, never the previous day.
+   (Earlier tried a rolling window / 24h frame; the user corrected both: "1 full
+   day = Schwab normal + extended hours, not anything else", and "don't show the
+   previous day".)
+4. **Shade pre-market + after-hours**, leave the regular session clear.
+5. **12-hour AM/PM** time axis, never 24-hour.
+6. **Dropped Russell 2000**; overview is 6 instruments, **3-up on desktop** (the
+   user vetoed 2-up).
+7. **Symbol page:** ranges **YTD 1M 3M 6M 1Y 3Y 5Y MAX, default 1Y**; **EMA 21 +
+   RSI default on**; dropped the 1D/1W intraday ranges.
+8. **Indicator blurb under the symbol chart:** a direct RSI verdict +
+   plain-language price-vs-MA lines + the golden/death-cross posture.
+Also added the GitHub `origin` SSH remote. **Deferred** the "denser candles for
+1M/3M" ask to Phase G (a data-layer change touching the rate-limit-critical
+path — see the Roadmap entry) rather than build it unsupervised.
 
 **2026-06-04 — Phase E: split the dashboard into a market overview + a separate
 watchlist.** The user wanted the top graph to read "how is the whole market

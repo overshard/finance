@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Markets{% endblock %}
-{% block description %}A live market overview — the major indexes, gold, crude, and bitcoin normalized for the day (index futures off-hours) — plus your personal watchlist.{% endblock %}
+{% block description %}A live market overview — the major indexes, gold, crude, and bitcoin, each its own day chart — plus your personal watchlist.{% endblock %}
 {% block extra_css %}<link rel="stylesheet" href="{{ vite_asset('static_src/home/index.js', 'css') }}">{% endblock %}
 
 {% block main %}
@@ -14,19 +14,19 @@
     <span class="dash-banner__sub" data-role="session-note">{% if session == 'closed' %}Prices update during market hours &middot; ET{% else %}US equities &middot; all times ET{% endif %}</span>
   </div>
 
-  {# The market-overview graph: the major indexes + gold, crude and bitcoin, each
-     as % change from today's open, on one axis. Cash indexes during the regular
-     session, the E-mini futures off-hours. Drawn by hero.js from /api/dashboard;
-     this is its mount point and a no-JS fallback line. #}
+  {# The market overview: one chart per instrument (the major indexes + gold,
+     crude and bitcoin), each on its own axis showing the day's actual values
+     (points or dollars) with its live value + % change from the open. Cash
+     indexes during the regular session, the E-mini futures off-hours. hero.js
+     builds the cards into the grid from /api/dashboard; this is its mount point. #}
   <section class="hero-graph">
     <div class="hero-graph__head">
       <h1 class="hero-graph__title">Market overview</h1>
-      <span class="hero-graph__note">% change from the open<span class="hero-graph__mode" data-role="overview-mode">{% if session != 'regular' %} &middot; index futures (off-hours){% endif %}</span></span>
+      <span class="hero-graph__note">live value &amp; % change vs prev close</span>
     </div>
-    <div class="hero-graph__chart" data-role="hero-chart">
+    <div class="overview-grid" data-role="overview-grid">
       <p class="hero-graph__empty" data-role="hero-empty">Loading today&rsquo;s session&hellip;</p>
     </div>
-    <div class="hero-graph__legend" data-role="hero-legend"></div>
   </section>
 
   {# Overview symbols as hidden data-ticker nodes: the live stream registers them
@@ -76,35 +76,27 @@
     <p class="watch-msg" data-role="watch-msg" role="status" hidden></p>
 
     {% if cards %}
-    <div class="watch-grid">
+    {# Same chart-card shell as the overview. data-ticker registers the symbol
+       with the live stream (so its intraday bars stay polled); hero.js draws the
+       Schwab-day chart + refreshes the value/% from /api/dashboard. The remove
+       button sits outside the link so the whole card stays navigable. #}
+    <div class="overview-grid watch-grid">
       {% for c in cards %}
-      {# data-ticker drives the live stream; the `spark-card` class lets the base
-         client repaint the sparkline tip on each quote. The remove button sits
-         outside the link so the whole card stays navigable. #}
-      <div class="watch-card spark-card{% if c.up %} is-up-card{% else %} is-down-card{% endif %}" data-ticker="{{ c.ticker }}">
-        <a class="watch-card__link" href="/s/{{ c.ticker|urlencode }}">
-          <div class="spark-card__head">
-            <span class="spark-card__sym">{{ c.ticker }}</span>
-            <span class="spark-card__name">{{ c.name }}</span>
+      <div class="ov-card ov-card--watch" data-ticker="{{ c.ticker }}" data-unit="{{ c.unit }}">
+        <a class="ov-card__link" href="/s/{{ c.ticker|urlencode }}">
+          <div class="ov-card__head">
+            <div class="ov-card__id">
+              <span class="ov-card__name">{{ c.ticker }}</span>
+              <span class="ov-card__sub">{{ c.name }}</span>
+            </div>
+            <div class="ov-card__nums">
+              <span class="ov-card__value num">{{ c.price|money }}</span>
+              <span class="ov-card__chg num {% if c.change_pct is none %}is-flat{% elif c.change_pct >= 0 %}is-up{% else %}is-down{% endif %}">{{ c.change_pct|pct }}</span>
+            </div>
           </div>
-          {% if c.spark %}
-          <svg class="spark" viewBox="0 0 100 36" preserveAspectRatio="none"
-               data-lo="{{ c.spark.lo }}" data-hi="{{ c.spark.hi }}" aria-hidden="true">
-            <polygon class="spark__area" points="{{ c.spark.area }}"/>
-            {% if c.spark.baseline is not none %}
-            <line class="spark__base" x1="0" x2="100" y1="{{ c.spark.baseline }}" y2="{{ c.spark.baseline }}"/>
-            {% endif %}
-            <polyline class="spark__line" points="{{ c.spark.line }}"/>
-          </svg>
-          {% else %}
-          <div class="spark spark--empty">no intraday data</div>
-          {% endif %}
-          <div class="spark-card__foot">
-            <span class="spark-card__price num" data-field="price">{{ c.price|money }}</span>
-            <span class="spark-card__chg num{% if c.change_pct is none %} is-flat{% elif c.change_pct >= 0 %} is-up{% else %} is-down{% endif %}" data-field="change_pct">{{ c.change_pct|pct }}</span>
-          </div>
+          <div class="ov-card__chart"></div>
         </a>
-        <button class="watch-card__remove" type="button" data-remove data-ticker="{{ c.ticker }}" aria-label="Remove {{ c.ticker }} from watchlist" title="Remove">&times;</button>
+        <button class="ov-card__remove" type="button" data-remove data-ticker="{{ c.ticker }}" aria-label="Remove {{ c.ticker }} from watchlist" title="Remove">&times;</button>
       </div>
       {% endfor %}
     </div>
