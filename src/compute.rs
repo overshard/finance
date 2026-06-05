@@ -443,6 +443,91 @@ fn rsi_from(avg_gain: f64, avg_loss: f64) -> f64 {
     100.0 - 100.0 / (1.0 + rs)
 }
 
+/// One Supertrend bar: the band value to plot and which side of price it sits
+/// on. `up` is an uptrend — the band is trailing *below* price as support;
+/// `!up` is a downtrend, the band riding *above* price as resistance. The line
+/// flips sides when price closes through it, which is the whole signal.
+#[derive(Debug, Clone, Copy)]
+pub struct SuperTrend {
+    pub value: f64,
+    pub up: bool,
+}
+
+/// The standard Supertrend defaults: a 10-bar ATR scaled by 3. Used by both the
+/// chart overlay and the symbol page's indicator read so the two always agree.
+pub const SUPERTREND_PERIOD: usize = 10;
+pub const SUPERTREND_MULT: f64 = 3.0;
+
+/// Supertrend over `period` bars at `mult`× ATR (classically 10 / 3.0). An
+/// ATR-banded trend follower: a single line that trails below price in an
+/// uptrend and above it in a downtrend, flipping when a close breaks through.
+/// Takes parallel high / low / close slices (oldest first) and returns one
+/// `Option<SuperTrend>` per bar — `None` until the ATR has warmed up — so the
+/// caller aligns it to the bar list by index like the other indicators.
+///
+/// ATR uses Wilder smoothing (matching `rsi`), and the bands carry forward with
+/// the standard rule: each final band only tightens toward price unless the
+/// prior close pierced it, which keeps the line from whipping on a quiet bar.
+pub fn supertrend(highs: &[f64], lows: &[f64], closes: &[f64], period: usize, mult: f64) -> Vec<Option<SuperTrend>> {
+    let n = closes.len();
+    let mut out = vec![None; n];
+    // Need `period` true ranges (each from a bar and its predecessor) to seed
+    // the ATR, so the first reading lands at index `period`.
+    if period == 0 || n <= period {
+        return out;
+    }
+    // True range at bar `i`: the greatest of today's span and the two gaps to
+    // yesterday's close. `i == 0` has no predecessor, so it is the bar span.
+    let tr = |i: usize| -> f64 {
+        let hl = highs[i] - lows[i];
+        if i == 0 {
+            return hl;
+        }
+        hl.max((highs[i] - closes[i - 1]).abs())
+            .max((lows[i] - closes[i - 1]).abs())
+    };
+    let hl2 = |i: usize| (highs[i] + lows[i]) / 2.0;
+
+    // Wilder-seeded ATR: the mean of the first `period` true ranges, then
+    // smoothed one bar at a time.
+    let mut atr = (1..=period).map(tr).sum::<f64>() / period as f64;
+    let mut final_upper = hl2(period) + mult * atr;
+    let mut final_lower = hl2(period) - mult * atr;
+    // Seed the trend from where the close sits in its first band: above the
+    // upper band reads as an uptrend, otherwise a downtrend.
+    let mut up = closes[period] > final_upper;
+    let mut st = if up { final_lower } else { final_upper };
+    out[period] = Some(SuperTrend { value: st, up });
+
+    for i in period + 1..n {
+        atr = (atr * (period as f64 - 1.0) + tr(i)) / period as f64;
+        let basic_upper = hl2(i) + mult * atr;
+        let basic_lower = hl2(i) - mult * atr;
+        // A final band only moves toward price unless the *prior* close pierced
+        // it, in which case it resets to the fresh basic band.
+        final_upper = if basic_upper < final_upper || closes[i - 1] > final_upper {
+            basic_upper
+        } else {
+            final_upper
+        };
+        final_lower = if basic_lower > final_lower || closes[i - 1] < final_lower {
+            basic_lower
+        } else {
+            final_lower
+        };
+        // Stay in the current trend until a close crosses the trailing band;
+        // then flip to the opposite band.
+        up = if up {
+            closes[i] >= final_lower
+        } else {
+            closes[i] > final_upper
+        };
+        st = if up { final_lower } else { final_upper };
+        out[i] = Some(SuperTrend { value: st, up });
+    }
+    out
+}
+
 fn earnings_growth(net_income: Option<f64>, prev_net_income: Option<f64>) -> Ratio {
     const KEY: &str = "earnings_growth";
     const LABEL: &str = "Earnings growth";

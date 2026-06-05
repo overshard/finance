@@ -99,7 +99,13 @@ struct IndicatorSignal {
 /// Build the colour-coded indicator read from the daily closes (oldest first),
 /// the current price, and whether the symbol is dollar-priced. Needs enough
 /// history for RSI(14)/EMA(21); the 50/200 averages join once they exist.
-fn build_indicator_read(closes: &[f64], price: f64, dollar: bool) -> Option<IndicatorRead> {
+fn build_indicator_read(
+    highs: &[f64],
+    lows: &[f64],
+    closes: &[f64],
+    price: f64,
+    dollar: bool,
+) -> Option<IndicatorRead> {
     if closes.len() < 30 || price <= 0.0 {
         return None;
     }
@@ -180,6 +186,30 @@ fn build_indicator_read(closes: &[f64], price: f64, dollar: bool) -> Option<Indi
                 "50-day above the 200-day — bullish".to_string()
             } else {
                 "50-day below the 200-day — bearish".to_string()
+            },
+        });
+    }
+
+    // Supertrend posture: which side of the ATR band price closed on. Folds
+    // into the same bullish/bearish tally as the moving-average signals.
+    let st = compute::supertrend(highs, lows, closes, compute::SUPERTREND_PERIOD, compute::SUPERTREND_MULT)
+        .last()
+        .copied()
+        .flatten();
+    if let Some(p) = st {
+        if p.up {
+            bull += 1;
+        }
+        total += 1;
+        signals.push(IndicatorSignal {
+            label: "Supertrend".to_string(),
+            value: fmt(p.value),
+            status: if p.up { "Uptrend" } else { "Downtrend" }.to_string(),
+            tone: if p.up { "up" } else { "down" }.to_string(),
+            note: if p.up {
+                "Price is holding above the Supertrend band — bullish".to_string()
+            } else {
+                "Price is below the Supertrend band — bearish".to_string()
             },
         });
     }
@@ -1391,8 +1421,11 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
     // moving average), shown beneath the chart. Built from the daily closes
     // (oldest first) against the current price; `None` without enough history.
     let indicators = price.and_then(|p| {
+        // `bars` is newest-first; the indicator maths want oldest-first.
+        let highs: Vec<f64> = bars.iter().rev().map(|b| b.2).collect();
+        let lows: Vec<f64> = bars.iter().rev().map(|b| b.3).collect();
         let closes: Vec<f64> = bars.iter().rev().map(|b| b.4).collect();
-        build_indicator_read(&closes, p, symbol.kind != "index")
+        build_indicator_read(&highs, &lows, &closes, p, symbol.kind != "index")
     });
 
     // Stock fundamentals are loaded once and shared by the ratio cards
@@ -1717,6 +1750,16 @@ struct EarningsMarker {
     time: String,
 }
 
+/// One Supertrend point for the chart: the band value plus whether the trend is
+/// up, so the client can split the single line into a green (uptrend) and a red
+/// (downtrend) series with a clean break at each flip.
+#[derive(Serialize)]
+struct SuperTrendPoint {
+    time: String,
+    value: f64,
+    up: bool,
+}
+
 /// The symbol chart payload (Phase 8 + Phase 28): the candles for the
 /// selected range plus the indicator overlays, each already trimmed to the
 /// visible window. Phase 28 adds an optional benchmark series — the
@@ -1730,6 +1773,11 @@ struct HistoryResponse {
     sma200: Vec<LinePoint>,
     ema21: Vec<LinePoint>,
     rsi14: Vec<LinePoint>,
+    /// Supertrend band (ATR 10 / 3×). Each point carries its trend side so the
+    /// client draws it green below price in an uptrend, red above in a
+    /// downtrend. Empty on the intraday ranges (a daily-only overlay).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    supertrend: Vec<SuperTrendPoint>,
     /// Benchmark closes scaled to the same starting price as the visible
     /// candles, so the two lines start together and drift apart on relative
     /// performance. Empty when no benchmark is configured or no benchmark
@@ -1833,6 +1881,8 @@ async fn history_api(
     .unwrap_or_default();
 
     let dates: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
+    let highs: Vec<f64> = rows.iter().map(|r| r.2).collect();
+    let lows: Vec<f64> = rows.iter().map(|r| r.3).collect();
     let closes: Vec<f64> = rows.iter().map(|r| r.4).collect();
 
     // First bar inside the visible window; everything before it is lookback,
@@ -1901,11 +1951,28 @@ async fn history_api(
         Vec::new()
     };
 
+    // Supertrend, trimmed to the visible window the same way as the lines but
+    // keeping each bar's trend side so the client can colour it.
+    let supertrend: Vec<SuperTrendPoint> =
+        compute::supertrend(&highs, &lows, &closes, compute::SUPERTREND_PERIOD, compute::SUPERTREND_MULT)
+            .into_iter()
+            .enumerate()
+            .skip(start)
+            .filter_map(|(i, p)| {
+                p.map(|p| SuperTrendPoint {
+                    time: dates[i].clone(),
+                    value: p.value,
+                    up: p.up,
+                })
+            })
+            .collect();
+
     let resp = HistoryResponse {
         sma50: line(compute::sma(&closes, 50)),
         sma200: line(compute::sma(&closes, 200)),
         ema21: line(compute::ema(&closes, 21)),
         rsi14: line(compute::rsi(&closes, 14)),
+        supertrend,
         candles: rows
             .into_iter()
             .skip(start)
@@ -2012,6 +2079,7 @@ async fn intraday_history(pool: &sqlx::SqlitePool, ticker: &str, range: &str) ->
         sma200: Vec::new(),
         ema21: Vec::new(),
         rsi14: Vec::new(),
+        supertrend: Vec::new(),
         benchmark: Vec::new(),
         benchmark_ticker: None,
         earnings: Vec::new(),

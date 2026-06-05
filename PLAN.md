@@ -78,7 +78,8 @@ dev (cargo + vite clean, zero warnings, zero console errors, desktop + mobile):
 - **Symbol page:** range buttons are now **YTD 1M 3M 6M 1Y 3Y 5Y MAX (default
   1Y)** — the old 1D/1W intraday ranges were dropped (the demand-only model can't
   keep enough 15m bars to draw them legibly). **EMA 21 and RSI now default ON**
-  (with SMA 50/200, Volume). Added the `3Y` cutoff.
+  (with SMA 50/200, Volume). Added the `3Y` cutoff. *(Phase H later turned EMA 21
+  back off by default; default-on is now SMA 50/200 + Volume + RSI.)*
 - **Indicator interpretation blurb under the symbol chart** (`build_indicator_read`
   → `indicators` ctx → `templates/pages/symbol.html`): a direct RSI
   overbought/oversold/neutral verdict (with a leaning-bullish/bearish middle),
@@ -640,6 +641,35 @@ were already removed in Phase F.)
   choice, retention, and guard-budget impact are a design call worth confirming
   before building. Surfaced to the user; ready to execute on their go-ahead.
 
+### Phase H — Supertrend indicator on symbol pages  ✅ DONE on dev (uncommitted)
+Add the Supertrend (ATR-banded trend follower) alongside the other symbol-page
+indicators, per a user request. See the Status block above for the full outcome.
+- **Maths:** `compute::supertrend(highs, lows, closes, period, mult)` →
+  `Vec<Option<SuperTrend>>` (band value + `up` trend side). Standard ATR(10)×3
+  (`SUPERTREND_PERIOD` / `SUPERTREND_MULT`), Wilder-smoothed ATR like `rsi`, with
+  the carry-forward final-band rule.
+- **Chart:** `/api/.../history` gains a `supertrend` array (value + `up` per bar,
+  trimmed to the visible window like the other overlays); `chart.js` draws it as a
+  **single line series coloured per point** (green when the band trails below price,
+  red when it rides above), so one bar is one value/one colour and the trends can
+  never overlap; the band jumps sides at a flip. One toggle (`data-ind="supertrend"`,
+  **off by default** — see the decisions log); its swatch is a split green/red dot.
+  Daily-only (empty on intraday). *(First tried two whitespace-gapped series; the
+  line connected straight across the gaps and drew both colours at once — see the
+  lessons.)*
+- **Default-toggle trim (same round, user call):** Supertrend, **EMA 21**, and the
+  **benchmark (^SPX)** all now default **off** — the on-by-default set was too busy.
+  Default-on overlays are now just SMA 50, SMA 200, Volume, and RSI. (This reverses
+  the Phase F "EMA 21 default on" choice.)
+- **Written read:** a "Supertrend" tile joins the "What the indicators say" signal
+  grid (Uptrend/Downtrend, green/red) and folds into the overall bullish/bearish
+  tally; `build_indicator_read` now takes highs/lows too.
+- **Verified on dev:** `cargo build` + `vite build` clean, zero warnings; the
+  `/history` payload returns 250 supertrend points over 1Y (6 flips on AAPL);
+  Playwright at 1280 + 390 shows the green/red band trailing price with clean flips,
+  the toggle hides/shows both series, the read tile renders and the tally reads "5 of
+  5 bullish", zero console errors.
+
 ### Backlog / parked
 - Named multiple watchlists (only a single session list is planned for now).
 - A "popular non-S&P" quick-add set on the dashboard, if the curated catalog feels
@@ -651,6 +681,24 @@ were already removed in Phase F.)
 ---
 
 ## Decisions log
+
+**2026-06-05 — Phase H: Supertrend indicator on symbol pages.** User asked for
+Supertrend next to the other tracked indicators. Three design calls (all the
+user's, given the convention tension):
+1. **Green/red trend colouring** (chosen over the muted non-semantic palette or a
+   two-muted-ink compromise). It's Supertrend's signature and up=green/down=red
+   matches the app's price-move semantics, so it reuses the candle green/red — a
+   deliberate, documented exception to the "indicator lines are non-semantic" rule.
+2. **Initially on by default; then reversed to off** after the user found the
+   on-by-default overlay set too busy ("the green bar doesn't go away"). In the same
+   round the user also turned **EMA 21** and the **benchmark (^SPX)** off by default
+   (reversing Phase F's EMA-on choice). Default-on overlays are now SMA 50 / SMA 200
+   / Volume / RSI only.
+3. **Folded into the written read** as a colour-coded trend tile + the overall tally.
+Standard params ATR(10)×3, no prompt. Rendered as a single per-point-coloured line
+(after a two-whitespace-gapped-series first attempt drew both colours at once — the
+"constantly green" bug; see the lessons). Verified on MSFT that the band flips
+green→red→green correctly through its declines, one colour per bar.
 
 **2026-06-04 — Phase F: per-instrument overview + symbol chart upgrades.** Living
 with the single normalized overview overlay, the user found "everything on one
@@ -802,7 +850,14 @@ v1, top picks + backtest, UI polish). Blow-by-blow lives in git history.
   survives restarts. A boot-time breaker trip is normal after a deploy; it recovers
   via the half-open probe.
 - **Chart indicator lines use a non-semantic palette on purpose** — green/amber/red
-  are reserved for good/ok/bad; candles own green/red.
+  are reserved for good/ok/bad; candles own green/red. **Supertrend is the one
+  deliberate exception** (a user call, Phase H): its trend colour *is* the signal
+  and up=green/down=red matches the price-move semantics, so it reuses the candle
+  green/red. Drawn as a **single line series coloured per data point** (one
+  value/one colour per bar), so the two trends can never render at the same x; the
+  band jumps sides at a flip. **Do not** use two whitespace-gapped series for this —
+  lightweight-charts connected the line straight across the whitespace gaps and drew
+  both the green and red lines at once (the band appeared "constantly green").
 - **Yahoo NAV is only as fresh as you keep it.** Comparing a live price to a
   weeks-old NAV yields a meaningless premium/discount. The ETF quality read's
   tracking factor must gate on `nav_synced_at` freshness. In the demand-only model

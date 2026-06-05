@@ -210,10 +210,11 @@
       {% for ind in [
         {"key": "sma50",  "label": "SMA 50",  "on": true,  "dot": true,  "hide": false},
         {"key": "sma200", "label": "SMA 200", "on": true,  "dot": true,  "hide": false},
-        {"key": "ema21",  "label": "EMA 21",  "on": true,  "dot": true,  "hide": false},
+        {"key": "ema21",  "label": "EMA 21",  "on": false, "dot": true,  "hide": false},
+        {"key": "supertrend", "label": "Supertrend", "on": false, "dot": true, "hide": false},
         {"key": "volume", "label": "Volume",  "on": true,  "dot": false, "hide": false},
         {"key": "rsi",    "label": "RSI",     "on": true,  "dot": true,  "hide": false},
-        {"key": "benchmark", "label": (symbol.benchmark or "Benchmark"), "on": true, "dot": true, "hide": (not symbol.benchmark)}
+        {"key": "benchmark", "label": (symbol.benchmark or "Benchmark"), "on": false, "dot": true, "hide": (not symbol.benchmark)}
       ] %}
       <button type="button" class="ind-btn{% if ind.on %} is-active{% endif %}"
               data-ind="{{ ind.key }}" aria-pressed="{{ 'true' if ind.on else 'false' }}"

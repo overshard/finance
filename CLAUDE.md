@@ -36,7 +36,7 @@ There are no tests or linters configured.
 
 **Market clock (`src/market.rs`):** The US equity session (Closed/Pre/Regular/Post) in `America/New_York` via `chrono-tz`. No exchange-holiday calendar (deliberate — see the decisions log).
 
-**Compute (`src/compute.rs`):** Pure numeric code — indicator maths (`sma`, `ema`, `rsi`), graded fundamental ratios, range-meter marker positions, and the home-page sparkline SVG. The maths lives here, not in SQL or JS.
+**Compute (`src/compute.rs`):** Pure numeric code — indicator maths (`sma`, `ema`, `rsi`, `supertrend`), graded fundamental ratios, range-meter marker positions, and the home-page sparkline SVG. The maths lives here, not in SQL or JS.
 
 **Templates:** Jinja2 templates in `templates/` rendered by minijinja with a Jinja2-faithful HTML formatter so `/` is not escaped to `&#x2f;` (matches the sibling Rust apps). `vite_asset` resolves hashed asset names from `dist/.vite/manifest.json`.
 

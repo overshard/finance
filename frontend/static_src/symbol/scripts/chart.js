@@ -51,6 +51,12 @@ const RSI_INK = "#3f6f9c";
 // together and the divergence is the relative performance the eye should
 // follow.
 const BENCH_INK = "#7a5237";
+// Supertrend is the deliberate green/red exception (a user call): the band's
+// whole point is its trend colour, and up=green / down=red matches the app's
+// price-move semantics. It reuses the candle green/red exactly so the overlay
+// reads as part of the price, not a separate wayfinding ink.
+const SUPERTREND_UP = "#2f7d4f";
+const SUPERTREND_DOWN = "#b23b32";
 const VOLUME_UP = "rgba(47,125,79,0.38)";
 const VOLUME_DOWN = "rgba(178,59,50,0.38)";
 // Phase 25: earnings-date markers. A small ink dot above each candle that
@@ -168,6 +174,20 @@ export function initChart() {
     visible: false,
   });
 
+  // Supertrend overlay: a single line whose colour is set per point — green
+  // while the band trails below price (uptrend), red while it rides above
+  // (downtrend). One line means one value and one colour per bar, so the two
+  // trends can never draw at the same time; the band simply jumps to the other
+  // side at a flip. (Two whitespace-gapped series were tried first but the line
+  // connected straight across the gaps, drawing both colours at once.)
+  const supertrendSeries = chart.addSeries(LineSeries, {
+    color: SUPERTREND_UP,
+    lineWidth: 2,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    crosshairMarkerVisible: false,
+  });
+
   // Earnings-date markers (Phase 25). Stocks only; the payload carries an
   // `earnings` array of `YYYY-MM-DD` past dates that match candle times.
   // Each draws a small ink dot above the matching bar. v5's
@@ -201,7 +221,7 @@ export function initChart() {
   // The moving-average, RSI and benchmark overlays are all derived from the
   // daily series, so they are meaningless on the intraday ranges. Their toggle
   // buttons hide there (benchmark hides on its own when the payload has none).
-  const DAILY_ONLY_INDS = ["sma50", "sma200", "ema21", "rsi"];
+  const DAILY_ONLY_INDS = ["sma50", "sma200", "ema21", "rsi", "supertrend"];
 
   // RSI lives in its own pane below the price pane and is created only while
   // toggled on, so an empty second pane never lingers when it is off.
@@ -408,11 +428,21 @@ export function initChart() {
     overlays.sma200.setData(d.sma200);
     overlays.ema21.setData(d.ema21);
     if (rsiSeries) rsiSeries.setData(d.rsi14);
+
+    // Supertrend: one line, coloured per bar by its trend side.
+    supertrendSeries.setData(
+      (d.supertrend || []).map((p) => ({
+        time: p.time,
+        value: p.value,
+        color: p.up ? SUPERTREND_UP : SUPERTREND_DOWN,
+      })),
+    );
     // Phase 28: benchmark overlay rides on the price pane when present.
     const bench = d.benchmark || [];
     benchmarkSeries.setData(bench);
     // Only show the benchmark series — and the toggle for it — when the
-    // payload actually has one. The button defaults to on when shown.
+    // payload actually has one; its visibility then follows the toggle's
+    // is-active state (off by default).
     const benchBtn = document.querySelector('[data-ind="benchmark"]');
     if (benchBtn) benchBtn.hidden = bench.length === 0;
     const benchOn = bench.length > 0 && (!benchBtn || benchBtn.classList.contains("is-active"));
@@ -459,6 +489,8 @@ export function initChart() {
       volumeSeries.applyOptions({ visible: on });
     } else if (key === "benchmark") {
       benchmarkSeries.applyOptions({ visible: on });
+    } else if (key === "supertrend") {
+      supertrendSeries.applyOptions({ visible: on });
     } else if (overlays[key]) {
       overlays[key].applyOptions({ visible: on });
     }
@@ -469,8 +501,16 @@ export function initChart() {
     // Paint the swatch from the JS palette so the inks live in one place.
     const dot = btn.querySelector(".ind-btn__dot");
     if (dot) {
+      // Supertrend's swatch is split green/red to telegraph its two-tone line;
+      // the rest take their single ink from the palette.
       dot.style.background =
-        key === "rsi" ? RSI_INK : key === "benchmark" ? BENCH_INK : OVERLAY_INK[key];
+        key === "supertrend"
+          ? `linear-gradient(90deg, ${SUPERTREND_UP} 50%, ${SUPERTREND_DOWN} 50%)`
+          : key === "rsi"
+            ? RSI_INK
+            : key === "benchmark"
+              ? BENCH_INK
+              : OVERLAY_INK[key];
     }
     // The template's is-active class is the initial visibility.
     applyIndicator(key, btn.classList.contains("is-active"));
