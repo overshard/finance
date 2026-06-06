@@ -276,7 +276,7 @@ fn quote_state_label() -> &'static str {
 const DASH: &str = "\u{2014}";
 
 /// Whether a period-over-period rise in a metric is good news, for the
-/// financials-table growth cue (PLAN.md Phase 24).
+/// financials-table growth cue.
 #[derive(Clone, Copy)]
 enum Trend {
     /// A rise reads as good: revenue, earnings, dividends.
@@ -309,7 +309,7 @@ impl Trend {
 }
 
 /// One cell of a financials table: a formatted figure and its period-over-
-/// period growth cue (PLAN.md Phase 24).
+/// period growth cue.
 #[derive(Serialize)]
 struct FundCell {
     /// The formatted figure, or [`DASH`] where nothing was reported.
@@ -374,7 +374,7 @@ struct FilingRow {
 /// `in_quarterly` is `false` for the balance-sheet rows: only the fiscal
 /// year-end balance is collected, so those rows appear in the annual table
 /// only (see `providers::sec::classify`). `trend` sets the period-over-period
-/// growth cue's good/bad reading (PLAN.md Phase 24).
+/// growth cue's good/bad reading.
 struct TableMetric {
     metric: &'static str,
     label: &'static str,
@@ -456,7 +456,7 @@ fn filing_title(form: &str) -> String {
 /// period_label)`, oldest first), pulling formatted cells from `lookup`. The
 /// quarterly table omits the balance-sheet rows, which are only collected per
 /// fiscal year. Each cell also carries a period-over-period growth cue
-/// (PLAN.md Phase 24), computed against the column to its left.
+/// computed against the column to its left.
 fn fund_table(
     periods: &[(i64, String)],
     lookup: &HashMap<(String, String), f64>,
@@ -509,7 +509,7 @@ const Q4_DERIVABLE: &[&str] = &["revenue", "net_income", "eps_diluted", "dividen
 /// Derive the missing Q4 facts. SEC XBRL carries no discrete fourth quarter:
 /// there is no Q4 10-Q, so Q4 lives only inside the 10-K's full-year figure.
 /// For every fiscal year with the full year and all three prior quarters
-/// present, Q4 is `FY - (Q1 + Q2 + Q3)` (PLAN.md Phase 23). Diluted EPS does
+/// present, Q4 is `FY - (Q1 + Q2 + Q3)`. Diluted EPS does
 /// not decompose perfectly — the diluted share count drifts quarter to quarter
 /// — but the residual is small and the plan calls for showing it.
 fn derive_q4(facts: &[models::FundFact]) -> Vec<models::FundFact> {
@@ -554,7 +554,7 @@ fn build_fundamentals(facts: &[models::FundFact], price: Option<f64>) -> Option<
         return None;
     }
 
-    // SEC XBRL has no discrete Q4 (PLAN.md Phase 23); derive it and fold the
+    // SEC XBRL has no discrete Q4; derive it and fold the
     // derived rows in, so the quarterly periods and the cell lookup below pick
     // them up exactly like a stored fact.
     let derived = derive_q4(facts);
@@ -891,7 +891,7 @@ struct DividendsView {
     history: Vec<DividendRow>,
 }
 
-/// Load the Dividends section for a stock (PLAN.md Phase 26). Returns `None`
+/// Load the Dividends section for a stock. Returns `None`
 /// when there is nothing to show *and* the sweep has already run: a stock that
 /// pays no dividend gets no section. A pending stock (sweep has not reached it
 /// yet) still returns a `DividendsView` so the template can render the "not
@@ -2283,8 +2283,8 @@ fn add_err(status: StatusCode, msg: impl Into<String>) -> Response {
 /// inserted, the quote that same lookup returned is stored, and the symbol's
 /// full backfill (deep daily history and all SEC data) is pulled synchronously
 /// before the response, so its page is complete the moment the add returns
-/// (PLAN.md Phase 21; see `scheduler::backfill_symbol`). Every outbound call
-/// goes through the shared endpoint guard (see PLAN.md's anti-spam policy).
+/// (see `scheduler::backfill_symbol`). Every outbound call
+/// goes through the shared endpoint guard (see the anti-spam policy).
 /// The outcome of ensuring a symbol is in the tracked universe.
 pub(crate) struct EnsureOutcome {
     pub ticker: String,

@@ -66,7 +66,7 @@ pub fn not_found(state: &AppState) -> Response {
 }
 
 /// The themed 500 page with the underlying error detail. Single-operator app
-/// (no public sign-up, see `PLAN.md`), so leaking the message back is fine.
+/// (no public sign-up), so leaking the message back is fine.
 /// It is the whole point of the page. Falls back to plain text if the error
 /// page itself fails to render, so we never recurse.
 fn server_error(state: &AppState, path: &str, detail: &str) -> Response {

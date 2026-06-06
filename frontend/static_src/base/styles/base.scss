@@ -639,8 +639,8 @@ main {
   box-shadow: 0 3px 0 -2px var(--rule);
 }
 
-/* A quiet data-freshness caption riding at the right end of a section title
-   (PLAN.md Phase 22). margin-left:auto pushes it past the heading text. */
+/* A quiet data-freshness caption riding at the right end of a section title.
+   margin-left:auto pushes it past the heading text. */
 .section-title__asof {
   margin-left: auto;
   flex: none;

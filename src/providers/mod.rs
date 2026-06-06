@@ -5,7 +5,7 @@
 //! live quotes/intraday and deep daily history; `FundamentalsProvider` (SEC
 //! EDGAR) covers stock fundamentals, filings, leadership, and ETF profiles.
 //! (Stooq was the original history source; it was dropped 2026-05-30 — see
-//! PLAN.md's data-source policy.)
+//! the data-source policy.)
 
 pub mod http;
 pub mod sec;

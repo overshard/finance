@@ -52,7 +52,7 @@ use crate::db::now_ms;
 use crate::providers::RateLimited;
 
 /// Minimum spacing between two requests to the same endpoint. Matches the
-/// anti-spam policy in PLAN.md (>= 1.5s per request). `acquire` enforces it.
+/// anti-spam policy (>= 1.5s per request). `acquire` enforces it.
 const MIN_GAP: Duration = Duration::from_millis(1500);
 
 /// Consecutive ordinary failures that trip the breaker while it is closed. An

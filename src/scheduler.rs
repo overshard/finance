@@ -1,7 +1,7 @@
 //! Background job scheduler (demand-only).
 //!
 //! One long-lived tokio task wakes on a fixed tick. Since the demand-only
-//! refocus (PLAN.md 2026-06-03) it does **no** timed network fetching: with
+//! refocus (2026-06-03) it does **no** timed network fetching: with
 //! nobody on the site it makes zero outbound calls. Each tick it only:
 //!  - broadcasts a market-session change so open pages update their pill (and
 //!    re-pushes the dashboard summary, a local DB read, on a session flip);
@@ -47,7 +47,7 @@ use crate::{seed, Config};
 const TICK: Duration = Duration::from_secs(60);
 
 /// Minimum seconds between intraday polls of the same viewed symbol. With the
-/// 60s tick this yields a ~5-minute per-symbol cadence (PLAN.md Phase C): the
+/// 60s tick this yields a ~5-minute per-symbol cadence: the
 /// dashboard's watchlist and an open symbol page refresh about every five
 /// minutes while watched, not every minute. Just under 5 min so a symbol due at
 /// the 5-minute mark isn't skipped to the next tick.
@@ -251,7 +251,7 @@ async fn run_intraday(
     if targets.is_empty() {
         return Ok(());
     }
-    // Throttle to a ~5-minute per-symbol cadence (PLAN.md Phase C): the loop
+    // Throttle to a ~5-minute per-symbol cadence: the loop
     // ticks every 60s, but a symbol quoted within the last few minutes is left
     // alone, so a dashboard left open polls each watchlist symbol about once
     // every five minutes rather than every minute — light on the budget, and
@@ -880,7 +880,7 @@ async fn guarded<T>(
 /// history from Stooq and, for a stock or ETF, its SEC data. The add-symbol
 /// route (`routes::symbols`) calls this so a user-added symbol's page is
 /// complete the moment the add returns, rather than filling in over later
-/// scheduler cycles (PLAN.md Phase 21).
+/// scheduler cycles.
 ///
 /// Best-effort and guard-routed: every outbound call passes through the same
 /// `EndpointGuard` the background jobs use, and a guard denial or upstream
@@ -1466,7 +1466,7 @@ pub(crate) async fn refresh_step(
 }
 
 /// Pull fresh quotes for a set of dashboard symbols on demand — the dashboard's
-/// on-open refresh (PLAN.md Phase C polish). A symbol quoted within the last few
+/// on-open refresh. A symbol quoted within the last few
 /// minutes is skipped, so a reload (or the add/remove reload) does not re-hit
 /// Yahoo, and overnight the gate keeps a re-open from re-polling the same frozen
 /// close. Runs regardless of session: opening the dashboard after the close
@@ -1582,7 +1582,7 @@ async fn refresh_sec(pool: &SqlitePool, config: &Config, ticker: &str, fund: boo
 
 /// Refresh an ETF's Yahoo fund metadata and its NAV (the price-vs-NAV premium
 /// behind the quality read's tracking factor needs a fresh NAV; see the
-/// hard-won lesson in PLAN.md). Two cheap `quoteSummary` calls through the
+/// hard-won lesson). Two cheap `quoteSummary` calls through the
 /// Yahoo guard.
 async fn refresh_fund_meta(pool: &SqlitePool, config: &Config, ticker: &str) -> &'static str {
     backfill_fund_metadata(pool, config, ticker).await;

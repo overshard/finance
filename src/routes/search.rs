@@ -93,7 +93,7 @@ async fn search_page(Query(sq): Query<SearchQuery>, State(state): State<AppState
     .unwrap_or_default();
 
     // The freshest quote across the matched symbols backs the page's "prices
-    // as of ..." caption (PLAN.md Phase 22).
+    // as of ..." caption.
     let asof: Option<i64> = rows.iter().filter_map(|r| r.5).max();
     let mut results: Vec<Card> = rows
         .into_iter()
