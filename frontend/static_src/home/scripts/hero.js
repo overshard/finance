@@ -196,6 +196,10 @@ function attachChart(chartEl) {
       timeVisible: true,
       secondsVisible: false,
       tickMarkFormatter: (t) => fmtAxisTime(t),
+      // We pin the visible range to the full Schwab-day grid ourselves (see
+      // drawSeries); keep that pin across resizes instead of letting the chart
+      // re-fit to wherever the real data happens to sit.
+      lockVisibleTimeRangeOnResize: true,
     },
     crosshair: {
       mode: 1,
@@ -368,17 +372,30 @@ function drawSeries(entry, s) {
     localization: { priceFormatter: (v) => fmtValue(v, s.unit), timeFormatter: (t) => fmtCrosshairTime(t) },
   });
 
-  // Frame exactly the Schwab day [start_t, end_t]: pad whitespace (time only)
-  // before the first bar and after the last so a partial day plots from the left.
+  // Frame every card on ONE identical x-axis so the small multiples line up: a
+  // fixed 15-minute grid spanning the whole Schwab day [start_t, end_t] (7 AM–8 PM
+  // ET). Each real 15m bar drops onto its grid slot (Yahoo's 15m bars land exactly
+  // on this grid); every empty slot stays whitespace — not just before the first
+  // bar and after the last, but ALSO any interior gap where Yahoo skipped an
+  // illiquid pre-/after-hours bar. Filling those interior gaps is the point:
+  // otherwise lightweight-charts collapses consecutive bars into adjacent slots,
+  // so a card missing a few extended-hours bars ends up with fewer slots and
+  // fitContent() stretches it differently — the same clock time would sit at a
+  // different x on each card. With the full grid every card has the same slot
+  // count and the same time at the same horizontal position.
   const pts = s.points;
-  const step = pts.length > 1 ? pts[1].t - pts[0].t : 900;
+  const GRID_STEP = 900; // 15 minutes, the intraday bar interval — shared by all cards
+  const slots = Math.max(0, Math.round((s.end_t - s.start_t) / GRID_STEP));
+  const valueAt = new Map();
+  for (const p of pts) {
+    const idx = Math.round((p.t - s.start_t) / GRID_STEP);
+    if (idx >= 0 && idx <= slots) valueAt.set(idx, p.v);
+  }
   const data = [];
-  if (pts.length) {
-    for (let t = s.start_t; t < pts[0].t; t += step) data.push({ time: t });
-    for (const p of pts) data.push({ time: p.t, value: p.v });
-    for (let t = pts[pts.length - 1].t + step; t <= s.end_t; t += step) data.push({ time: t });
-  } else {
-    for (let t = s.start_t; t <= s.end_t; t += step) data.push({ time: t });
+  for (let idx = 0; idx <= slots; idx++) {
+    const t = s.start_t + idx * GRID_STEP;
+    const v = valueAt.get(idx);
+    data.push(v == null ? { time: t } : { time: t, value: v });
   }
   entry.series.setData(data);
   entry.times = data.map((d) => ({ t: d.time, ext: isExtended(d.time) }));
@@ -392,7 +409,13 @@ function drawSeries(entry, s) {
     axisLabelVisible: false,
   });
 
-  entry.chart.timeScale().fitContent();
+  // Pin the visible range to the WHOLE grid, not fitContent(): fitContent frames
+  // to wherever the real values sit, so a sparse card (e.g. BTC with only a few
+  // recent bars) zooms in differently than a full one — the exact drift we're
+  // killing. With every card showing the identical logical range [0 .. last slot],
+  // 7 AM (slot 0) sits flush at the left edge and 8 PM (last slot) at the right on
+  // every card, regardless of how many real bars it has.
+  entry.chart.timeScale().setVisibleLogicalRange({ from: 0, to: data.length - 1 });
   renderBands(entry);
 }
 
