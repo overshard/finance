@@ -1529,6 +1529,59 @@ async fn refresh_quote(pool: &SqlitePool, config: &Config, hub: &Hub, ticker: &s
     }
 }
 
+/// Intraday range that covers a whole trading week (Mon–Fri) of 15-minute bars
+/// in one request — enough for the end-of-week dashboard view.
+const INTRADAY_WEEK_RANGE: &str = "5d";
+
+/// Backfill the whole trading week's 15-minute bars for `tickers` when the
+/// stored bars don't already cover the early week. The routine intraday poll
+/// only ever stores one day at a time (`range=1d`), so the end-of-week view is
+/// missing any day the dashboard wasn't open. One guarded `range=5d` request per
+/// still-incomplete symbol fills the gap; symbols whose stored bars already
+/// reach the week's start are skipped, so a reload doesn't re-hit Yahoo.
+pub(crate) async fn backfill_intraday_week(
+    pool: &SqlitePool,
+    config: &Config,
+    tickers: &[String],
+    week_start_ms: i64,
+    week_end_ms: i64,
+) -> usize {
+    // "Already covered": the earliest in-window bar sits within ~36h of the
+    // week's open. A normally-polled week starts at Monday's open; a
+    // holiday-Monday week at Tuesday's — both inside this margin, so they're not
+    // refetched. Only a week missing its first two days (the gap the user sees)
+    // falls outside it.
+    let covered_before = week_start_ms + 36 * 3_600 * 1000;
+    let mut filled = 0;
+    for t in tickers {
+        let earliest: Option<i64> = sqlx::query_scalar(
+            "SELECT MIN(ts) FROM intraday_bars WHERE ticker = ? AND ts >= ? AND ts <= ?",
+        )
+        .bind(t)
+        .bind(week_start_ms)
+        .bind(week_end_ms)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .flatten();
+        if matches!(earliest, Some(ms) if ms <= covered_before) {
+            continue;
+        }
+        let yahoo = YahooProvider::new(providers::http::build_client(config));
+        let guard = EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET);
+        match guarded(&guard, yahoo.intraday_window(t, INTRADAY_WEEK_RANGE)).await {
+            Some(Ok(data)) if !data.bars.is_empty() => {
+                let _ = store_intraday(pool, t, &data.bars).await;
+                filled += 1;
+            }
+            Some(Err(e)) => tracing::warn!("[week] intraday {t}: {e:#}"),
+            _ => {}
+        }
+    }
+    filled
+}
+
 /// Pull the daily history a viewed symbol is missing: the window since its last
 /// stored bar (incremental) when it already has history, else a full
 /// `range=max` backfill. Cheaper than the deep re-fetch on a routine load.

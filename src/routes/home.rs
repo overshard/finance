@@ -97,6 +97,24 @@ fn overview_tickers() -> Vec<&'static str> {
 const SCHWAB_OPEN_MIN: u32 = 7 * 60; // 7:00 AM ET
 const SCHWAB_CLOSE_MIN: u32 = 20 * 60; // 8:00 PM ET
 
+/// Once the regular session closes on Friday (4:00 PM ET) the dashboard switches
+/// from the single-day frame to the whole trading week (Mon 7 AM → Fri 8 PM ET),
+/// so the weekend read shows how the full week went, not just where Friday landed.
+/// It reverts to the single-day frame at Monday's extended-hours open (7:00 AM ET).
+const FRIDAY_CLOSE_MIN: u32 = 16 * 60; // 4:00 PM ET
+
+/// Epoch-ms for `min` minutes-of-day on the ET calendar `date`. Picks the earlier
+/// instant on a fall-back DST repeat; both are fine for these window bounds.
+fn et_ms(date: chrono::NaiveDate, min: u32) -> Option<i64> {
+    use chrono::TimeZone as _;
+    use chrono_tz::America::New_York;
+    let naive = date.and_hms_opt(min / 60, min % 60, 0)?;
+    New_York
+        .from_local_datetime(&naive)
+        .earliest()
+        .map(|dt| dt.timestamp_millis())
+}
+
 /// The Schwab trading-day window [open, close] in epoch-ms for the ET calendar
 /// day that `latest_ms` falls in (so a Friday-evening view frames Friday, a
 /// weekend view still frames Friday's last session, etc.).
@@ -104,15 +122,36 @@ fn schwab_day_window(latest_ms: i64) -> Option<(i64, i64)> {
     use chrono::TimeZone as _;
     use chrono_tz::America::New_York;
     let date = New_York.timestamp_millis_opt(latest_ms).single()?.date_naive();
-    let at = |min: u32| {
-        let naive = date.and_hms_opt(min / 60, min % 60, 0)?;
-        // Pick the earlier instant on a fall-back DST repeat; both are fine here.
-        New_York
-            .from_local_datetime(&naive)
-            .earliest()
-            .map(|dt| dt.timestamp_millis())
+    Some((et_ms(date, SCHWAB_OPEN_MIN)?, et_ms(date, SCHWAB_CLOSE_MIN)?))
+}
+
+/// The full-week window when the end-of-week view is active, else `None`.
+///
+/// Active from Friday's regular close (4:00 PM ET) through the weekend until
+/// Monday's extended-hours open (7:00 AM ET). When active it frames the trading
+/// week that just ended: Monday 7:00 AM → Friday 8:00 PM ET. Returns that window
+/// plus the Monday `NaiveDate` (the caller reads the prior Friday's close — the
+/// last daily close strictly before Monday — as the week's % base).
+fn week_window(now_ms: i64) -> Option<(i64, i64, chrono::NaiveDate)> {
+    use chrono::{Datelike as _, Duration, TimeZone as _, Timelike as _, Weekday};
+    use chrono_tz::America::New_York;
+    let now = New_York.timestamp_millis_opt(now_ms).single()?;
+    let minutes = now.hour() * 60 + now.minute();
+    // How many days back the just-closed Friday sits from `now`'s ET date.
+    let days_back = match now.weekday() {
+        Weekday::Fri if minutes >= FRIDAY_CLOSE_MIN => 0,
+        Weekday::Sat => 1,
+        Weekday::Sun => 2,
+        Weekday::Mon if minutes < SCHWAB_OPEN_MIN => 3,
+        _ => return None,
     };
-    Some((at(SCHWAB_OPEN_MIN)?, at(SCHWAB_CLOSE_MIN)?))
+    let friday = now.date_naive() - Duration::days(days_back);
+    let monday = friday - Duration::days(4);
+    Some((
+        et_ms(monday, SCHWAB_OPEN_MIN)?,
+        et_ms(friday, SCHWAB_CLOSE_MIN)?,
+        monday,
+    ))
 }
 
 /// The value unit for a symbol: index points for equity indexes, dollars for
@@ -186,11 +225,15 @@ struct Series {
     change_pct: f64,
     /// True when the day move is not negative — drives the green/red line colour.
     up: bool,
-    /// UNIX seconds bounding the Schwab trading-day frame (extended-hours open
-    /// and close). The chart always spans exactly this one day, so a partial day
-    /// plots from the left rather than stretching across the width.
+    /// UNIX seconds bounding the chart frame (extended-hours open and close).
+    /// Normally a single Schwab day; in end-of-week mode the whole trading week
+    /// (Mon 7 AM → Fri 8 PM ET). A partial frame plots from the left rather than
+    /// stretching across the width.
     start_t: i64,
     end_t: i64,
+    /// True when the frame spans the whole week (Fri 4 PM → Mon 7 AM ET), so the
+    /// chart axis labels days instead of just times.
+    week: bool,
     points: Vec<SeriesPoint>,
 }
 
@@ -319,7 +362,8 @@ async fn dashboard_refresh(State(state): State<AppState>, headers: HeaderMap) ->
     let session = watchlist::resolve(&state.pool, &headers).await;
     // The watchlist cards, the session's overview symbols, and the VIX / volume
     // reads — everything the open dashboard shows gets a fresh quote.
-    let mut tickers = watchlist::list(&state.pool, &session.sid).await;
+    let wl = watchlist::list(&state.pool, &session.sid).await;
+    let mut tickers = wl.clone();
     for t in overview_tickers() {
         tickers.push(t.to_string());
     }
@@ -328,6 +372,33 @@ async fn dashboard_refresh(State(state): State<AppState>, headers: HeaderMap) ->
     }
     let refreshed =
         crate::scheduler::refresh_quotes(&state.pool, &state.config, &state.hub, &tickers).await;
+
+    // In the end-of-week view the charts span Mon–Fri, but the routine poll only
+    // ever stores one day of 15-minute bars at a time, so any day the dashboard
+    // wasn't open is missing. Backfill the whole week (one guarded range=5d pull
+    // per still-incomplete symbol) for the symbols actually drawn as charts: the
+    // overview's chart tickers (the futures lines) and the watchlist. It runs
+    // detached — the paced, guarded pulls take many seconds and only need to
+    // happen once per weekend, so we don't hold the refresh request open for
+    // them; the filled bars land on the next ~60s dashboard poll. Already-covered
+    // symbols are skipped, so this is a no-op once the week is complete.
+    if let Some((start_ms, end_ms, _monday)) =
+        week_window(chrono::Utc::now().timestamp_millis())
+    {
+        let mut charted: Vec<String> = OVERVIEW.iter().map(|s| s.chart.to_string()).collect();
+        charted.extend(wl.iter().cloned());
+        let bg = state.clone();
+        tokio::spawn(async move {
+            crate::scheduler::backfill_intraday_week(
+                &bg.pool,
+                &bg.config,
+                &charted,
+                start_ms,
+                end_ms,
+            )
+            .await;
+        });
+    }
 
     let mut resp = Json(serde_json::json!({ "refreshed": refreshed })).into_response();
     if let Some(c) = session.set_cookie {
@@ -361,17 +432,25 @@ async fn overview_series(
     name: &str,
     dollar: bool,
 ) -> Option<Series> {
-    // Anchor to the Schwab day that the chart ticker's most recent bar falls in,
-    // so the chart shows just that one day and never the previous one.
-    let latest_ms: i64 =
-        sqlx::query_scalar("SELECT MAX(ts) FROM intraday_bars WHERE ticker = ?")
-            .bind(chart_ticker)
-            .fetch_optional(&state.pool)
-            .await
-            .ok()
-            .flatten()
-            .flatten()?;
-    let (start_ms, end_ms) = schwab_day_window(latest_ms)?;
+    // After Friday's close the chart frames the whole trading week; the rest of
+    // the time it anchors to the Schwab day the chart ticker's most recent bar
+    // falls in, so it shows just that one day and never the previous one.
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let (start_ms, end_ms, week_monday) = match week_window(now_ms) {
+        Some((s, e, mon)) => (s, e, Some(mon)),
+        None => {
+            let latest_ms: i64 =
+                sqlx::query_scalar("SELECT MAX(ts) FROM intraday_bars WHERE ticker = ?")
+                    .bind(chart_ticker)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .ok()
+                    .flatten()
+                    .flatten()?;
+            let (s, e) = schwab_day_window(latest_ms)?;
+            (s, e, None)
+        }
+    };
 
     let rows: Vec<(i64, f64, f64)> = sqlx::query_as(
         "SELECT ts, open, close FROM intraday_bars \
@@ -406,11 +485,29 @@ async fn overview_series(
     .flatten();
     let (last_price, prev_close) = quote.unwrap_or((None, None));
 
-    // Last value: the quote price, else the last drawn bar's close.
+    // Last value: the quote price, else the last drawn bar's close. Over the
+    // weekend the quote price is Yahoo's frozen Friday close — exactly the week's
+    // end value we want.
     let last = last_price.or_else(|| rows.last().map(|r| r.2))?;
-    // Reference: the previous close, else the session's first-bar open.
+    // Reference: the session's first-bar open (also the % base's last-resort).
     let open = rows.first().map(|r| if r.1 > 0.0 { r.1 } else { r.2 });
-    let base = prev_close.filter(|p| *p > 0.0).or(open)?;
+    // The % base. Single-day mode: the previous close (the universally-quoted
+    // day move). Week mode: the prior Friday's close — the last daily close
+    // strictly before this week's Monday — so the move is the full-week change.
+    let base = if let Some(monday) = week_monday {
+        let prior_close: Option<f64> = sqlx::query_scalar(
+            "SELECT close FROM daily_prices WHERE ticker = ? AND d < ? ORDER BY d DESC LIMIT 1",
+        )
+        .bind(quote_ticker)
+        .bind(monday.to_string())
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten();
+        prior_close.filter(|p| *p > 0.0).or(open)?
+    } else {
+        prev_close.filter(|p| *p > 0.0).or(open)?
+    };
     if base <= 0.0 {
         return None;
     }
@@ -429,6 +526,7 @@ async fn overview_series(
         up: change_pct >= 0.0,
         start_t: start_ms / 1000,
         end_t: end_ms / 1000,
+        week: week_monday.is_some(),
         points,
     })
 }

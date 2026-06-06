@@ -67,6 +67,18 @@ function fmtAxisTime(tSec) {
     hour12: true,
   });
 }
+function fmtWeekday(tSec) {
+  return new Date(tSec * 1000).toLocaleDateString("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+  });
+}
+// Axis tick formatter for the end-of-week full-week frame: label day-boundary
+// ticks (DayOfMonth and coarser) with the weekday, intraday ticks with the time,
+// so a Mon→Fri frame reads "Mon … 12 PM … Tue …" instead of repeating times.
+function fmtWeekTick(tSec, tickMarkType) {
+  return tickMarkType <= 2 ? fmtWeekday(tSec) : fmtAxisTime(tSec);
+}
 function fmtCrosshairTime(tSec) {
   return new Date(tSec * 1000).toLocaleString("en-US", {
     timeZone: "America/New_York",
@@ -369,6 +381,8 @@ function drawSeries(entry, s) {
     crosshairMarkerBackgroundColor: color,
   });
   entry.chart.applyOptions({
+    // A full-week frame labels the axis by weekday; a single day, by time.
+    timeScale: { tickMarkFormatter: s.week ? fmtWeekTick : (t) => fmtAxisTime(t) },
     localization: { priceFormatter: (v) => fmtValue(v, s.unit), timeFormatter: (t) => fmtCrosshairTime(t) },
   });
 

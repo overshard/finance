@@ -241,11 +241,19 @@ impl YahooProvider {
     /// explicit rate-limit signal, surfaced as the typed [`RateLimited`] so the
     /// endpoint guard trips its breaker at once.
     async fn fetch_chart(&self, ticker: &str) -> Result<Option<ChartResult>> {
+        self.fetch_chart_range(ticker, "1d").await
+    }
+
+    /// Fetch the v8 chart payload for `ticker` over an explicit intraday `range`
+    /// (e.g. `1d` for the routine quote, `5d` to backfill the whole trading week
+    /// for the end-of-week dashboard view). `interval=15m` is held constant, so
+    /// `5d` returns five trading days of 15-minute bars in one request.
+    async fn fetch_chart_range(&self, ticker: &str, range: &str) -> Result<Option<ChartResult>> {
         // `^` is not a bare path character; percent-encode the symbol.
         let sym = urlencoding::encode(&yahoo_symbol(ticker)).into_owned();
         let url = format!(
             "https://query1.finance.yahoo.com/v8/finance/chart/{sym}\
-             ?interval=15m&range=1d&includePrePost=true"
+             ?interval=15m&range={range}&includePrePost=true"
         );
         self.request_chart(&url).await
     }
@@ -963,6 +971,19 @@ fn chart_to_daily(result: ChartResult) -> Vec<DailyBar> {
 impl QuoteProvider for YahooProvider {
     async fn quote(&self, ticker: &str) -> Result<QuoteData> {
         match self.fetch_chart(ticker).await? {
+            Some(result) => chart_to_quote_data(ticker, result),
+            None => Err(anyhow!("yahoo returned no chart result for {ticker}")),
+        }
+    }
+}
+
+impl YahooProvider {
+    /// Fetch a wider intraday window (e.g. `range=5d`) of 15-minute bars in one
+    /// request, used to backfill the whole trading week for the end-of-week
+    /// dashboard view. Same shape as [`Self::quote`] (live quote + bars); callers
+    /// store only the bars.
+    pub async fn intraday_window(&self, ticker: &str, range: &str) -> Result<QuoteData> {
+        match self.fetch_chart_range(ticker, range).await? {
             Some(result) => chart_to_quote_data(ticker, result),
             None => Err(anyhow!("yahoo returned no chart result for {ticker}")),
         }
