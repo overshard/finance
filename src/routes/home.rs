@@ -4,9 +4,11 @@
 //! the session's market reads (S&P, volume, VIX, the 50/200-day trend) and the
 //! browser's personal, editable watchlist. The watchlist is session-scoped (a
 //! `fin_sid` cookie; see `crate::watchlist`), seeded with starters on a first
-//! visit. Data is demand-driven: opening this page is what makes the server poll
-//! the watchlist + baseline symbols (via the stream interest registry); nothing
-//! is polled when nobody is here.
+//! visit. The dashboard is the one exception to the demand-only model: the
+//! scheduler's active home sweep (`scheduler::run_home_sweep_if_due`) keeps its
+//! instruments fresh on a 15-minute cadence even with nobody on the site, so
+//! the page always opens current. An open page still gets the faster treatment
+//! (the stream interest registry's ~5-minute poll plus the on-open refresh).
 
 use std::collections::HashMap;
 
@@ -85,6 +87,20 @@ fn overview_tickers() -> Vec<&'static str> {
             if !out.contains(&t) {
                 out.push(t);
             }
+        }
+    }
+    out
+}
+
+/// Everything the dashboard reads a quote for: the overview slots (cash +
+/// futures tickers) plus the VIX and volume-proxy headline reads. The
+/// scheduler's active home sweep and the on-open refresh both poll exactly
+/// this set (each adding the watchlist symbols on top).
+pub(crate) fn dashboard_tickers() -> Vec<&'static str> {
+    let mut out = overview_tickers();
+    for t in [VIX, VOLUME_PROXY] {
+        if !out.contains(&t) {
+            out.push(t);
         }
     }
     out
@@ -307,26 +323,27 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response {
 async fn dashboard_api(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let market_session = market::session_at(chrono::Utc::now());
 
-    // The fixed market-overview set. The S&P slot leads.
-    let slots = overview();
-    let mut series = Vec::with_capacity(slots.len());
-    for (quote, chart, name, dollar) in slots {
-        if let Some(s) = overview_series(&state, quote, chart, name, dollar).await {
-            series.push(s);
-        }
-    }
-
-    // The session's watchlist, drawn with the same chart treatment as the
-    // overview. Each is a single-ticker series (the symbol is both quote + chart;
-    // stocks/ETFs carry their own pre/post bars via Yahoo's includePrePost).
+    // The fixed market-overview set (the S&P slot leads) and the session's
+    // watchlist, drawn with the same chart treatment. Each watchlist symbol is
+    // a single-ticker series (the symbol is both quote + chart; stocks/ETFs
+    // carry their own pre/post bars via Yahoo's includePrePost). Every series
+    // is a handful of independent SQLite reads, so they are all built
+    // concurrently rather than one after another — ~12+ series on a typical
+    // dashboard, and the response is what gates the page's first chart paint.
     let session = watchlist::resolve(&state.pool, &headers).await;
     let wl = watchlist::list(&state.pool, &session.sid).await;
-    let mut watchlist = Vec::with_capacity(wl.len());
-    for t in &wl {
-        if let Some(s) = watchlist_series(&state, t).await {
-            watchlist.push(s);
-        }
-    }
+    let (series, watchlist) = tokio::join!(
+        futures_util::future::join_all(
+            overview()
+                .into_iter()
+                .map(|(quote, chart, name, dollar)| overview_series(
+                    &state, quote, chart, name, dollar
+                )),
+        ),
+        futures_util::future::join_all(wl.iter().map(|t| watchlist_series(&state, t))),
+    );
+    let series: Vec<Series> = series.into_iter().flatten().collect();
+    let watchlist: Vec<Series> = watchlist.into_iter().flatten().collect();
 
     let data = DashboardData {
         session: market_session.as_str().to_string(),
@@ -364,11 +381,8 @@ async fn dashboard_refresh(State(state): State<AppState>, headers: HeaderMap) ->
     // reads — everything the open dashboard shows gets a fresh quote.
     let wl = watchlist::list(&state.pool, &session.sid).await;
     let mut tickers = wl.clone();
-    for t in overview_tickers() {
+    for t in dashboard_tickers() {
         tickers.push(t.to_string());
-    }
-    for b in [VIX, VOLUME_PROXY] {
-        tickers.push(b.to_string());
     }
     let refreshed =
         crate::scheduler::refresh_quotes(&state.pool, &state.config, &state.hub, &tickers).await;

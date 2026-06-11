@@ -22,7 +22,7 @@ There are no tests or linters configured.
 
 ## The demand-only model (read this first)
 
-Nothing is fetched on a timer. With nobody on the site, the app makes **zero** outbound calls. Data is pulled **on demand** the first time a symbol is viewed (or when its stored copy is stale), and live intraday quotes are polled **only** for the symbols a browser is currently watching. This shapes the whole architecture: the scheduler does no network sweeps, history fills in lazily, and every figure on the page carries an honest data-age read ("live", "2m ago", "stale, refreshing", "as of Fri close") — a stale figure is never shown as if fresh.
+Data is pulled **on demand** the first time a symbol is viewed (or when its stored copy is stale), and live intraday quotes are polled **only** for the symbols a browser is currently watching. **One deliberate exception** (user call, 2026-06-10): the scheduler's *home sweep* re-quotes the home dashboard's instruments (overview set + every watchlist symbol) every 15 minutes whether or not anyone is on the site, so the dashboard always opens fresh; it is session-aware (off-hours only the ~24h futures/crypto are polled) and guard-routed like everything else. Beyond that the architecture is unchanged: no other timed sweeps, history fills in lazily, and every figure on the page carries an honest data-age read ("live", "2m ago", "stale, refreshing", "as of Fri close") — a stale figure is never shown as if fresh.
 
 The user considers **never hitting a rate limit** critical. Every outbound call passes through the persistent `EndpointGuard` (see Architecture). Treat the rate-limit-critical path with care; don't add eager fetching.
 
@@ -34,7 +34,7 @@ The user considers **never hitting a rate limit** critical. Every outbound call 
 
 **Endpoint guard (`src/guard.rs`):** A persistent, per-endpoint `EndpointGuard` that every outbound data call passes through: a DB-backed reactive circuit breaker (trips on HTTP 429/503 at once or after a failure streak, exponential backoff, half-open probe recovery), a hard per-hour request budget, and request pacing. State lives in the `endpoint_guard` table, so it survives restarts and is shared by the server and the `seed` subcommand. Budgets: 1000 req/hr on the `yahoo` guard, 600 req/hr on `sec`.
 
-**Scheduler (`src/scheduler.rs`):** One long-lived tokio task on a 60s tick. Since the demand-only refocus it does **no** timed network fetching. Each tick it only: broadcasts market-session changes (and re-pushes the dashboard summary, a local DB read, on a session flip), runs the demand-driven intraday quote poll (Yahoo quotes for just the symbols a browser is watching, via the stream hub's interest registry, at a ~5-minute per-symbol cadence), and prunes aged `intraday_bars` / `fetch_log` rows. All the old timed sweeps (daily-close, SEC, dividends, fund metadata, NAV, earnings, asset profile, periodic history) were removed; their data is now pulled on demand. The boot seed only reconciles the universe rows from the curated CSV (local, no network).
+**Scheduler (`src/scheduler.rs`):** One long-lived tokio task on a 60s tick. Each tick it: broadcasts market-session changes (and re-pushes the dashboard summary, a local DB read, on a session flip), runs the demand-driven intraday quote poll (Yahoo quotes for just the symbols a browser is watching, via the stream hub's interest registry, at a ~5-minute per-symbol cadence), runs the **active home sweep** when due (every 15 minutes: re-quotes the dashboard's overview instruments + the union of all watchlist symbols, viewer or not — the one timed network job; session-aware, rides `refresh_quotes` so the per-symbol throttle and guard apply), and prunes aged `intraday_bars` / `fetch_log` rows. All the other old timed sweeps (daily-close, SEC, dividends, fund metadata, NAV, earnings, asset profile, periodic history) were removed; their data is pulled on demand. The boot seed only reconciles the universe rows from the curated CSV (local, no network).
 
 **On-demand pull (`backfill_symbol`):** The synchronous per-symbol pull used by the add-symbol route and the on-demand refresh — fetches a viewed symbol's stale/missing fast Yahoo data (quote / intraday / daily history) live behind a loading bar, and its slow SEC data (fundamentals / filings / holdings / NAV) only when missing or stale, each carrying a data-age read. Manual refresh re-pulls everything.
 
@@ -51,6 +51,8 @@ The user considers **never hitting a rate limit** critical. Every outbound call 
 **Frontend pipeline:** Vite (run from `frontend/`, built with bun) compiles `frontend/static_src/` into `dist/`, served at `/static/` with content-hashed filenames. Five entry points: `base` (shared shell + SSE client), `home`, `symbol`, `health`, `search`.
 
 **Request logging:** `src/middleware.rs` prints `time METHOD STATUS latency path` per request with ANSI-colored status codes, and serves the themed 404.
+
+**Compression:** the router wraps everything in tower-http's `CompressionLayer` (brotli/gzip per `Accept-Encoding`); its default predicate skips `text/event-stream`, so `/stream` SSE frames still flush unbuffered.
 
 ## Design — "Paper Ledger"
 

@@ -102,20 +102,67 @@
   }
 }
 
-.hero-graph__empty {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--ink-faint);
-  font-size: var(--fs-sm);
+/* ---------- loading skeletons ---------- */
+/* Before /api/dashboard answers, the overview grid shows one skeleton card per
+   slot. display: contents makes the wrapper vanish so each skeleton is a real
+   grid item — the grid lays out exactly as it will with live cards, no jump. */
+.ov-skels {
+  display: contents;
 }
-/* Re-assert [hidden] — the display:flex above otherwise beats the UA rule, so
-   the placeholder would linger over the drawn charts (cf. the symbol page's
+/* Re-assert [hidden] — display:contents otherwise beats the UA rule, so the
+   skeletons would linger behind the drawn charts (cf. the symbol page's
    .ind-btn[hidden] fix). */
-.hero-graph__empty[hidden] {
+.ov-skels[hidden] {
   display: none;
+}
+
+/* One shimmering placeholder block (a name line, a figure line, the chart
+   area). The shimmer is a slow ink wash, not a flashy gradient sweep —
+   restrained enough for the ledger aesthetic. */
+.ov-skel {
+  border-radius: var(--radius-sm);
+  background: rgba(33, 31, 26, 0.07);
+  animation: ov-skel-pulse 1.6s ease-in-out infinite;
+}
+.ov-skel--name {
+  width: 7rem;
+  height: 1rem;
+}
+.ov-skel--num {
+  width: 4.5rem;
+  height: 1rem;
+}
+.ov-skel--chart {
+  animation-delay: 0.2s;
+}
+@keyframes ov-skel-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ov-skel {
+    animation: none;
+  }
+}
+
+/* A watchlist card's chart mount is server-rendered empty and only fills once
+   hero.js draws into it; until then show the same quiet placeholder wash so
+   the card doesn't read as broken. :empty stops matching the moment the chart
+   library mounts. */
+.ov-card--watch .ov-card__chart:empty {
+  border-radius: var(--radius-sm);
+  background: rgba(33, 31, 26, 0.07);
+  animation: ov-skel-pulse 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ov-card--watch .ov-card__chart:empty {
+    animation: none;
+  }
 }
 
 /* ---------- one instrument's chart card (overview + watchlist) ---------- */

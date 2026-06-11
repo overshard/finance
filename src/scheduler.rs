@@ -1,13 +1,17 @@
 //! Background job scheduler (demand-only).
 //!
 //! One long-lived tokio task wakes on a fixed tick. Since the demand-only
-//! refocus (2026-06-03) it does **no** timed network fetching: with
-//! nobody on the site it makes zero outbound calls. Each tick it only:
+//! refocus (2026-06-03) the home dashboard's instruments are the **only**
+//! timed network fetching (the active home sweep, a 2026-06-10 user call);
+//! everything else is demand-driven. Each tick it:
 //!  - broadcasts a market-session change so open pages update their pill (and
 //!    re-pushes the dashboard summary, a local DB read, on a session flip);
 //!  - runs the demand-driven intraday quote poll — Yahoo quotes for just the
 //!    symbols a browser is currently viewing (the stream hub's interest
 //!    registry), so nothing is polled when nobody is watching;
+//!  - runs the active home sweep when due (every 15 minutes): re-quotes the
+//!    dashboard's overview instruments + all watchlist symbols, viewer or not,
+//!    so the home page always opens fresh — session-aware and guard-routed;
 //!  - prunes aged `intraday_bars` and `fetch_log` rows (~daily, local only).
 //!
 //! All the old timed sweeps (daily-close, SEC, dividends, fund metadata, NAV,
@@ -52,6 +56,16 @@ const TICK: Duration = Duration::from_secs(60);
 /// minutes while watched, not every minute. Just under 5 min so a symbol due at
 /// the 5-minute mark isn't skipped to the next tick.
 const INTRADAY_MIN_INTERVAL_SECS: i64 = 4 * 60 + 45;
+
+/// Active home-dashboard sweep cadence (a user call, 2026-06-10): the home
+/// page's instruments — the market overview, the VIX / volume reads, and every
+/// watchlist symbol across all sessions — are re-quoted every 15 minutes even
+/// with nobody on the site, so the dashboard always opens fresh instead of
+/// waiting on the on-open refresh's round trip to Yahoo. This is the one
+/// deliberate exception to the demand-only model; it stays session-aware
+/// (off-hours only the ~24h instruments are polled) and guard-routed, so the
+/// worst case is a few dozen requests per hour against the 1000/hr budget.
+const HOME_SWEEP_INTERVAL_SECS: i64 = 15 * 60;
 
 /// Prune cadence and the two retention windows it enforces.
 const PRUNE_INTERVAL_SECS: i64 = 24 * 3600;
@@ -110,6 +124,10 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
         // Prune's last-run time is loop-local: a restart simply re-prunes once,
         // which is harmless (local-only DELETEs, no network).
         let mut last_prune: Option<i64> = None;
+        // The home sweep's last-run time is loop-local too: a restart sweeps
+        // once right away (the per-symbol throttle inside `refresh_quotes`
+        // keeps a quick restart from re-hitting Yahoo for fresh quotes).
+        let mut last_home_sweep: Option<i64> = None;
         // The session last broadcast, so a transition (e.g. into after-hours)
         // is pushed to connected clients exactly once.
         let mut last_session: Option<market::Session> = None;
@@ -138,6 +156,15 @@ pub fn spawn(pool: SqlitePool, config: Arc<Config>, hub: Arc<Hub>) -> JoinHandle
                 tracing::warn!("[scheduler] intraday: {e:#}");
             }
 
+            // The active home-dashboard sweep: every 15 minutes, re-quote the
+            // home page's instruments whether or not anyone is watching, so
+            // the dashboard always opens fresh.
+            if let Err(e) =
+                run_home_sweep_if_due(&pool, &config, &hub, session, &mut last_home_sweep).await
+            {
+                tracing::warn!("[scheduler] home sweep: {e:#}");
+            }
+
             if let Err(e) = run_prune_if_due(&pool, &mut last_prune, &hub).await {
                 tracing::warn!("[scheduler] prune: {e:#}");
             }
@@ -158,9 +185,10 @@ async fn register_endpoints(pool: &SqlitePool) -> anyhow::Result<()> {
         .await?;
     // The demand-only refocus (Phase A) removed every timed sweep. Drop their
     // leftover `data_status` rows so `/health` lists only the jobs that still
-    // run (the demand-driven intraday poll and the local prune); a prod DB
-    // carries rows from the old jobs that would otherwise show as stale.
-    sqlx::query("DELETE FROM data_status WHERE job NOT IN ('intraday', 'prune')")
+    // run (the demand-driven intraday poll, the active home sweep, and the
+    // local prune); a prod DB carries rows from the old jobs that would
+    // otherwise show as stale.
+    sqlx::query("DELETE FROM data_status WHERE job NOT IN ('intraday', 'home', 'prune')")
         .execute(pool)
         .await?;
     EndpointGuard::with_budget(pool.clone(), "yahoo", YAHOO_BUDGET)
@@ -333,6 +361,73 @@ async fn run_intraday(
         mark_ok(pool, "intraday", None).await?;
     }
 
+    notify_health(hub);
+    Ok(())
+}
+
+/// The active home-dashboard sweep (a user call, 2026-06-10; see
+/// `HOME_SWEEP_INTERVAL_SECS`). Every 15 minutes it re-quotes the full
+/// dashboard set — the market overview's cash + futures tickers, the VIX and
+/// volume-proxy reads, and the union of every session's watchlist — without
+/// requiring a viewer, so the home page always opens on current figures.
+///
+/// Session-aware like `run_intraday`: inside any trading session everything is
+/// polled; outside it, only the instruments that trade ~around the clock
+/// (futures, crypto), since a frozen stock/ETF/index quote would just burn
+/// budget. Each pull rides `refresh_quotes`, so it is guard-routed, throttled
+/// per symbol (a quote fresher than ~5 minutes is skipped), and published to
+/// the hub so any open page live-ticks too.
+async fn run_home_sweep_if_due(
+    pool: &SqlitePool,
+    config: &Config,
+    hub: &Hub,
+    session: market::Session,
+    last: &mut Option<i64>,
+) -> anyhow::Result<()> {
+    let now = now_ms();
+    if let Some(t) = *last {
+        if (now - t) / 1000 < HOME_SWEEP_INTERVAL_SECS {
+            return Ok(());
+        }
+    }
+    *last = Some(now);
+
+    let mut targets: Vec<String> = crate::routes::home::dashboard_tickers()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let watchlisted: Vec<String> =
+        sqlx::query_scalar("SELECT DISTINCT ticker FROM watchlist ORDER BY ticker")
+            .fetch_all(pool)
+            .await?;
+    for t in watchlisted {
+        if !targets.contains(&t) {
+            targets.push(t);
+        }
+    }
+    if !session.is_open() {
+        let around_clock: HashSet<String> =
+            sqlx::query_scalar("SELECT ticker FROM symbols WHERE kind IN ('future', 'crypto')")
+                .fetch_all(pool)
+                .await?
+                .into_iter()
+                .collect();
+        targets.retain(|t| around_clock.contains(t));
+    }
+    if targets.is_empty() {
+        return Ok(());
+    }
+
+    mark_fetching(pool, "home").await?;
+    notify_health(hub);
+    let refreshed = refresh_quotes(pool, config, hub, &targets).await;
+    if refreshed > 0 {
+        tracing::info!(
+            "[scheduler] home sweep: {refreshed}/{} refreshed",
+            targets.len()
+        );
+    }
+    mark_ok(pool, "home", Some(now + HOME_SWEEP_INTERVAL_SECS * 1000)).await?;
     notify_health(hub);
     Ok(())
 }

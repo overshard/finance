@@ -97,6 +97,62 @@ function fmtClock(ms) {
     .toLowerCase();
 }
 
+// ── session countdown ────────────────────────────────────────────────────────
+// "Market closes in 2h 14m" in the banner: the next boundary on the fixed ET
+// schedule (no holiday calendar, by design — mirrors market.rs): weekdays
+// Pre 4:00 → Regular 9:30 → Post 16:00 → Closed 20:00; weekends closed.
+const WEEKDAYS = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+const PRE_OPEN = 4 * 60;
+const REG_OPEN = 9 * 60 + 30;
+const REG_CLOSE = 16 * 60;
+const POST_CLOSE = 20 * 60;
+
+function etNowParts() {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+  let wd = 0;
+  let h = 0;
+  let m = 0;
+  for (const p of parts) {
+    if (p.type === "weekday") wd = WEEKDAYS[p.value] ?? 0;
+    else if (p.type === "hour") h = parseInt(p.value, 10) % 24;
+    else if (p.type === "minute") m = parseInt(p.value, 10);
+  }
+  return { wd, minutes: h * 60 + m };
+}
+
+function fmtSpan(mins) {
+  const d = Math.floor(mins / 1440);
+  const h = Math.floor((mins % 1440) / 60);
+  const m = mins % 60;
+  if (d > 0) return h > 0 ? `${d}d ${h}h` : `${d}d`;
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  return `${Math.max(1, m)}m`;
+}
+
+function nextSessionRead() {
+  const { wd, minutes } = etNowParts();
+  if (wd >= 1 && wd <= 5) {
+    const next = [
+      [PRE_OPEN, "Pre-market opens"],
+      [REG_OPEN, "Market opens"],
+      [REG_CLOSE, "Market closes"],
+      [POST_CLOSE, "After hours ends"],
+    ].find(([at]) => minutes < at);
+    if (next) return `${next[1]} in ${fmtSpan(next[0] - minutes)}`;
+  }
+  // Past today's last boundary, or a weekend: count to the next weekday's
+  // pre-market open (Friday evening → Monday).
+  const days = wd === 5 ? 3 : wd === 6 ? 2 : 1;
+  const span = (days - 1) * 1440 + (1440 - minutes) + PRE_OPEN;
+  return `Pre-market opens in ${fmtSpan(span)}`;
+}
+
 function setText(role, text) {
   const el = document.querySelector(`[data-role="${role}"]`);
   if (el && text != null) el.textContent = text;
@@ -531,16 +587,15 @@ export function initHero() {
     if (clock) setText("reads-asof", "Prices as of " + clock);
   }
 
+  function patchCountdown() {
+    setText("session-note", nextSessionRead() + " " + DASH + " all times ET");
+  }
+
   function patchSession(session) {
     const banner = document.querySelector('[data-role="session-banner"]');
     if (banner && session) banner.dataset.session = session;
     setText("session-label", SESSION_LABELS[session] || "Market closed");
-    setText(
-      "session-note",
-      session === "closed"
-        ? "Prices update during market hours " + DASH + " ET"
-        : "US equities " + DASH + " all times ET",
-    );
+    patchCountdown();
   }
 
   async function refresh() {
@@ -558,13 +613,23 @@ export function initHero() {
     patchSession(data.session);
   }
 
+  patchCountdown();
   refresh();
   fetch("/api/dashboard/refresh")
     .catch(() => {})
     .finally(() => refresh());
   const timer = setInterval(refresh, 60000);
+  // The countdown drifts a minute at a time; a 30s repaint keeps it honest
+  // without waiting on the next dashboard poll.
+  const clockTimer = setInterval(patchCountdown, 30000);
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) refresh();
+    if (!document.hidden) {
+      patchCountdown();
+      refresh();
+    }
   });
-  window.addEventListener("pagehide", () => clearInterval(timer));
+  window.addEventListener("pagehide", () => {
+    clearInterval(timer);
+    clearInterval(clockTimer);
+  });
 }

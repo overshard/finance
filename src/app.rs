@@ -3,6 +3,7 @@ use minijinja::Environment;
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -115,5 +116,9 @@ pub fn router(state: AppState) -> Router {
         )
         .fallback(middleware::not_found)
         .layer(axum_middleware::from_fn(middleware::log_requests))
+        // Compress HTML / JSON / static text on the fly (brotli or gzip per
+        // Accept-Encoding). tower-http's default predicate already skips
+        // `text/event-stream`, so `/stream` SSE frames still flush unbuffered.
+        .layer(CompressionLayer::new())
         .with_state(state)
 }

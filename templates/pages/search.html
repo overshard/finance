@@ -32,6 +32,7 @@
       {"value": "stock",  "label": "Stocks"}
     ] %}
     <a class="kind-pill{% if opt.value == kind %} is-active{% endif %}"
+       {% if opt.value == kind %}aria-current="true"{% endif %}
        href="/search?q={{ q|urlencode }}{% if opt.value %}&kind={{ opt.value }}{% endif %}">{{ opt.label }}</a>
     {% endfor %}
   </div>

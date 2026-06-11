@@ -1598,8 +1598,9 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         // Only read a price-vs-NAV premium (the tracking factor) against a
         // *fresh* NAV: NAV is struck daily, so a stale one makes the premium
         // meaningless. We let the factor drop out rather than assert a bogus
-        // tracking verdict. The daily `fund_nav` job keeps NAV current; when it
-        // is behind (fresh deploy, guard tripped), tracking simply reads "—".
+        // tracking verdict. NAV is re-fetched on demand when an ETF page is
+        // viewed and stale; when it is behind (fresh deploy, guard tripped),
+        // tracking simply reads "—".
         const NAV_FRESH_MS: i64 = 3 * 24 * 3600 * 1000;
         let nav_fresh =
             etf_nav_synced_at.is_some_and(|t| crate::db::now_ms() - t <= NAV_FRESH_MS);

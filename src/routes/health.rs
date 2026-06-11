@@ -215,16 +215,22 @@ fn endpoint_label(endpoint: &str) -> &str {
 }
 
 /// Human label and one-line description per scheduler job. Since the demand-only
-/// refocus the only timed job is the intraday poll (all the old sweeps were
-/// removed; deep data is fetched on demand when a page is viewed — see the guard
-/// usage in the Endpoints section above). An unknown job falls back to its raw
-/// id and no description.
+/// refocus the timed jobs are the intraday poll and the active home sweep (all
+/// the old sweeps were removed; deep data is fetched on demand when a page is
+/// viewed — see the guard usage in the Endpoints section above). An unknown job
+/// falls back to its raw id and no description.
 fn job_meta(job: &str) -> (&str, &str) {
     match job {
         "intraday" => (
             "Intraday quotes",
             "Live quotes from Yahoo for the symbols a browser is viewing, on a \
              ~5-minute cadence. Nothing is polled when nobody is on the site.",
+        ),
+        "home" => (
+            "Home sweep",
+            "Re-quotes the dashboard's overview instruments and every watchlist \
+             symbol on a 15-minute cadence, viewer or not, so the home page \
+             always opens fresh. Off-hours only the ~24h instruments are polled.",
         ),
         "prune" => (
             "Prune",
@@ -234,13 +240,13 @@ fn job_meta(job: &str) -> (&str, &str) {
     }
 }
 
-/// Display order for the jobs list. Only the intraday poll reports a status row
-/// now; the fallback keeps any future job at the end.
+/// Display order for the jobs list; the fallback keeps any future job at the end.
 fn job_rank(job: &str) -> u8 {
     match job {
         "intraday" => 0,
-        "prune" => 1,
-        _ => 2,
+        "home" => 1,
+        "prune" => 2,
+        _ => 3,
     }
 }
 

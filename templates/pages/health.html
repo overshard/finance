@@ -24,9 +24,10 @@
 
   <p class="health-lede">
     This app fetches market data <strong>on demand</strong> &mdash; when you open
-    a page &mdash; through a request guard per upstream; the only timed job is the
-    live intraday poll for the symbols on screen. Laid open here: each guard and
-    its hourly budget, that poll, and a live tail of the fetch log.
+    a page &mdash; through a request guard per upstream; the timed jobs are the
+    live intraday poll for the symbols on screen and the 15-minute home sweep
+    that keeps the dashboard fresh. Laid open here: each guard and its hourly
+    budget, those jobs, and a live tail of the fetch log.
   </p>
 
   {# Shown only while a job is fetching; the page script toggles `hidden`. #}

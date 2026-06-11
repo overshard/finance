@@ -24,8 +24,22 @@
       <h1 class="hero-graph__title">Market overview</h1>
       <span class="hero-graph__note">live value &amp; % change vs prev close</span>
     </div>
+    {# Until /api/dashboard answers, the grid shows one shimmer-skeleton card
+       per overview slot — same shape as the real cards, so the page doesn't
+       jump when they land. hero.js hides this wrapper (display: contents, so
+       the skeletons are real grid items) on the first draw. #}
     <div class="overview-grid" data-role="overview-grid">
-      <p class="hero-graph__empty" data-role="hero-empty">Loading today&rsquo;s session&hellip;</p>
+      <div class="ov-skels" data-role="hero-empty" aria-hidden="true">
+        {% for t in overview_tickers %}{% if loop.index <= 6 %}
+        <div class="ov-card ov-card--skel">
+          <div class="ov-card__head">
+            <span class="ov-skel ov-skel--name"></span>
+            <span class="ov-skel ov-skel--num"></span>
+          </div>
+          <div class="ov-card__chart ov-skel ov-skel--chart"></div>
+        </div>
+        {% endif %}{% endfor %}
+      </div>
     </div>
   </section>
 
