@@ -33,6 +33,33 @@ pub fn vix_tone(level: f64) -> &'static str {
     }
 }
 
+/// The S&P's drawdown from its record close, read into a tone + zone label for
+/// the dashboard's crash-response gauge. `dd` is the percent below the high
+/// (`<= 0`). The zones use the usual market vocabulary — a slight dip, a
+/// pullback, a correction (`-10%`), a bear market (`-20%`). For a DCA investor
+/// the deeper zones are the *add* zone, and the labels say so, because the
+/// research is clear that timing damage is done on the sell side, not the buy.
+pub fn drawdown_read(dd: f64) -> (&'static str, &'static str) {
+    match dd {
+        d if d >= -2.0 => ("up", "At highs"),
+        d if d >= -5.0 => ("steady", "Slight dip"),
+        d if d >= -10.0 => ("warn", "Pullback"),
+        d if d >= -20.0 => ("down", "Correction · add zone"),
+        _ => ("down", "Bear market · add zone"),
+    }
+}
+
+/// A credit-stress read from the high-yield ETF's day move (HYG). Falling
+/// high-yield = risk-off / widening spreads; rising = risk appetite. A confirming
+/// gauge beside the VIX and the drawdown — the bond market's stress tell.
+pub fn credit_read(pct: f64) -> (&'static str, &'static str) {
+    match pct {
+        p if p <= -0.6 => ("down", "Stressing"),
+        p if p >= 0.3 => ("up", "Easing"),
+        _ => ("steady", "Steady"),
+    }
+}
+
 /// Position of `value` along the `[lo, hi]` range, as a 0..100 percent for
 /// placing a marker on a track. Clamped to the ends; a zero-width range maps
 /// to the midpoint. Rounded to 2 dp so it inlines cleanly into a `style`.

@@ -562,3 +562,14 @@ SI=F,Silver Futures,future,COMEX,
 HG=F,Copper Futures,future,COMEX,
 NG=F,Natural Gas Futures,future,NYMEX,
 BTC-USD,Bitcoin,crypto,,
+XLK,Technology Select Sector SPDR,etf,,^SPX
+XLF,Financial Select Sector SPDR,etf,,^SPX
+XLE,Energy Select Sector SPDR,etf,,^SPX
+XLV,Health Care Select Sector SPDR,etf,,^SPX
+XLI,Industrial Select Sector SPDR,etf,,^SPX
+XLP,Consumer Staples Select Sector SPDR,etf,,^SPX
+XLY,Consumer Discretionary Select Sector SPDR,etf,,^SPX
+XLU,Utilities Select Sector SPDR,etf,,^SPX
+XLB,Materials Select Sector SPDR,etf,,^SPX
+XLRE,Real Estate Select Sector SPDR,etf,,^SPX
+XLC,Communication Services Select Sector SPDR,etf,,^SPX

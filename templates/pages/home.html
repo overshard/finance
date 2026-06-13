@@ -51,17 +51,44 @@
     {% for t in overview_tickers %}<span data-ticker="{{ t }}"></span>{% endfor %}
   </div>
 
+  {# Sector heatmap: the 11 SPDR sector ETFs, coloured by today's move, so the
+     dashboard answers "what part of the market is driving it". hero.js fills the
+     grid from /api/dashboard; the hidden interest nodes keep the ETFs polled. #}
+  <section class="sectors">
+    <div class="sectors__head">
+      <h2 class="section-title">What&rsquo;s moving</h2>
+      <span class="sectors__note">sectors &middot; latest-session % move</span>
+    </div>
+    <div class="sectors__grid" data-role="sectors-grid" aria-busy="true"></div>
+  </section>
+  <div class="sectors-interest" hidden aria-hidden="true">
+    {% for t in sector_tickers %}<span data-ticker="{{ t }}"></span>{% endfor %}
+  </div>
+
   {# Headline market reads (context the graph doesn't carry). VIX and SPY carry
      data-ticker only (to keep them polled) and are patched by hero.js, which also
      fills volume + the S&P trend. The S&P price itself lives on the graph now. #}
   <div class="reads-head">
     <span class="reads-head__asof" data-role="reads-asof">{% if reads.asof %}Prices as of {{ reads.asof|asof }}{% else %}Awaiting first quotes&hellip;{% endif %}</span>
+    <span class="reads-head__refresh" data-role="refresh-state" hidden><span class="reads-head__spinner" aria-hidden="true"></span>Refreshing&hellip;</span>
   </div>
   <section class="reads">
+    <div class="read read--lead">
+      <div class="read__label">S&amp;P from high</div>
+      <div class="read__value num read__tone--{{ reads.drawdown_tone or 'steady' }}" data-role="drawdown-pct">{{ reads.drawdown_pct|pct if reads.drawdown_pct is not none else "—" }}</div>
+      <div class="read__sub" data-role="drawdown-label">{{ reads.drawdown_label or "Drawdown from record close" }}</div>
+    </div>
+
     <div class="read" data-ticker="{{ vix }}">
       <div class="read__label">Volatility &middot; VIX</div>
       <div class="read__value num" data-role="vix-level">{{ reads.vix_level|round(2) if reads.vix_level is not none else "—" }}</div>
       <div class="read__sub read__tone read__tone--{{ reads.vix_tone or 'steady' }}" data-role="vix-tone">{{ reads.vix_tone|capitalize if reads.vix_tone else "—" }}</div>
+    </div>
+
+    <div class="read" data-ticker="{{ credit_proxy }}">
+      <div class="read__label">Credit &middot; high yield</div>
+      <div class="read__value num read__tone--{{ reads.credit_tone or 'steady' }}" data-role="credit-pct">{{ reads.credit_pct|pct if reads.credit_pct is not none else "—" }}</div>
+      <div class="read__sub" data-role="credit-label">{{ reads.credit_label or "HYG vs prev close" }}</div>
     </div>
 
     <div class="read" data-ticker="{{ volume_proxy }}">
@@ -108,6 +135,11 @@
               <span class="ov-card__chg num {% if c.change_pct is none %}is-flat{% elif c.change_pct >= 0 %}is-up{% else %}is-down{% endif %}">{{ c.change_pct|pct }}</span>
             </div>
           </div>
+          <div class="ov-card__meta">
+            <span class="ov-card__label" hidden></span>
+            <span class="ov-card__week num" hidden></span>
+            <span class="ov-card__fresh" data-asof=""></span>
+          </div>
           <div class="ov-card__chart"></div>
         </a>
         <button class="ov-card__remove" type="button" data-remove data-ticker="{{ c.ticker }}" aria-label="Remove {{ c.ticker }} from watchlist" title="Remove">&times;</button>
@@ -118,6 +150,30 @@
     <p class="watch-empty">Your watchlist is empty. Add a stock or ETF above, or
       <a href="/search">browse the universe</a> to find one.</p>
     {% endif %}
+  </section>
+
+  {# Market movers: top gainers / losers / most active, the "what specific names
+     moved and why" detail. hero.js fills the three lists from /api/movers (an
+     8-minute server-side cache), after first paint so it never blocks the page. #}
+  <section class="movers">
+    <div class="movers__head">
+      <h2 class="section-title">Market movers</h2>
+      <span class="movers__asof" data-role="movers-asof"></span>
+    </div>
+    <div class="movers__cols" data-role="movers" aria-busy="true">
+      <div class="movers__col" data-mv="gainers">
+        <h3 class="movers__title movers__title--up">Gainers</h3>
+        <div class="movers__list"></div>
+      </div>
+      <div class="movers__col" data-mv="losers">
+        <h3 class="movers__title movers__title--down">Losers</h3>
+        <div class="movers__list"></div>
+      </div>
+      <div class="movers__col" data-mv="actives">
+        <h3 class="movers__title">Most active</h3>
+        <div class="movers__list"></div>
+      </div>
+    </div>
   </section>
 </div>
 {% endblock %}

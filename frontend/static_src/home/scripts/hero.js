@@ -8,16 +8,29 @@
 // ~every minute and on tab focus. Overview cards are built here; watchlist cards
 // are server-rendered shells (for the link + remove button) that we draw into.
 
-import { createChart, AreaSeries, ColorType } from "lightweight-charts";
+import { createChart, BaselineSeries, ColorType } from "lightweight-charts";
 
-// Semantic day-direction colours (the Paper Ledger up/down inks) + soft fills
-// that match the watchlist spark-card aesthetic.
+// Semantic day-direction colours (the Paper Ledger up/down inks) + soft fills.
+// The day chart is drawn as a BASELINE series anchored at the previous close, so
+// the line is green where price sits above yesterday's close and red where it
+// sits below — the Google-Finance / Robinhood read, far more honest than tinting
+// the whole line by the net day move.
 const UP = "#2f7d4f";
 const DOWN = "#b23b32";
-const UP_FILL = "rgba(47, 125, 79, 0.15)";
-const DOWN_FILL = "rgba(178, 59, 50, 0.15)";
+const UP_FILL_NEAR = "rgba(47, 125, 79, 0.16)";
+const UP_FILL_FAR = "rgba(47, 125, 79, 0)";
+const DOWN_FILL_NEAR = "rgba(178, 59, 50, 0.16)";
+const DOWN_FILL_FAR = "rgba(178, 59, 50, 0)";
 const REF = "rgba(33, 31, 26, 0.28)"; // dashed previous-close line
 const DASH = "·";
+
+// Arrow + sign + colour together: a colourblind-safe change indicator (WCAG 1.4.1
+// wants a second channel beyond colour). "▲ +1.96%" reads at a glance in greyscale.
+function fmtPctArrow(n) {
+  if (n == null || Number.isNaN(n)) return DASH;
+  const a = n > 0 ? "▲ " : n < 0 ? "▼ " : "";
+  return a + fmtPct(n);
+}
 
 const SESSION_LABELS = {
   regular: "Regular session",
@@ -58,6 +71,16 @@ function fmtCompact(n) {
 }
 const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
+// Sector-tile background: a green/red wash whose strength scales with the move,
+// clamped at ±3% (the de-facto heatmap scale Yahoo/Finviz use), so a +0.3% tile
+// is a faint tint and a +3%+ tile is saturated. Neutral wash when unknown.
+function sectorColor(pct) {
+  if (pct == null || Number.isNaN(pct)) return "var(--ink-wash, rgba(33, 31, 26, 0.05))";
+  const t = Math.max(-1, Math.min(1, pct / 3));
+  const a = (0.1 + 0.62 * Math.abs(t)).toFixed(3);
+  return t >= 0 ? `rgba(47, 125, 79, ${a})` : `rgba(178, 59, 50, ${a})`;
+}
+
 // 12-hour AM/PM ET clock for the axis ticks and crosshair (never 24-hour).
 function fmtAxisTime(tSec) {
   return new Date(tSec * 1000).toLocaleTimeString("en-US", {
@@ -96,6 +119,41 @@ function fmtClock(ms) {
     .replace(/\s/g, "")
     .toLowerCase();
 }
+
+// ── freshness ────────────────────────────────────────────────────────────────
+// Per-card data age, as a short chip + a tone. The whole point of this is that a
+// quote is never *silently* stale: the card always says how old its number is, so
+// landing on an out-of-date dashboard reads as "2m ago", not a mystery.
+function fmtAge(ms) {
+  if (!ms) return { text: "—", tone: "stale" };
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 45) return { text: "live", tone: "live" };
+  if (s < 90) return { text: "1m ago", tone: "fresh" };
+  if (s < 3600) return { text: `${Math.round(s / 60)}m ago`, tone: s < 600 ? "fresh" : "stale" };
+  if (s < 86400) return { text: `${Math.round(s / 3600)}h ago`, tone: "stale" };
+  return { text: "stale", tone: "stale" };
+}
+function fmtAgo(ms) {
+  if (!ms) return "";
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 5) return "just now";
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  return `${Math.round(s / 3600)}h ago`;
+}
+
+// Repaint one card's freshness chip from the asof epoch-ms stashed on it.
+function paintFresh(el) {
+  const ms = parseInt(el.dataset.asof || "", 10);
+  const { text, tone } = fmtAge(Number.isNaN(ms) ? 0 : ms);
+  el.textContent = text;
+  el.dataset.tone = tone;
+}
+
+// Last shown value per ticker, so a card flashes when its number actually moves.
+const lastShown = new Map();
+// The freshest reads quote time (epoch-ms), so the header "updated Ns ago" ticks.
+let readsAsofMs = null;
 
 // ── session countdown ────────────────────────────────────────────────────────
 // "Market closes in 2h 14m" in the banner: the next boundary on the fixed ET
@@ -277,12 +335,21 @@ function attachChart(chartEl) {
     localization: { timeFormatter: (t) => fmtCrosshairTime(t) },
   });
 
-  const series = chart.addSeries(AreaSeries, {
+  const series = chart.addSeries(BaselineSeries, {
+    // baseValue (the previous close) is set per-card in drawSeries.
+    baseValue: { type: "price", price: 0 },
+    topLineColor: UP,
+    topFillColor1: UP_FILL_NEAR,
+    topFillColor2: UP_FILL_FAR,
+    bottomLineColor: DOWN,
+    bottomFillColor1: DOWN_FILL_FAR,
+    bottomFillColor2: DOWN_FILL_NEAR,
     lineWidth: 2,
     priceLineVisible: false,
     lastValueVisible: false,
     crosshairMarkerRadius: 3,
     crosshairMarkerBorderWidth: 0,
+    crosshairMarkerBackgroundColor: "#211f1a",
   });
 
   const entry = { chart, series, chartEl, bandsEl, refLine: null, times: [], points: [], unit: "pts" };
@@ -429,13 +496,9 @@ function attachMeasure(entry) {
 function drawSeries(entry, s) {
   entry.points = s.points; // real bars, for the measure tool
   entry.unit = s.unit;
-  const color = s.up ? UP : DOWN;
-  entry.series.applyOptions({
-    lineColor: color,
-    topColor: s.up ? UP_FILL : DOWN_FILL,
-    bottomColor: "transparent",
-    crosshairMarkerBackgroundColor: color,
-  });
+  // Anchor the green/red split at the previous close, so the line reads above /
+  // below yesterday's close rather than one flat colour for the whole day.
+  entry.series.applyOptions({ baseValue: { type: "price", price: s.base } });
   entry.chart.applyOptions({
     // A full-week frame labels the axis by weekday; a single day, by time.
     timeScale: { tickMarkFormatter: s.week ? fmtWeekTick : (t) => fmtAxisTime(t) },
@@ -489,16 +552,54 @@ function drawSeries(entry, s) {
   renderBands(entry);
 }
 
-// Update a card's header value + % pill.
+// Update a card's header value + % pill, its session label, the week-to-date
+// move, and the freshness chip — and flash the card when the value actually moves.
 function setHead(root, s) {
+  const prev = lastShown.get(s.ticker);
+
   const v = root.querySelector(".ov-card__value");
   if (v) v.textContent = fmtValue(s.last, s.unit);
   const c = root.querySelector(".ov-card__chg");
   if (c) {
-    c.textContent = fmtPct(s.change_pct);
+    c.textContent = fmtPctArrow(s.change_pct);
     c.classList.remove("is-up", "is-down", "is-flat");
     c.classList.add(s.change_pct == null ? "is-flat" : s.change_pct >= 0 ? "is-up" : "is-down");
   }
+
+  // Session label badge ("Futures" / "Pre-market" / "After hours" / …): present
+  // only off-hours, so the regular-session number stays unlabelled.
+  const lab = root.querySelector(".ov-card__label");
+  if (lab) {
+    lab.textContent = s.headline_label || "";
+    lab.hidden = !s.headline_label;
+  }
+
+  // Week-to-date move beside the day move.
+  const wk = root.querySelector(".ov-card__week");
+  if (wk) {
+    wk.hidden = s.week_pct == null;
+    if (s.week_pct != null) {
+      wk.textContent = "wk " + fmtPct(s.week_pct);
+      wk.classList.remove("is-up", "is-down", "is-flat");
+      wk.classList.add(s.week_pct >= 0 ? "is-up" : "is-down");
+    }
+  }
+
+  // Freshness chip: stash the asof epoch-ms so the ticker can age it in place.
+  const fr = root.querySelector(".ov-card__fresh");
+  if (fr) {
+    fr.dataset.asof = s.asof || "";
+    paintFresh(fr);
+  }
+
+  // Flash the card when the displayed value genuinely changed between polls, so
+  // a live move is felt, not just silently swapped in.
+  if (prev != null && s.last != null && prev !== s.last) {
+    root.classList.remove("ov-flash-up", "ov-flash-down");
+    void root.offsetWidth; // reflow so the animation re-triggers
+    root.classList.add(s.last >= prev ? "ov-flash-up" : "ov-flash-down");
+  }
+  if (s.last != null) lastShown.set(s.ticker, s.last);
 }
 
 const escapeHtml = (s) =>
@@ -518,6 +619,11 @@ export function initHero() {
       `<div class="ov-card__id"><span class="ov-card__name">${escapeHtml(s.name)}</span></div>` +
       `<div class="ov-card__nums"><span class="ov-card__value num"></span>` +
       `<span class="ov-card__chg num"></span></div></div>` +
+      `<div class="ov-card__meta">` +
+      `<span class="ov-card__label" hidden></span>` +
+      `<span class="ov-card__week num" hidden></span>` +
+      `<span class="ov-card__fresh" data-asof=""></span>` +
+      `</div>` +
       `<div class="ov-card__chart"></div>`;
     overviewGrid.appendChild(root);
     const entry = attachChart(root.querySelector(".ov-card__chart"));
@@ -570,8 +676,82 @@ export function initHero() {
     });
   }
 
+  // The sector heatmap: 11 tiles, each a link to the ETF, coloured by its move.
+  // Cheap to rebuild wholesale (11 nodes), and there is no per-tile animation to
+  // preserve, so a fresh innerHTML each poll keeps it simple.
+  function drawSectors(list) {
+    const grid = document.querySelector('[data-role="sectors-grid"]');
+    if (!grid || !list) return;
+    grid.removeAttribute("aria-busy");
+    grid.innerHTML = list
+      .map((s) => {
+        const pct = s.change_pct;
+        const cls = pct == null ? "is-flat" : pct >= 0 ? "is-up" : "is-down";
+        return (
+          `<a class="sector-tile ${cls}" href="/s/${encodeURIComponent(s.ticker)}" ` +
+          `style="background:${sectorColor(pct)}" title="${escapeHtml(s.ticker)}">` +
+          `<span class="sector-tile__name">${escapeHtml(s.name)}</span>` +
+          `<span class="sector-tile__pct num">${fmtPct(pct)}</span>` +
+          `</a>`
+        );
+      })
+      .join("");
+  }
+
+  // ── market movers ──────────────────────────────────────────────────────────
+  // Top gainers / losers / most active from /api/movers (server-cached 8 min).
+  // Fetched independently of the dashboard poll, after first paint, so a cold
+  // pull never blocks the page.
+  function moverRow(m) {
+    const pct = m.change_pct;
+    const cls = pct == null ? "is-flat" : pct >= 0 ? "is-up" : "is-down";
+    return (
+      `<a class="mv-row" href="/s/${encodeURIComponent(m.symbol)}" title="${escapeHtml(m.name)}">` +
+      `<span class="mv-row__id">` +
+      `<span class="mv-row__sym">${escapeHtml(m.symbol)}</span>` +
+      `<span class="mv-row__name">${escapeHtml(m.name)}</span></span>` +
+      `<span class="mv-row__nums">` +
+      `<span class="mv-row__pct num ${cls}">${fmtPctArrow(pct)}</span>` +
+      `<span class="mv-row__sub num">${fmtValue(m.price, "$")} ${DASH} ${fmtCompact(m.volume)}</span>` +
+      `</span></a>`
+    );
+  }
+
+  async function loadMovers() {
+    let data;
+    try {
+      const res = await fetch("/api/movers", { headers: { Accept: "application/json" } });
+      if (!res.ok) return;
+      data = await res.json();
+    } catch {
+      return;
+    }
+    const root = document.querySelector('[data-role="movers"]');
+    if (!root) return;
+    root.removeAttribute("aria-busy");
+    const fill = (key, rows) => {
+      const list = root.querySelector(`[data-mv="${key}"] .movers__list`);
+      if (list) {
+        list.innerHTML = (rows || []).map(moverRow).join("") || `<p class="movers__empty">${DASH}</p>`;
+      }
+    };
+    fill("gainers", data.gainers);
+    fill("losers", data.losers);
+    fill("actives", data.actives);
+    const asof = document.querySelector('[data-role="movers-asof"]');
+    if (asof) asof.textContent = data.asof ? "as of " + fmtClock(data.asof) : "";
+  }
+
   function patchReads(r) {
     if (!r) return;
+    // Crash-response lead: S&P drawdown from its record close.
+    setText("drawdown-pct", r.drawdown_pct != null ? fmtPct(r.drawdown_pct) : DASH);
+    setTone("drawdown-pct", r.drawdown_tone || "steady", "read__tone--");
+    if (r.drawdown_label) setText("drawdown-label", r.drawdown_label);
+    // Credit stress (HYG day move).
+    setText("credit-pct", r.credit_pct != null ? fmtPct(r.credit_pct) : DASH);
+    setTone("credit-pct", r.credit_tone || "steady", "read__tone--");
+    if (r.credit_label) setText("credit-label", r.credit_label);
     setText("vix-level", r.vix_level != null ? r.vix_level.toFixed(2) : DASH);
     if (r.vix_tone) {
       setText("vix-tone", cap(r.vix_tone));
@@ -583,8 +763,30 @@ export function initHero() {
       setText("sma-read", r.sma_read);
       setTone("sma-read", r.sma_tone, "read__tone--");
     }
-    const clock = fmtClock(r.asof);
-    if (clock) setText("reads-asof", "Prices as of " + clock);
+    readsAsofMs = r.asof || null;
+    paintAsof();
+  }
+
+  // The header "Prices as of 3:42pm · updated 12s ago" caption, ticked in place
+  // so the "updated …" part counts up between polls instead of looking frozen.
+  function paintAsof() {
+    if (!readsAsofMs) return;
+    const clock = fmtClock(readsAsofMs);
+    if (clock) setText("reads-asof", `Prices as of ${clock} ${DASH} updated ${fmtAgo(readsAsofMs)}`);
+  }
+
+  // Age every card's freshness chip + the header caption, so a static dashboard
+  // visibly counts up rather than sitting at "live" forever.
+  function tickFreshness() {
+    document.querySelectorAll(".ov-card__fresh").forEach(paintFresh);
+    paintAsof();
+  }
+
+  // Toggle the "Refreshing…" indicator while an on-open / on-focus pull is in
+  // flight, so the wait for fresh quotes is visible instead of a silent stall.
+  function setRefreshing(on) {
+    const el = document.querySelector('[data-role="refresh-state"]');
+    if (el) el.hidden = !on;
   }
 
   function patchCountdown() {
@@ -608,28 +810,56 @@ export function initHero() {
       return;
     }
     drawOverview(data.series);
+    drawSectors(data.sectors);
     drawWatchlist(data.watchlist);
     patchReads(data.reads);
     patchSession(data.session);
   }
 
+  // Land → show the stored figures at once, then kick a guarded refresh (which
+  // only re-hits Yahoo for anything older than the scheduler's throttle) with a
+  // visible "Refreshing…" state so the wait is never a mystery.
   patchCountdown();
   refresh();
+  setRefreshing(true);
   fetch("/api/dashboard/refresh")
     .catch(() => {})
-    .finally(() => refresh());
-  const timer = setInterval(refresh, 60000);
-  // The countdown drifts a minute at a time; a 30s repaint keeps it honest
-  // without waiting on the next dashboard poll.
+    .finally(() => {
+      setRefreshing(false);
+      refresh();
+    });
+
+  // Movers load after first paint (server-cached, so this is usually a cache hit)
+  // and refresh on a slow cadence aligned with the 8-minute server cache.
+  loadMovers();
+
+  // The /api/dashboard poll is a local DB read (no Yahoo call), so a tighter 20s
+  // cadence is free and keeps the cards close to the freshest stored quote.
+  const timer = setInterval(refresh, 20000);
+  // The countdown drifts a minute at a time; a 30s repaint keeps it honest.
   const clockTimer = setInterval(patchCountdown, 30000);
+  // Age the freshness chips + header caption every few seconds.
+  const freshTimer = setInterval(tickFreshness, 5000);
+  // Movers change slowly and are server-cached; a 4-minute refresh is plenty.
+  const moversTimer = setInterval(loadMovers, 240000);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
       patchCountdown();
-      refresh();
+      tickFreshness();
+      loadMovers();
+      setRefreshing(true);
+      fetch("/api/dashboard/refresh")
+        .catch(() => {})
+        .finally(() => {
+          setRefreshing(false);
+          refresh();
+        });
     }
   });
   window.addEventListener("pagehide", () => {
     clearInterval(timer);
     clearInterval(clockTimer);
+    clearInterval(freshTimer);
+    clearInterval(moversTimer);
   });
 }

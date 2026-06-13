@@ -232,7 +232,104 @@ struct OhlcvArrays {
     volume: Vec<Option<i64>>,
 }
 
+/// One row in a market-movers list (top gainers / losers / most active), from the
+/// predefined-screener endpoint. A plain snapshot for the dashboard, cached as
+/// JSON in `meta` (hence `Deserialize` too), not a stored table row.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Mover {
+    pub symbol: String,
+    pub name: String,
+    pub price: Option<f64>,
+    /// Day % move, already a percent (Yahoo returns e.g. 20.08, not 0.2008).
+    pub change_pct: Option<f64>,
+    pub volume: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct ScreenerEnvelope {
+    finance: ScreenerFinance,
+}
+#[derive(Deserialize)]
+struct ScreenerFinance {
+    #[serde(default)]
+    result: Vec<ScreenerResult>,
+}
+#[derive(Deserialize)]
+struct ScreenerResult {
+    #[serde(default)]
+    quotes: Vec<ScreenerQuote>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScreenerQuote {
+    symbol: String,
+    short_name: Option<String>,
+    long_name: Option<String>,
+    display_name: Option<String>,
+    regular_market_price: Option<f64>,
+    regular_market_change_percent: Option<f64>,
+    regular_market_volume: Option<i64>,
+}
+
 impl YahooProvider {
+    /// Fetch a predefined market-movers screener (`day_gainers` / `day_losers` /
+    /// `most_actives`), `count` rows. One unauthenticated GET (the predefined
+    /// screeners are not crumb-gated). A 429/503/401/403 surfaces as the typed
+    /// [`RateLimited`] so the endpoint guard trips its breaker at once, exactly
+    /// like the chart calls; anything else parses to the rows (empty on a shape
+    /// we don't recognise).
+    pub async fn fetch_movers(&self, scr_id: &str, count: u32) -> Result<Vec<Mover>> {
+        let url = format!(
+            "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved\
+             ?count={count}&scrIds={scr_id}"
+        );
+        let resp = self.client.get(&url).send().await?;
+        let status = resp.status();
+        if matches!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS
+                | StatusCode::SERVICE_UNAVAILABLE
+                | StatusCode::UNAUTHORIZED
+                | StatusCode::FORBIDDEN
+        ) {
+            let retry_after_secs = resp
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<i64>().ok());
+            return Err(anyhow::Error::new(RateLimited {
+                status: status.as_u16(),
+                retry_after_secs,
+            }));
+        }
+        let resp = resp.error_for_status()?;
+        let env: ScreenerEnvelope = resp.json().await?;
+        let quotes = env
+            .finance
+            .result
+            .into_iter()
+            .next()
+            .map(|r| r.quotes)
+            .unwrap_or_default();
+        Ok(quotes
+            .into_iter()
+            .map(|q| {
+                let name = q
+                    .short_name
+                    .or(q.display_name)
+                    .or(q.long_name)
+                    .unwrap_or_else(|| q.symbol.clone());
+                Mover {
+                    symbol: q.symbol,
+                    name,
+                    price: q.regular_market_price,
+                    change_pct: q.regular_market_change_percent,
+                    volume: q.regular_market_volume,
+                }
+            })
+            .collect())
+    }
+
     /// Fetch and parse the v8 chart payload for `ticker`.
     ///
     /// `Ok(Some(_))` is a real chart result; `Ok(None)` means Yahoo answered

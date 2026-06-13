@@ -19,18 +19,22 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::compute;
+use crate::guard::{EndpointGuard, Permit};
 use crate::market;
+use crate::providers::http;
+use crate::providers::yahoo::{Mover, YahooProvider};
 use crate::render::render_to_string;
-use crate::{watchlist, AppState};
+use crate::{db, scheduler, watchlist, AppState};
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(home))
         .route("/api/dashboard", get(dashboard_api))
         .route("/api/dashboard/refresh", get(dashboard_refresh))
+        .route("/api/movers", get(movers_api))
 }
 
 /// The S&P 500 cash index — the SMA-trend read and the day graph's baseline.
@@ -41,6 +45,11 @@ const VIX: &str = "^VIX";
 /// real share volume on Yahoo, so the dashboard reads volume off SPY. Polled
 /// while the dashboard is open (it carries a `data-ticker`) so it stays fresh.
 const VOLUME_PROXY: &str = "SPY";
+
+/// The high-yield corporate-bond ETF used as the dashboard's credit-stress proxy:
+/// a falling HYG means widening high-yield spreads (risk-off), the bond market's
+/// tell that a sell-off is a real credit event, not noise. Already in the seed.
+const CREDIT: &str = "HYG";
 
 /// One slot in the fixed market-overview grid. Two tickers, so each card can show
 /// the full extended-hours day *and* the universally-quoted number:
@@ -73,6 +82,29 @@ const OVERVIEW: &[OverviewSlot] = &[
     OverviewSlot { quote: "BTC-USD", chart: "BTC-USD", name: "Bitcoin", dollar: true },
 ];
 
+/// The 11 SPDR Select Sector ETFs, the cheap stand-in for a 500-name S&P heatmap:
+/// each is a market-cap slice of one GICS sector, so their day moves show *which*
+/// part of the market is driving the index at a glance, for 11 quotes instead of
+/// 500. Ordered roughly by S&P weight so the biggest movers read first.
+const SECTORS: &[(&str, &str)] = &[
+    ("XLK", "Technology"),
+    ("XLF", "Financials"),
+    ("XLC", "Communication"),
+    ("XLY", "Discretionary"),
+    ("XLV", "Health Care"),
+    ("XLI", "Industrials"),
+    ("XLP", "Staples"),
+    ("XLE", "Energy"),
+    ("XLU", "Utilities"),
+    ("XLRE", "Real Estate"),
+    ("XLB", "Materials"),
+];
+
+/// The sector ETF tickers, for the home sweep / on-open refresh quote set.
+fn sector_tickers() -> Vec<&'static str> {
+    SECTORS.iter().map(|(t, _)| *t).collect()
+}
+
 /// The overview slots as (quote ticker, chart ticker, display name, dollar unit).
 fn overview() -> Vec<(&'static str, &'static str, &'static str, bool)> {
     OVERVIEW.iter().map(|s| (s.quote, s.chart, s.name, s.dollar)).collect()
@@ -98,7 +130,12 @@ fn overview_tickers() -> Vec<&'static str> {
 /// this set (each adding the watchlist symbols on top).
 pub(crate) fn dashboard_tickers() -> Vec<&'static str> {
     let mut out = overview_tickers();
-    for t in [VIX, VOLUME_PROXY] {
+    for t in [VIX, VOLUME_PROXY, CREDIT] {
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    for t in sector_tickers() {
         if !out.contains(&t) {
             out.push(t);
         }
@@ -219,6 +256,16 @@ struct MarketReads {
     /// The S&P's stance vs its 50- and 200-day averages, plus a tone.
     sma_read: Option<String>,
     sma_tone: Option<String>,
+    /// The S&P's drawdown from its record close (`<= 0`), the crash-response lead
+    /// read, with a tone and a zone label (slight dip / pullback / correction /
+    /// bear, the deeper zones flagged as the DCA add zone).
+    drawdown_pct: Option<f64>,
+    drawdown_tone: Option<String>,
+    drawdown_label: Option<String>,
+    /// Credit-stress read off the high-yield ETF (HYG) day move, with tone + label.
+    credit_pct: Option<f64>,
+    credit_tone: Option<String>,
+    credit_label: Option<String>,
     /// Freshest quote time (epoch-ms) across the baseline reads, for the
     /// "prices as of …" caption.
     asof: Option<i64>,
@@ -233,13 +280,30 @@ struct Series {
     name: String,
     /// "$" for dollar-priced instruments (gold, crude, BTC), "pts" otherwise.
     unit: &'static str,
-    /// The session's first-bar open — the chart's reference line and the % base.
+    /// The % base / the chart's dashed reference line. During the regular session
+    /// this is the previous close; off-hours it is the reference the headline move
+    /// is measured against (the futures' prior settlement, or the prev close).
     base: f64,
-    /// The latest value (the card's headline figure).
+    /// The latest value (the card's headline figure). Off-hours this is the live
+    /// extended-hours value (the future for an index, the pre-market bar for a
+    /// stock), not the frozen regular-session close.
     last: f64,
-    /// % change from `base` (the day move shown beside the value).
+    /// % change from `base` — the headline move, session-appropriate (the cash
+    /// day move during the regular session, the futures move pre-market/overnight,
+    /// the pre-market move for a stock, the close move after hours).
     change_pct: f64,
-    /// True when the day move is not negative — drives the green/red line colour.
+    /// Week-to-date % move: the cash value vs the cash close before this ET week's
+    /// Monday, so the card can show the day AND the week move at once. `None` when
+    /// there is no prior-week close to anchor to.
+    week_pct: Option<f64>,
+    /// Which session the headline reflects, so an off-hours number is never read
+    /// as the close: `None` during the regular session (the plain cash number),
+    /// else "Futures" / "Pre-market" / "After hours" / "Overnight" / "At close".
+    headline_label: Option<&'static str>,
+    /// Epoch-ms source time of the headline quote, for the per-card freshness chip
+    /// ("live" / "2m ago" / "stale"). `None` when no quote has been stored yet.
+    asof: Option<i64>,
+    /// True when the headline move is not negative — drives the green/red line colour.
     up: bool,
     /// UNIX seconds bounding the chart frame (extended-hours open and close).
     /// Normally a single Schwab day; in end-of-week mode the whole trading week
@@ -261,6 +325,16 @@ struct SeriesPoint {
     v: f64,
 }
 
+/// One sector tile in the "what's driving the market" heatmap: a sector ETF's
+/// latest-session % move, the cell coloured green/red by it (clamped at ±3% on
+/// the client). `change_pct` is `None` until the ETF has been quoted.
+#[derive(Serialize)]
+struct SectorTile {
+    ticker: String,
+    name: &'static str,
+    change_pct: Option<f64>,
+}
+
 /// What `/api/dashboard` returns and what `home` seeds the page with.
 #[derive(Serialize)]
 struct DashboardData {
@@ -268,9 +342,31 @@ struct DashboardData {
     reads: MarketReads,
     /// The fixed market-overview charts.
     series: Vec<Series>,
+    /// The sector heatmap (11 SPDR sector ETFs), so the dashboard shows which
+    /// part of the market is driving the index, not just the index level.
+    sectors: Vec<SectorTile>,
     /// The session's watchlist, drawn with the same per-instrument chart
     /// treatment as the overview (Schwab day, shading, % vs prev close).
     watchlist: Vec<Series>,
+}
+
+/// Build the sector heatmap: each SPDR sector ETF's most-recent-session % move
+/// (latest price vs its previous close). A cheap, fixed set of local reads.
+async fn sector_tiles(state: &AppState) -> Vec<SectorTile> {
+    let mut tiles = Vec::with_capacity(SECTORS.len());
+    for (ticker, name) in SECTORS {
+        let (last, prev, _asof) = quote_row(state, ticker).await;
+        let change_pct = match (last, prev) {
+            (Some(l), Some(p)) if p > 0.0 => Some((l / p - 1.0) * 100.0),
+            _ => None,
+        };
+        tiles.push(SectorTile {
+            ticker: (*ticker).to_string(),
+            name,
+            change_pct,
+        });
+    }
+    tiles
 }
 
 async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -297,7 +393,9 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response {
         reads => reads,
         vix => VIX,
         volume_proxy => VOLUME_PROXY,
+        credit_proxy => CREDIT,
         overview_tickers => overview_tickers,
+        sector_tickers => sector_tickers(),
         session => market_session.as_str(),
         session_label => session_label(market_session),
     };
@@ -349,6 +447,7 @@ async fn dashboard_api(State(state): State<AppState>, headers: HeaderMap) -> Res
         session: market_session.as_str().to_string(),
         reads: market_reads(&state).await,
         series,
+        sectors: sector_tiles(&state).await,
         watchlist,
     };
 
@@ -423,6 +522,101 @@ async fn dashboard_refresh(State(state): State<AppState>, headers: HeaderMap) ->
     resp
 }
 
+/// Movers cache: re-fetch the screener at most this often. The pull is a guarded,
+/// paced 3-call job; in between, the cached blob is served. Demand-driven — only
+/// fetched when the dashboard is open and the cache has aged out.
+const MOVERS_TTL_MS: i64 = 8 * 60 * 1000;
+const MOVERS_META_KEY: &str = "movers_json";
+/// Rows per movers list.
+const MOVERS_COUNT: u32 = 10;
+
+/// The three market-movers lists for the dashboard's "what's driving it" tables.
+#[derive(Serialize, Deserialize)]
+struct MoversData {
+    /// Epoch-ms the lists were fetched, for the freshness caption. `None` = empty.
+    asof: Option<i64>,
+    gainers: Vec<Mover>,
+    losers: Vec<Mover>,
+    actives: Vec<Mover>,
+}
+
+impl MoversData {
+    fn empty() -> Self {
+        MoversData { asof: None, gainers: vec![], losers: vec![], actives: vec![] }
+    }
+}
+
+/// `GET /api/movers` — top gainers / losers / most active. Served from an 8-minute
+/// `meta` cache; on a miss it does one guarded, paced pull of the three predefined
+/// Yahoo screeners and stores the result. On a guard stop or fetch failure it
+/// falls back to the (stale) cache, else an empty set, so the dashboard degrades
+/// quietly and never hammers Yahoo. The page fetches this after first paint, so a
+/// cold pull never blocks the dashboard.
+async fn movers_api(State(state): State<AppState>) -> Response {
+    let now = db::now_ms();
+    let cached: Option<MoversData> = db::get_meta(&state.pool, MOVERS_META_KEY)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str(&raw).ok());
+
+    if let Some(c) = &cached {
+        if c.asof.is_some_and(|t| now - t < MOVERS_TTL_MS) {
+            return Json(c).into_response();
+        }
+    }
+
+    if let Some(fresh) = fetch_movers_fresh(&state, now).await {
+        return Json(fresh).into_response();
+    }
+
+    // Refresh did not land (guard stop or all calls failed): serve stale, else empty.
+    match cached {
+        Some(c) => Json(c).into_response(),
+        None => Json(MoversData::empty()).into_response(),
+    }
+}
+
+/// One guarded, paced pull of the three movers screeners, stored to the cache.
+/// `None` when the guard denies the first call or every call fails (so the caller
+/// can fall back to the cache); a partial result (some lists empty) still returns.
+async fn fetch_movers_fresh(state: &AppState, now: i64) -> Option<MoversData> {
+    let yahoo = YahooProvider::new(http::build_client(&state.config));
+    let guard = EndpointGuard::with_budget(state.pool.clone(), "yahoo", scheduler::YAHOO_BUDGET);
+    let mut out = MoversData::empty();
+    let mut any = false;
+    for (scr, slot) in [("day_gainers", 0u8), ("day_losers", 1), ("most_actives", 2)] {
+        match guard.acquire().await {
+            Ok(Permit::Granted) => {}
+            // Denied (breaker/budget/pacing) or an acquire error: stop and let the
+            // caller serve the cache rather than push against the guard.
+            _ => break,
+        }
+        match yahoo.fetch_movers(scr, MOVERS_COUNT).await {
+            Ok(rows) => {
+                let _ = guard.record_success().await;
+                any = true;
+                match slot {
+                    0 => out.gainers = rows,
+                    1 => out.losers = rows,
+                    _ => out.actives = rows,
+                }
+            }
+            Err(e) => {
+                let _ = guard.record_failure(&e).await;
+            }
+        }
+    }
+    if !any {
+        return None;
+    }
+    out.asof = Some(now);
+    if let Ok(json) = serde_json::to_string(&out) {
+        let _ = db::set_meta(&state.pool, MOVERS_META_KEY, &json).await;
+    }
+    Some(out)
+}
+
 /// A human session label for the dashboard's market-hours banner.
 fn session_label(s: market::Session) -> &'static str {
     match s {
@@ -433,12 +627,93 @@ fn session_label(s: market::Session) -> &'static str {
     }
 }
 
-/// Build one slot's overview chart over a single Schwab trading day (extended
-/// open through extended close, framed by `start_t`/`end_t`). The **line** is the
-/// `chart` ticker's 15-minute bars (the future, so pre-market + regular +
-/// after-hours all show), while the headline **value + %** come from the `quote`
-/// ticker (the cash index, the universally-quoted number). `None` when the chart
-/// ticker has no intraday bars (e.g. never polled, or a holiday).
+/// One symbol's latest value, prior close, and quote age: the live last price
+/// (else the latest stored daily close), the close before it, and the epoch-ms
+/// the quote was sourced at (for the freshness chip).
+async fn quote_row(state: &AppState, ticker: &str) -> (Option<f64>, Option<f64>, Option<i64>) {
+    sqlx::query_as(
+        "SELECT \
+           COALESCE(s.last_price, \
+             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1)), \
+           COALESCE(s.prev_close, \
+             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1 OFFSET 1)), \
+           s.last_quote_at \
+         FROM symbols s WHERE s.ticker = ?",
+    )
+    .bind(ticker)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or((None, None, None))
+}
+
+/// The cash close strictly before the current ET week's Monday — the week-to-date
+/// % base, so "this week" reads as the move since last week ended (the prior
+/// Friday's close).
+async fn week_base_close(state: &AppState, ticker: &str, now_ms: i64) -> Option<f64> {
+    use chrono::{Datelike as _, Duration, TimeZone as _};
+    use chrono_tz::America::New_York;
+    let now = New_York.timestamp_millis_opt(now_ms).single()?;
+    let monday = now.date_naive() - Duration::days(now.weekday().num_days_from_monday() as i64);
+    sqlx::query_scalar(
+        "SELECT close FROM daily_prices WHERE ticker = ? AND d < ? ORDER BY d DESC LIMIT 1",
+    )
+    .bind(ticker)
+    .bind(monday.to_string())
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()
+    .filter(|c: &f64| *c > 0.0)
+}
+
+/// The session-appropriate headline source for a card: which value, which % base,
+/// and how to label it, so a number is never read as something it isn't.
+///
+/// - **Regular session:** the cash value vs its previous close, unlabelled — the
+///   universally-quoted day move.
+/// - **Pre-market:** for an index, the E-mini **future** vs its prior settlement
+///   ("Futures", what every market site shows at 7am); for a stock, its
+///   pre-market bar vs the previous close ("Pre-market").
+/// - **After hours:** the regular-session **close** ("At close") — what everyone
+///   still quotes as the day's result after 4pm.
+/// - **Overnight (closed):** for an index, the future ("Overnight"); for a stock,
+///   the last close ("At close").
+///
+/// `cash` and `fut` are each `(last, prev_close, asof_ms)`; `fut` is `Some` only
+/// for an index slot (a distinct futures chart ticker). `ext_bar` is the last
+/// drawn bar's close, the live extended-hours value for a stock pre-market.
+fn headline(
+    session: market::Session,
+    cash: (Option<f64>, Option<f64>, Option<i64>),
+    fut: Option<(Option<f64>, Option<f64>, Option<i64>)>,
+    ext_bar: Option<f64>,
+) -> (Option<f64>, Option<f64>, Option<&'static str>, Option<i64>) {
+    use market::Session::{Closed, Post, Pre, Regular};
+    match session {
+        Regular => (cash.0, cash.1, None, cash.2),
+        Pre => match fut {
+            Some(f) => (f.0, f.1, Some("Futures"), f.2),
+            None => (ext_bar.or(cash.0), cash.1, Some("Pre-market"), cash.2),
+        },
+        Post => (cash.0, cash.1, Some("At close"), cash.2),
+        Closed => match fut {
+            Some(f) => (f.0, f.1, Some("Overnight"), f.2),
+            None => (cash.0, cash.1, Some("At close"), cash.2),
+        },
+    }
+}
+
+/// Build one slot's overview chart over a single Schwab trading day (extended open
+/// through extended close, framed by `start_t`/`end_t`). The **line** is the
+/// `chart` ticker's 15-minute bars (the future for an index, so pre-market +
+/// regular + after-hours all show). The headline **value + %** are session-aware
+/// (see [`headline`]): the cash index during the regular session, the future
+/// pre-market and overnight, the pre-market bar for a stock, the close after
+/// hours — so the number matches what Yahoo/MarketWatch show at the moment you
+/// look, instead of a frozen cash close at 7am or midnight. `week_pct` carries the
+/// week-to-date move alongside. `None` when the chart ticker has no intraday bars.
 async fn overview_series(
     state: &AppState,
     quote_ticker: &str,
@@ -446,10 +721,15 @@ async fn overview_series(
     name: &str,
     dollar: bool,
 ) -> Option<Series> {
-    // After Friday's close the chart frames the whole trading week; the rest of
-    // the time it anchors to the Schwab day the chart ticker's most recent bar
-    // falls in, so it shows just that one day and never the previous one.
-    let now_ms = chrono::Utc::now().timestamp_millis();
+    let now = chrono::Utc::now();
+    let now_ms = now.timestamp_millis();
+    let session = market::session_at(now);
+    // An index slot pairs a cash quote ticker with a distinct futures chart ticker;
+    // gold/crude/BTC and watchlist symbols are a single ticker (no futures proxy).
+    let is_index_slot = quote_ticker != chart_ticker;
+
+    // Chart frame: the whole trading week after Friday's close, else the Schwab
+    // day the chart ticker's most recent bar falls in.
     let (start_ms, end_ms, week_monday) = match week_window(now_ms) {
         Some((s, e, mon)) => (s, e, Some(mon)),
         None => {
@@ -478,38 +758,25 @@ async fn overview_series(
     .await
     .unwrap_or_default();
 
-    // Headline value + % come from the QUOTE ticker, exactly as every market site
-    // shows it: the latest price (`last_price` = Yahoo's regularMarketPrice)
-    // against the previous close (`prev_close` = chartPreviousClose). For the
-    // cash indexes this is the universally-quoted number — live during the
-    // session, frozen at the closing change after the close. `prev_close` is also
-    // the chart's dashed reference line. Both fall back to stored daily closes.
-    let quote: Option<(Option<f64>, Option<f64>)> = sqlx::query_as(
-        "SELECT \
-           COALESCE(s.last_price, \
-             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1)), \
-           COALESCE(s.prev_close, \
-             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1 OFFSET 1)) \
-         FROM symbols s WHERE s.ticker = ?",
-    )
-    .bind(quote_ticker)
-    .fetch_optional(&state.pool)
-    .await
-    .ok()
-    .flatten();
-    let (last_price, prev_close) = quote.unwrap_or((None, None));
-
-    // Last value: the quote price, else the last drawn bar's close. Over the
-    // weekend the quote price is Yahoo's frozen Friday close — exactly the week's
-    // end value we want.
-    let last = last_price.or_else(|| rows.last().map(|r| r.2))?;
-    // Reference: the session's first-bar open (also the % base's last-resort).
+    // The session's first-bar open (the % base's last resort) and the last drawn
+    // bar's close (a stock's live extended-hours value pre-market).
     let open = rows.first().map(|r| if r.1 > 0.0 { r.1 } else { r.2 });
-    // The % base. Single-day mode: the previous close (the universally-quoted
-    // day move). Week mode: the prior Friday's close — the last daily close
-    // strictly before this week's Monday — so the move is the full-week change.
-    let base = if let Some(monday) = week_monday {
-        let prior_close: Option<f64> = sqlx::query_scalar(
+    let ext_bar = rows.last().map(|r| r.2);
+
+    // The cash quote (regular-session number + week base) and, for an index slot,
+    // the futures quote (the off-hours number). The tuples are Copy.
+    let cash = quote_row(state, quote_ticker).await;
+    let fut = if is_index_slot {
+        Some(quote_row(state, chart_ticker).await)
+    } else {
+        None
+    };
+
+    // Headline value / base / label / age. In the end-of-week frame the move is
+    // the whole-week change (prior Friday's close → Friday's close); otherwise it
+    // is the session-aware headline.
+    let (last_opt, base_opt, label, asof) = if let Some(monday) = week_monday {
+        let prior: Option<f64> = sqlx::query_scalar(
             "SELECT close FROM daily_prices WHERE ticker = ? AND d < ? ORDER BY d DESC LIMIT 1",
         )
         .bind(quote_ticker)
@@ -518,18 +785,34 @@ async fn overview_series(
         .await
         .ok()
         .flatten();
-        prior_close.filter(|p| *p > 0.0).or(open)?
+        (cash.0.or(ext_bar), prior, Some("This week"), cash.2)
     } else {
-        prev_close.filter(|p| *p > 0.0).or(open)?
+        headline(session, cash, fut, ext_bar)
     };
+
+    let last = last_opt.or(ext_bar)?;
+    let base = base_opt.filter(|p| *p > 0.0).or(open)?;
     if base <= 0.0 {
         return None;
     }
+    let change_pct = (last / base - 1.0) * 100.0;
+
+    // Week-to-date move (cash value vs the close before this week's Monday), shown
+    // alongside the day move. In the weekend frame the headline already IS the
+    // week move, so reuse it.
+    let week_pct = if week_monday.is_some() {
+        Some(change_pct)
+    } else {
+        match (cash.0, week_base_close(state, quote_ticker, now_ms).await) {
+            (Some(c), Some(wb)) => Some((c / wb - 1.0) * 100.0),
+            _ => None,
+        }
+    };
+
     let points: Vec<SeriesPoint> = rows
         .iter()
         .map(|(ts, _open, close)| SeriesPoint { t: ts / 1000, v: *close })
         .collect();
-    let change_pct = (last / base - 1.0) * 100.0;
     Some(Series {
         ticker: quote_ticker.to_string(),
         name: name.to_string(),
@@ -537,6 +820,9 @@ async fn overview_series(
         base,
         last,
         change_pct,
+        week_pct,
+        headline_label: label,
+        asof,
         up: change_pct >= 0.0,
         start_t: start_ms / 1000,
         end_t: end_ms / 1000,
@@ -618,6 +904,37 @@ async fn market_reads(state: &AppState) -> MarketReads {
             };
             r.sma_read = Some(read.to_string());
             r.sma_tone = Some(tone.to_string());
+        }
+    }
+
+    // S&P drawdown from its record close — the crash-response lead read. The
+    // record is the deepest daily history we hold (seeded ~10y, enough for the
+    // recent peak); a live value above it just reads as 0% (at highs).
+    if let Some((Some(last), _)) = last_and_prev(state, BASELINE).await {
+        let ath: Option<f64> =
+            sqlx::query_scalar("SELECT MAX(close) FROM daily_prices WHERE ticker = ?")
+                .bind(BASELINE)
+                .fetch_optional(&state.pool)
+                .await
+                .ok()
+                .flatten();
+        if let Some(high) = ath.filter(|a| *a > 0.0) {
+            let dd = (last / high.max(last) - 1.0) * 100.0;
+            let (tone, label) = compute::drawdown_read(dd);
+            r.drawdown_pct = Some(dd);
+            r.drawdown_tone = Some(tone.to_string());
+            r.drawdown_label = Some(label.to_string());
+        }
+    }
+
+    // Credit stress via the high-yield ETF's day move.
+    if let Some((Some(last), Some(prev))) = last_and_prev(state, CREDIT).await {
+        if prev > 0.0 {
+            let pct = (last / prev - 1.0) * 100.0;
+            let (tone, label) = compute::credit_read(pct);
+            r.credit_pct = Some(pct);
+            r.credit_tone = Some(tone.to_string());
+            r.credit_label = Some(label.to_string());
         }
     }
 

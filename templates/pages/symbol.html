@@ -446,12 +446,13 @@
   <div class="fund-standing">
     {{ verdict_badge(standing) }}
     <p class="fund-standing__text">Across the nine graded ratios{% if fundamentals.basis %}
-      ({{ fundamentals.basis }} figures against the latest price){% endif %},
+      ({{ fundamentals.basis }} balance-sheet figures{% if fundamentals.pe_basis %}, P/E on {{ fundamentals.pe_basis }} earnings{% endif %}, against the latest price){% endif %},
       {{ symbol.ticker }}&rsquo;s fundamentals read as <strong>{{ standing.verdict|lower }}</strong> overall.</p>
   </div>
   {% elif fundamentals.basis %}
-  <p class="fund-basis">Each ratio reads {{ fundamentals.basis }} figures against the latest price, graded so the quality shows at a glance.</p>
+  <p class="fund-basis">Balance-sheet ratios read {{ fundamentals.basis }} figures{% if fundamentals.pe_basis %}; the P/E uses {{ fundamentals.pe_basis }} EPS{% endif %}, against the latest price.</p>
   {% endif %}
+  {% if fundamentals.earnings_stale %}<p class="fund-stale" role="note">Latest SEC earnings are from {{ fundamentals.earnings_period }}; the price-based ratios may lag a more recent quarter.</p>{% endif %}
   <section class="ratios">
     {% for r in fundamentals.ratios %}
     <div class="ratio ratio--{{ r.grade }}">

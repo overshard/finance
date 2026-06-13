@@ -339,13 +339,58 @@ struct FundTable {
 /// Everything the symbol page's fundamentals + financials sections need.
 #[derive(Serialize)]
 struct FundamentalsView {
-    /// Fiscal period the ratios are based on, e.g. `FY2024`.
+    /// Fiscal period the annual ratios are based on, e.g. `FY2024`.
     basis: Option<String>,
+    /// What the P/E's earnings figure is, e.g. `TTM through Jun 2025` (trailing
+    /// twelve months) or `FY2024` when fewer than four quarters are available.
+    pe_basis: Option<String>,
+    /// The most recent reported period (e.g. `Jun 2025`), for the freshness note.
+    earnings_period: Option<String>,
+    /// True when the latest reported quarter is old enough that the price-based
+    /// ratios may lag a more recent quarter, so the page can flag it.
+    earnings_stale: bool,
     ratios: Vec<compute::Ratio>,
     annual: FundTable,
     quarterly: FundTable,
     has_annual: bool,
     has_quarterly: bool,
+}
+
+/// Trailing-twelve-month diluted EPS: the sum of the four most recent quarterly
+/// diluted-EPS facts (the derived Q4 included), with the latest quarter's period
+/// end. `None` with fewer than four quarters. Diluted EPS does not decompose
+/// perfectly quarter to quarter, but a TTM sum tracks current earnings far better
+/// than a fiscal-year figure that can be 6-12 months stale — which is exactly what
+/// makes a live-price P/E drift. Returns `(ttm_eps, latest_period_end)`.
+fn ttm_eps_diluted(facts: &[models::FundFact]) -> Option<(f64, String)> {
+    let mut q: Vec<(&str, f64)> = facts
+        .iter()
+        .filter(|f| f.fiscal_qtr.is_some() && f.metric == "eps_diluted")
+        .map(|f| (f.period_end.as_str(), f.value))
+        .collect();
+    // Most recent period first, one row per quarter.
+    q.sort_by(|a, b| b.0.cmp(a.0));
+    q.dedup_by(|a, b| a.0 == b.0);
+    if q.len() < 4 {
+        return None;
+    }
+    Some((q[..4].iter().map(|(_, v)| *v).sum(), q[0].0.to_string()))
+}
+
+/// A `YYYY-MM-DD` period end as a short `Mon YYYY` label (e.g. `Jun 2025`).
+fn fmt_period(end: &str) -> String {
+    chrono::NaiveDate::parse_from_str(end, "%Y-%m-%d")
+        .map(|d| d.format("%b %Y").to_string())
+        .unwrap_or_else(|_| end.to_string())
+}
+
+/// Days since a `YYYY-MM-DD` period end. Large numbers mean a missing or stale
+/// recent filing. Returns `i64::MAX` when the date does not parse (treated stale).
+fn period_age_days(end: &str) -> i64 {
+    match chrono::NaiveDate::parse_from_str(end, "%Y-%m-%d") {
+        Ok(d) => (chrono::Utc::now().date_naive() - d).num_days(),
+        Err(_) => i64::MAX,
+    }
 }
 
 /// One SEC filing shaped for the page.
@@ -592,16 +637,38 @@ fn build_fundamentals(facts: &[models::FundFact], price: Option<f64>) -> Option<
         .map(|(y, _, p)| (y, p))
         .collect();
 
-    // Ratios run off the most recent full fiscal year; the shared helper in
-    // `models` assembles the inputs so the home ranking grades stocks the
-    // same way this page does.
+    // Balance-sheet + margin ratios run off the most recent full fiscal year (the
+    // shared helper, so the home ranking grades stocks the same way). The P/E,
+    // though, divides a LIVE price, so it gets trailing-twelve-month EPS when we
+    // have four quarters: dividing today's price by a 6-12-month-old fiscal-year
+    // EPS is what made the P/E look wrong after a price move.
     let latest_fy = annual.last().map(|(y, _)| *y);
-    let ratios = models::latest_annual_inputs(facts, price)
-        .map(|inputs| compute::compute_ratios(&inputs))
-        .unwrap_or_default();
+    let ttm = ttm_eps_diluted(facts);
+    let inputs = models::latest_annual_inputs(facts, price).map(|mut i| {
+        if let Some((eps, _)) = ttm {
+            i.eps_diluted = Some(eps);
+        }
+        i
+    });
+    let ratios = inputs.map(|i| compute::compute_ratios(&i)).unwrap_or_default();
+
+    let pe_basis = match &ttm {
+        Some((_, end)) => Some(format!("TTM through {}", fmt_period(end))),
+        None => latest_fy.map(|y| format!("FY{y}")),
+    };
+    // The most recent reported period across all facts, and whether it is old
+    // enough that the price-based ratios may lag a newer quarter. Companies file
+    // ~45 days after a quarter ends, so a latest period older than ~150 days
+    // means a recent quarter is missing or the SEC pull is stale.
+    let latest_period_end = facts.iter().map(|f| f.period_end.as_str()).max();
+    let earnings_period = latest_period_end.map(fmt_period);
+    let earnings_stale = latest_period_end.is_some_and(|d| period_age_days(d) > 150);
 
     Some(FundamentalsView {
         basis: latest_fy.map(|y| format!("FY{y}")),
+        pe_basis,
+        earnings_period,
+        earnings_stale,
         ratios,
         has_annual: !annual.is_empty(),
         has_quarterly: !quarterly.is_empty(),

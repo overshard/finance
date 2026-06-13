@@ -711,6 +711,16 @@
   font-size: 0.82rem;
 }
 
+/* Stale-earnings caveat: the latest SEC quarter is old enough that the
+   price-based ratios may lag. Amber, sparing — a confidence flag, not an alarm. */
+.fund-stale {
+  margin: -8px 0 16px;
+  padding-left: 10px;
+  border-left: 2px solid var(--warn);
+  color: var(--warn);
+  font-size: 0.82rem;
+}
+
 /* the rolled-up strong / fair / weak standing badge with a one-line reading,
    sitting above the per-ratio grid (Phase 20) */
 .fund-standing {

@@ -246,6 +246,111 @@
   background: var(--down-soft);
 }
 
+/* ---------- card meta row: session label · week move · freshness ---------- */
+.ov-card__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: 6px;
+  min-height: 1em;
+  font-size: var(--fs-2xs);
+  line-height: 1;
+}
+/* Session badge ("Futures" / "Pre-market" / …) — neutral, informative, present
+   only off-hours so the regular-session number reads unlabelled. */
+.ov-card__label {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  font-size: var(--fs-3xs, 0.625rem);
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--ink-wash, rgba(33, 31, 26, 0.06));
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+.ov-card__week {
+  font-weight: 600;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+.ov-card__week.is-up {
+  color: var(--up);
+}
+.ov-card__week.is-down {
+  color: var(--down);
+}
+/* Freshness chip — pushed to the right; tone keys off data-tone. */
+.ov-card__fresh {
+  margin-left: auto;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.ov-card__fresh::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.ov-card__fresh[data-tone="live"] {
+  color: var(--up);
+}
+.ov-card__fresh[data-tone="live"]::before {
+  animation: ov-fresh-pulse 1.8s ease-in-out infinite;
+}
+.ov-card__fresh[data-tone="fresh"] {
+  color: var(--ink-dim);
+}
+.ov-card__fresh[data-tone="stale"] {
+  color: var(--ink-faint);
+}
+@keyframes ov-fresh-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+/* A real value move flashes the card briefly in the move's direction. */
+.ov-card.ov-flash-up {
+  animation: ov-flash-up 0.6s ease-out;
+}
+.ov-card.ov-flash-down {
+  animation: ov-flash-down 0.6s ease-out;
+}
+@keyframes ov-flash-up {
+  0% {
+    box-shadow: inset 0 0 0 2px var(--up);
+  }
+  100% {
+    box-shadow: inset 0 0 0 2px transparent;
+  }
+}
+@keyframes ov-flash-down {
+  0% {
+    box-shadow: inset 0 0 0 2px var(--down);
+  }
+  100% {
+    box-shadow: inset 0 0 0 2px transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ov-card.ov-flash-up,
+  .ov-card.ov-flash-down {
+    animation: none;
+  }
+  .ov-card__fresh[data-tone="live"]::before {
+    animation: none;
+  }
+}
+
 .ov-card__chart {
   position: relative;
   width: 100%;
@@ -361,15 +466,101 @@
   color: var(--ink-faint);
 }
 
+/* ---------- sector heatmap ("what's moving") ---------- */
+.sectors {
+  margin-top: var(--sp-4);
+}
+.sectors__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.sectors__note {
+  font-size: var(--fs-2xs);
+  color: var(--ink-faint);
+}
+.sectors__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  min-height: 2.5em;
+}
+@media (min-width: $bp-sm) {
+  .sectors__grid {
+    /* 11 sector tiles flow into as many columns as fit, so the strip stays one
+       or two tidy rows on desktop without hard-coding a count. */
+    grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  }
+}
+.sector-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--rule);
+  text-decoration: none;
+  color: var(--ink);
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.12s ease;
+}
+.sector-tile:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--lift-hover);
+  border-color: var(--rule-strong);
+}
+.sector-tile__name {
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sector-tile__pct {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  line-height: 1;
+}
+
 /* ---------- headline market reads ---------- */
 .reads-head {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: var(--sp-2);
   margin-bottom: calc(-1 * var(--sp-3) + 4px);
 }
 .reads-head__asof {
   font-size: var(--fs-xs);
   color: var(--ink-faint);
+}
+.reads-head__refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-xs);
+  color: var(--ink-dim);
+}
+.reads-head__spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--rule-strong);
+  border-top-color: var(--ink-dim);
+  animation: reads-spin 0.7s linear infinite;
+}
+@keyframes reads-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reads-head__spinner {
+    animation: none;
+  }
 }
 
 .reads {
@@ -379,8 +570,8 @@
 }
 @media (min-width: $bp-sm) {
   .reads {
-    // Three reads since Phase E (VIX, Market volume, S&P trend): the S&P price
-    // tile moved onto the overview graph.
+    // Five reads: the crash-response row (S&P-from-high, VIX, credit) leads, then
+    // market volume + the S&P 50/200 trend.
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
@@ -391,6 +582,11 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
+}
+/* The crash-response lead read carries a hairline accent so the at-a-glance
+   "how far from the high" number reads as the headline of the pulse row. */
+.read--lead {
+  border-left: 2px solid var(--rule-strong);
 }
 
 .read__label {
@@ -495,4 +691,110 @@
    `.ov-card--watch`); it only needs the top margin under its header. */
 .watch-grid {
   margin-top: var(--sp-3);
+}
+
+/* ---------- market movers ---------- */
+.movers {
+  margin-top: var(--sp-5);
+}
+.movers__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.movers__asof {
+  font-size: var(--fs-2xs);
+  color: var(--ink-faint);
+}
+.movers__cols {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--sp-3);
+}
+@media (min-width: $bp-sm) {
+  .movers__cols {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+.movers__col {
+  @include card;
+  padding: var(--sp-2) var(--sp-3) var(--sp-1);
+}
+.movers__title {
+  @include eyebrow;
+  margin-bottom: 4px;
+}
+.movers__title--up {
+  color: var(--up);
+}
+.movers__title--down {
+  color: var(--down);
+}
+.movers__empty {
+  font-size: var(--fs-xs);
+  color: var(--ink-faint);
+  padding: var(--sp-2) 0;
+}
+.mv-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 7px 0;
+  border-top: 1px solid var(--rule);
+  text-decoration: none;
+  color: var(--ink);
+}
+.movers__list .mv-row:first-child {
+  border-top: none;
+}
+.mv-row:hover {
+  color: var(--ink);
+  background: var(--ink-wash, rgba(33, 31, 26, 0.04));
+  margin: 0 calc(-1 * var(--sp-2));
+  padding-left: var(--sp-2);
+  padding-right: var(--sp-2);
+}
+.mv-row__id {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.mv-row__sym {
+  font-weight: 700;
+  font-size: var(--fs-sm);
+  line-height: 1.1;
+}
+.mv-row__name {
+  font-size: var(--fs-2xs);
+  color: var(--ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 13ch;
+}
+.mv-row__nums {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex: none;
+}
+.mv-row__pct {
+  font-weight: 700;
+  font-size: var(--fs-sm);
+  line-height: 1;
+}
+.mv-row__pct.is-up {
+  color: var(--up);
+}
+.mv-row__pct.is-down {
+  color: var(--down);
+}
+.mv-row__sub {
+  font-size: var(--fs-2xs);
+  color: var(--ink-faint);
 }
