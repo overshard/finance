@@ -98,5 +98,3 @@ Data persists to `/srv/data/finance/` on the host (mounted into the container at
 - **Frontend:** Vite 6, SCSS, lightweight-charts; Source Serif 4 / Inter / JetBrains Mono, self-hosted via `@fontsource`
 - **Scheduler:** one long-lived tokio loop running market-hours-aware background jobs
 - **Real-time:** a `tokio::sync::broadcast` hub feeding a `/stream` SSE endpoint
-
-See [CLAUDE.md](CLAUDE.md) for the full architecture rundown, route table, and data model.
