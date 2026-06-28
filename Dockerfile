@@ -12,6 +12,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY migrations ./migrations
 COPY frontend ./frontend
+# Needed at COMPILE time: src/sp500.rs embeds universe/sp500.txt via include_str!
+# (the runtime stage also copies universe/ for starter.csv, read at runtime).
+COPY universe ./universe
 
 RUN cd frontend && bun install --frozen-lockfile && bun run build
 
