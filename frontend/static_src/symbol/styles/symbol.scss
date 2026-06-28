@@ -721,6 +721,22 @@
   font-size: 0.82rem;
 }
 
+/* "no recent trading data" banner for a dormant / delisted / renamed symbol,
+   sitting above the header so it is read first (see STALE_DATA_DAYS). */
+.stale-banner {
+  margin: 4px 0 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--warn);
+  border-left-width: 3px;
+  border-radius: 4px;
+  background: var(--warn-soft);
+  color: var(--ink);
+  font-size: 0.86rem;
+  line-height: 1.45;
+
+  strong { color: var(--warn); }
+}
+
 /* the rolled-up strong / fair / weak standing badge with a one-line reading,
    sitting above the per-ratio grid (Phase 20) */
 .fund-standing {

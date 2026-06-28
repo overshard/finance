@@ -255,17 +255,32 @@ struct HeaderQuote {
 struct QuoteRow {
     price: f64,
     prev_close: Option<f64>,
+    /// When this quote was sourced (epoch-ms), so the header's freshness label
+    /// reflects the quote's real age, not just the wall-clock session.
+    fetched_at: Option<i64>,
 }
 
-/// A short freshness label for the symbol header. Yahoo's chart endpoint does
-/// not carry a market-state field, so this comes from our own session clock
-/// (`market.rs`) rather than the quote.
-fn quote_state_label() -> &'static str {
+/// How recent a stored quote must be to read as current during an open session.
+/// The intraday poll refreshes watched symbols about every 5 minutes and the
+/// home sweep every 15; past this a quote is no longer "live", and the header
+/// says so rather than asserting a freshness the number does not have.
+const QUOTE_FRESH_MS: i64 = 15 * 60 * 1000;
+
+/// A short freshness label for the symbol header, honest about the quote's age.
+/// Yahoo's chart endpoint carries no market-state field, so the *session* comes
+/// from our own clock (`market.rs`); the *freshness* comes from how long ago the
+/// quote was actually sourced (`quoted_at`, epoch-ms). A stale quote during an
+/// open session reads "Delayed" instead of a false "Live". After the close the
+/// shown number IS the day's close, so its age does not change the "At close"
+/// reading.
+fn quote_state_label(quoted_at: Option<i64>) -> &'static str {
+    use market::Session::{Closed, Post, Pre, Regular};
+    let fresh = quoted_at.is_some_and(|t| now_ms() - t <= QUOTE_FRESH_MS);
     match market::session_at(chrono::Utc::now()) {
-        market::Session::Pre => "Pre-market",
-        market::Session::Regular => "Live",
-        market::Session::Post => "After hours",
-        market::Session::Closed => "At close",
+        Pre => if fresh { "Pre-market" } else { "Delayed" },
+        Regular => if fresh { "Live" } else { "Delayed" },
+        Post => if fresh { "After hours" } else { "Delayed" },
+        Closed => "At close",
     }
 }
 
@@ -274,6 +289,29 @@ fn quote_state_label() -> &'static str {
 /// Placeholder glyph for a value the company did not report — an em dash, an
 /// unambiguous "no data" mark (a middle dot read as a stray decimal point).
 const DASH: &str = "\u{2014}";
+
+/// How fresh a struck NAV must be before a price-vs-NAV premium/discount is
+/// trustworthy. NAV is struck once per trading day, so a NAV older than this is
+/// stale and any "premium" against it is really just price drift since then; the
+/// premium drops to `None` rather than assert a bogus figure. Shared by the
+/// "About this fund" premium line and the ETF quality read's tracking factor.
+const NAV_FRESH_MS: i64 = 3 * 24 * 3600 * 1000;
+
+/// A symbol whose most recent daily bar is older than this (calendar days) is
+/// treated as dormant: likely delisted, renamed, or halted. Comfortably past a
+/// stacked holiday weekend so a normally-trading symbol never trips it. Yahoo
+/// still serves a frozen chart for a dead ticker (so the page would otherwise
+/// look live), which is exactly why this banner exists.
+const STALE_DATA_DAYS: i64 = 7;
+
+/// A "no recent trading data" banner for the symbol header: the date of the last
+/// bar we hold and how many days stale it is, so a dormant/delisted symbol reads
+/// honestly instead of showing a frozen chart as if it were current.
+#[derive(Serialize)]
+struct StaleData {
+    last_date: String,
+    days: i64,
+}
 
 /// Whether a period-over-period rise in a metric is good news, for the
 /// financials-table growth cue.
@@ -374,7 +412,20 @@ fn ttm_eps_diluted(facts: &[models::FundFact]) -> Option<(f64, String)> {
     if q.len() < 4 {
         return None;
     }
-    Some((q[..4].iter().map(|(_, v)| *v).sum(), q[0].0.to_string()))
+    let four = &q[..4];
+    // The four quarters must be *consecutive*, or their sum is not a real
+    // trailing twelve months: a missing quarter would splice together periods
+    // spanning more than a year and still label it "TTM". Require each adjacent
+    // pair of period-ends to sit about one quarter apart (~80–100 days); when
+    // they don't, return None so the caller falls back to full-year EPS.
+    let parse = |d: &str| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
+    for pair in four.windows(2) {
+        let gap = (parse(pair[0].0)? - parse(pair[1].0)?).num_days();
+        if !(80..=100).contains(&gap) {
+            return None;
+        }
+    }
+    Some((four.iter().map(|(_, v)| *v).sum(), four[0].0.to_string()))
 }
 
 /// A `YYYY-MM-DD` period end as a short `Mon YYYY` label (e.g. `Jun 2025`).
@@ -848,11 +899,19 @@ fn build_fund_meta(row: FundMetadataRow, price: Option<f64>) -> FundMetaView {
     let pct = |v: Option<f64>, dp: usize| -> String {
         v.map_or_else(|| DASH.to_string(), |x| format!("{:.*}%", dp, x * 100.0))
     };
-    // Premium / discount: live price against the latest NAV. Live price falls
+    // Premium / discount: live price against the latest NAV, but only when that
+    // NAV is fresh (struck within NAV_FRESH_MS). Comparing a live price to a
+    // days-old NAV yields a meaningless premium, so a stale NAV drops the line to
+    // `None` rather than show drift as a premium — the same gate the ETF quality
+    // read's tracking factor uses, so the two never disagree. Live price falls
     // back to the daily close when no quote yet, just as the ratio cards do.
+    let nav_fresh = row
+        .nav_synced_at
+        .is_some_and(|t| now_ms() - t <= NAV_FRESH_MS);
     let premium = price
-        .and_then(|p| compute::premium_discount_pct(p, row.nav_price).map(|pct| (p, pct)))
-        .map(|(_, pct)| PremiumView {
+        .filter(|_| nav_fresh)
+        .and_then(|p| compute::premium_discount_pct(p, row.nav_price))
+        .map(|pct| PremiumView {
             text: format!("{:+.2}%", pct),
             grade: compute::premium_grade(pct),
         });
@@ -1411,7 +1470,9 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
 
     // The latest stored live quote, if the symbol has ever been quoted. The
     // header prefers it over the last daily close.
-    let quote = sqlx::query_as::<_, QuoteRow>("SELECT price, prev_close FROM quotes WHERE ticker = ?")
+    let quote = sqlx::query_as::<_, QuoteRow>(
+        "SELECT price, prev_close, fetched_at FROM quotes WHERE ticker = ?",
+    )
         .bind(&ticker)
         .fetch_optional(&state.pool)
         .await
@@ -1423,7 +1484,7 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
                 price: q.price,
                 change_abs: change.map(|c| c.abs),
                 change_pct: change.map(|c| c.pct),
-                state_label: quote_state_label().to_string(),
+                state_label: quote_state_label(q.fetched_at).to_string(),
             }
         });
 
@@ -1667,8 +1728,8 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         // meaningless. We let the factor drop out rather than assert a bogus
         // tracking verdict. NAV is re-fetched on demand when an ETF page is
         // viewed and stale; when it is behind (fresh deploy, guard tripped),
-        // tracking simply reads "—".
-        const NAV_FRESH_MS: i64 = 3 * 24 * 3600 * 1000;
+        // tracking simply reads "—". The freshness window is shared with the
+        // "About this fund" premium line (see NAV_FRESH_MS) so they agree.
         let nav_fresh =
             etf_nav_synced_at.is_some_and(|t| crate::db::now_ms() - t <= NAV_FRESH_MS);
         let premium_pct = if nav_fresh {
@@ -1751,9 +1812,22 @@ async fn symbol_page(Path(ticker): Path<String>, State(state): State<AppState>) 
         None
     };
 
+    // Dormant / delisted signal: the most recent daily bar is well in the past.
+    // Yahoo serves a frozen chart for a dead ticker, so without this the page
+    // would look live. `None` for a normally-trading symbol.
+    let stale_data = symbol.history_last_date.as_deref().and_then(|d| {
+        let last = chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()?;
+        let days = (chrono::Utc::now().date_naive() - last).num_days();
+        (days > STALE_DATA_DAYS).then(|| StaleData {
+            last_date: d.to_string(),
+            days,
+        })
+    });
+
     let extra = minijinja::context! {
         title => ticker,
         symbol => symbol,
+        stale_data => stale_data,
         stats => stats,
         indicators => indicators,
         quote => quote,
@@ -2579,4 +2653,52 @@ fn sse_json(event: &str, data: &str) -> Result<axum::response::sse::Event, std::
 /// above (no control characters in play; just quote the value safely).
 fn json_str(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn q(period_end: &str, value: f64) -> models::FundFact {
+        models::FundFact {
+            metric: "eps_diluted".to_string(),
+            period: format!("Q-{period_end}"),
+            fiscal_year: 2024,
+            fiscal_qtr: Some(1),
+            value,
+            period_end: period_end.to_string(),
+        }
+    }
+
+    #[test]
+    fn ttm_eps_sums_four_consecutive_quarters() {
+        let facts = vec![
+            q("2024-12-31", 1.0),
+            q("2024-09-30", 0.9),
+            q("2024-06-30", 0.8),
+            q("2024-03-31", 0.7),
+        ];
+        let ttm = ttm_eps_diluted(&facts).expect("four consecutive quarters → a TTM");
+        assert!((ttm.0 - 3.4).abs() < 1e-9);
+        assert_eq!(ttm.1, "2024-12-31"); // labelled through the newest quarter
+    }
+
+    #[test]
+    fn ttm_eps_rejects_a_gap() {
+        // A missing quarter (jump from 2024-06-30 back to 2023-09-30) spans more
+        // than a year, so it must NOT be summed as a trailing twelve months.
+        let facts = vec![
+            q("2024-12-31", 1.0),
+            q("2024-09-30", 0.9),
+            q("2024-06-30", 0.8),
+            q("2023-09-30", 0.6),
+        ];
+        assert!(ttm_eps_diluted(&facts).is_none(), "a non-consecutive run is not a TTM");
+    }
+
+    #[test]
+    fn ttm_eps_needs_four_quarters() {
+        let facts = vec![q("2024-12-31", 1.0), q("2024-09-30", 0.9)];
+        assert!(ttm_eps_diluted(&facts).is_none());
+    }
 }

@@ -65,6 +65,26 @@ pub fn session_at(now: DateTime<Utc>) -> Session {
     }
 }
 
+/// The share of a full trading day's volume that should have accumulated by
+/// `now`, for proration. During the regular session it is the fraction of the
+/// 09:30–16:00 ET session elapsed (floored at 0.02 so the first minutes do not
+/// divide by ~0); at every other time it is 1.0, because Yahoo's
+/// `regularMarketVolume` then reflects a *complete* session (the prior day's in
+/// pre-market, today's after the close). Dividing today's cumulative volume by
+/// `avg_full_day * this_fraction` compares it to the volume typically seen by
+/// this point in the day, instead of reading "light" all morning.
+pub fn volume_session_fraction(now: DateTime<Utc>) -> f64 {
+    match session_at(now) {
+        Session::Regular => {
+            let t = now.with_timezone(&New_York).time();
+            let elapsed = (t - at(9, 30)).num_seconds() as f64;
+            let total = (at(16, 0) - at(9, 30)).num_seconds() as f64;
+            (elapsed / total).clamp(0.02, 1.0)
+        }
+        _ => 1.0,
+    }
+}
+
 /// The `America/New_York` calendar date (`YYYY-MM-DD`) at `now`.
 // Retained past the Phase-A removal of the daily-close job: the Phase-C
 // dashboard resolves "today" / the most-recent trading day for the day graph.
@@ -88,4 +108,45 @@ pub fn is_et_weekday(now: DateTime<Utc>) -> bool {
 #[allow(dead_code)] // see et_date: Phase-C market-hours logic.
 pub fn after_close(now: DateTime<Utc>) -> bool {
     now.with_timezone(&New_York).time() >= at(16, 5)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    // June 2026 is EDT (UTC-4), so ET = UTC - 4h. 2026-06-24 is a Wednesday.
+    fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap()
+    }
+
+    #[test]
+    fn session_at_maps_the_trading_day() {
+        assert_eq!(session_at(utc(2026, 6, 24, 12, 0)), Session::Pre); // 08:00 ET
+        assert_eq!(session_at(utc(2026, 6, 24, 13, 30)), Session::Regular); // 09:30 ET open
+        assert_eq!(session_at(utc(2026, 6, 24, 17, 0)), Session::Regular); // 13:00 ET
+        assert_eq!(session_at(utc(2026, 6, 24, 20, 0)), Session::Post); // 16:00 ET close
+        assert_eq!(session_at(utc(2026, 6, 24, 1, 0)), Session::Closed); // overnight
+        assert_eq!(session_at(utc(2026, 6, 27, 17, 0)), Session::Closed); // Saturday
+    }
+
+    #[test]
+    fn volume_fraction_prorates_only_during_the_regular_session() {
+        // Pre-market: regularMarketVolume is the prior full session → 1.0.
+        assert_eq!(volume_session_fraction(utc(2026, 6, 24, 12, 0)), 1.0);
+        // Midday (13:00 ET): 3.5h of a 6.5h session elapsed ≈ 0.538.
+        let mid = volume_session_fraction(utc(2026, 6, 24, 17, 0));
+        assert!((mid - 3.5 / 6.5).abs() < 1e-6, "midday fraction was {mid}");
+        // After hours and weekends are a complete session → 1.0.
+        assert_eq!(volume_session_fraction(utc(2026, 6, 24, 21, 0)), 1.0);
+        assert_eq!(volume_session_fraction(utc(2026, 6, 27, 17, 0)), 1.0);
+    }
+
+    #[test]
+    fn volume_fraction_floors_at_the_open() {
+        // Right at the open the elapsed fraction is floored (not ~0) so the
+        // morning ratio does not divide by near-zero and explode.
+        let at_open = volume_session_fraction(utc(2026, 6, 24, 13, 30));
+        assert!(at_open >= 0.02, "expected a floor, got {at_open}");
+    }
 }

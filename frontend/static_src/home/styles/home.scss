@@ -185,19 +185,6 @@
   color: inherit;
 }
 
-.ov-card__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--sp-2);
-}
-
-.ov-card__id {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
 .ov-card__name {
   @include serif;
   font-size: var(--fs-md);
@@ -214,16 +201,29 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Watchlist card name: ticker bold with the company name trailing small on one
+   line, so the card head matches the overview cards' single-line name. */
+.ov-card__name--watch {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  color: var(--ink);
+}
+.ov-card__name--watch .ov-card__sub {
+  font-weight: 400;
+  flex: 0 1 auto;
+}
 
+/* Value + % on one baseline-aligned row — the at-a-glance read. */
 .ov-card__nums {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
-  flex: none;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
 }
 .ov-card__value {
-  font-size: var(--fs-md);
+  font-size: var(--fs-lg);
   font-weight: 700;
   line-height: 1;
 }
@@ -244,78 +244,6 @@
 .ov-card__chg.is-down {
   color: var(--down);
   background: var(--down-soft);
-}
-
-/* ---------- card meta row: session label · week move · freshness ---------- */
-.ov-card__meta {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  margin-top: 6px;
-  min-height: 1em;
-  font-size: var(--fs-2xs);
-  line-height: 1;
-}
-/* Session badge ("Futures" / "Pre-market" / …) — neutral, informative, present
-   only off-hours so the regular-session number reads unlabelled. */
-.ov-card__label {
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-weight: 700;
-  font-size: var(--fs-3xs, 0.625rem);
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: var(--ink-wash, rgba(33, 31, 26, 0.06));
-  color: var(--ink-dim);
-  white-space: nowrap;
-}
-.ov-card__week {
-  font-weight: 600;
-  color: var(--ink-faint);
-  white-space: nowrap;
-}
-.ov-card__week.is-up {
-  color: var(--up);
-}
-.ov-card__week.is-down {
-  color: var(--down);
-}
-/* Freshness chip — pushed to the right; tone keys off data-tone. */
-.ov-card__fresh {
-  margin-left: auto;
-  color: var(--ink-faint);
-  white-space: nowrap;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.ov-card__fresh::before {
-  content: "";
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: currentColor;
-}
-.ov-card__fresh[data-tone="live"] {
-  color: var(--up);
-}
-.ov-card__fresh[data-tone="live"]::before {
-  animation: ov-fresh-pulse 1.8s ease-in-out infinite;
-}
-.ov-card__fresh[data-tone="fresh"] {
-  color: var(--ink-dim);
-}
-.ov-card__fresh[data-tone="stale"] {
-  color: var(--ink-faint);
-}
-@keyframes ov-fresh-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.25;
-  }
 }
 
 /* A real value move flashes the card briefly in the move's direction. */
@@ -346,15 +274,18 @@
   .ov-card.ov-flash-down {
     animation: none;
   }
-  .ov-card__fresh[data-tone="live"]::before {
-    animation: none;
-  }
 }
 
+/* The sparkline mount: a short, full-width SVG of the day's path. */
 .ov-card__chart {
   position: relative;
   width: 100%;
-  height: 156px;
+  height: 42px;
+}
+.spark {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 /* ---------- watchlist card extras (link + remove) ---------- */
@@ -396,75 +327,6 @@
   opacity: 0.4;
 }
 
-/* Extended-hours (pre-market / after-hours / overnight) shading. A subtle,
-   non-semantic ink tint over those spans so the clear regular-session window
-   stands out. Pointer-transparent so the crosshair still reads through. The
-   bottom inset keeps the tint off the time-axis labels. */
-.ov-bands {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 22px;
-  left: 0;
-  pointer-events: none;
-  overflow: hidden;
-}
-.ov-band {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  background: rgba(33, 31, 26, 0.05);
-}
-
-/* Click-drag measure tool (mirrors the symbol chart): a shaded band between two
-   bars + a readout chip with the % and value change. Both pointer-transparent. */
-.ov-measure-band {
-  position: absolute;
-  top: 0;
-  bottom: 22px;
-  z-index: 3;
-  background: rgba(33, 31, 26, 0.08);
-  border-left: 1px solid var(--rule-strong);
-  border-right: 1px solid var(--rule-strong);
-  pointer-events: none;
-}
-.ov-measure-band[hidden] {
-  display: none;
-}
-.ov-measure-readout {
-  position: absolute;
-  top: 4px;
-  z-index: 4;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 3px 7px;
-  background: var(--surface);
-  border: 1px solid var(--rule-strong);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--lift-hover);
-  white-space: nowrap;
-  pointer-events: none;
-}
-.ov-measure-readout[hidden] {
-  display: none;
-}
-.ov-measure__pct {
-  @include mono;
-  font-size: var(--fs-xs);
-  font-weight: 700;
-}
-.ov-measure-readout[data-dir="up"] .ov-measure__pct {
-  color: var(--up);
-}
-.ov-measure-readout[data-dir="down"] .ov-measure__pct {
-  color: var(--down);
-}
-.ov-measure__sub {
-  @include mono;
-  font-size: var(--fs-2xs);
-  color: var(--ink-faint);
-}
 
 /* ---------- sector heatmap ("what's moving") ---------- */
 .sectors {
@@ -707,6 +569,18 @@
 .movers__asof {
   font-size: var(--fs-2xs);
   color: var(--ink-faint);
+}
+/* "S&P 500" scope chip beside the Market movers title. */
+.movers__scope {
+  margin-left: 6px;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  vertical-align: middle;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--ink-wash, rgba(33, 31, 26, 0.06));
+  color: var(--ink-dim);
 }
 .movers__cols {
   display: grid;

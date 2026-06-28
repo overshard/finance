@@ -22,20 +22,18 @@
   <section class="hero-graph">
     <div class="hero-graph__head">
       <h1 class="hero-graph__title">Market overview</h1>
-      <span class="hero-graph__note">live value &amp; % change vs prev close</span>
+      <span class="hero-graph__note">value &amp; % change vs prev close</span>
     </div>
     {# Until /api/dashboard answers, the grid shows one shimmer-skeleton card
-       per overview slot — same shape as the real cards, so the page doesn't
-       jump when they land. hero.js hides this wrapper (display: contents, so
-       the skeletons are real grid items) on the first draw. #}
+       per overview slot — same shape as the real sparkline cards, so the page
+       doesn't jump when they land. hero.js hides this wrapper (display: contents,
+       so the skeletons are real grid items) on the first draw. #}
     <div class="overview-grid" data-role="overview-grid">
       <div class="ov-skels" data-role="hero-empty" aria-hidden="true">
         {% for t in overview_tickers %}{% if loop.index <= 6 %}
         <div class="ov-card ov-card--skel">
-          <div class="ov-card__head">
-            <span class="ov-skel ov-skel--name"></span>
-            <span class="ov-skel ov-skel--num"></span>
-          </div>
+          <span class="ov-skel ov-skel--name"></span>
+          <span class="ov-skel ov-skel--num"></span>
           <div class="ov-card__chart ov-skel ov-skel--chart"></div>
         </div>
         {% endif %}{% endfor %}
@@ -125,20 +123,10 @@
       {% for c in cards %}
       <div class="ov-card ov-card--watch" data-ticker="{{ c.ticker }}" data-unit="{{ c.unit }}">
         <a class="ov-card__link" href="/s/{{ c.ticker|urlencode }}">
-          <div class="ov-card__head">
-            <div class="ov-card__id">
-              <span class="ov-card__name">{{ c.ticker }}</span>
-              <span class="ov-card__sub">{{ c.name }}</span>
-            </div>
-            <div class="ov-card__nums">
-              <span class="ov-card__value num">{{ c.price|money }}</span>
-              <span class="ov-card__chg num {% if c.change_pct is none %}is-flat{% elif c.change_pct >= 0 %}is-up{% else %}is-down{% endif %}">{{ c.change_pct|pct }}</span>
-            </div>
-          </div>
-          <div class="ov-card__meta">
-            <span class="ov-card__label" hidden></span>
-            <span class="ov-card__week num" hidden></span>
-            <span class="ov-card__fresh" data-asof=""></span>
+          <div class="ov-card__name ov-card__name--watch">{{ c.ticker }}<span class="ov-card__sub">{{ c.name }}</span></div>
+          <div class="ov-card__nums">
+            <span class="ov-card__value num">{{ c.price|money }}</span>
+            <span class="ov-card__chg num {% if c.change_pct is none %}is-flat{% elif c.change_pct >= 0 %}is-up{% else %}is-down{% endif %}">{{ c.change_pct|pct }}</span>
           </div>
           <div class="ov-card__chart"></div>
         </a>
@@ -157,7 +145,7 @@
      8-minute server-side cache), after first paint so it never blocks the page. #}
   <section class="movers">
     <div class="movers__head">
-      <h2 class="section-title">Market movers</h2>
+      <h2 class="section-title">Market movers <span class="movers__scope">S&amp;P 500</span></h2>
       <span class="movers__asof" data-role="movers-asof"></span>
     </div>
     <div class="movers__cols" data-role="movers" aria-busy="true">

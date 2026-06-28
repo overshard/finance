@@ -191,7 +191,14 @@ fn latest_annual_inputs_filtered(
     for f in facts {
         if f.fiscal_qtr.is_none() && keep(f) {
             annual.insert((f.metric.as_str(), f.fiscal_year), f.value);
-            latest_fy = Some(latest_fy.map_or(f.fiscal_year, |y| y.max(f.fiscal_year)));
+            // Only an income-statement metric may advance the "latest fiscal
+            // year" the ratios key off. A stray balance-sheet or dividend figure
+            // tagged a year ahead (common right around a filing) would otherwise
+            // make `latest_fy` a year the core figures aren't in yet, blanking
+            // every ratio instead of reading the most recent complete year.
+            if matches!(f.metric.as_str(), "revenue" | "net_income" | "eps_diluted") {
+                latest_fy = Some(latest_fy.map_or(f.fiscal_year, |y| y.max(f.fiscal_year)));
+            }
         }
     }
     let fy = latest_fy?;

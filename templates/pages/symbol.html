@@ -45,6 +45,14 @@
     <span class="refresh__status" data-refresh-status aria-live="polite"></span>
     <div class="refresh__bar" data-refresh-bar hidden><div class="refresh__fill" data-refresh-fill></div></div>
   </div>
+  {% if stale_data %}
+  <div class="stale-banner" role="note">
+    <strong>No recent trading data.</strong> The last price we hold for {{ symbol.ticker }}
+    is from {{ stale_data.last_date|shortdate }} ({{ stale_data.days }} days ago). This symbol
+    may be delisted, renamed, or halted &mdash; the figures below reflect its last active
+    session, not the current market.
+  </div>
+  {% endif %}
   <header class="sym-head{% if health or etf_quality %} sym-head--has-health{% endif %}">
     <div class="sym-head__id">
       <h1 class="sym-head__ticker">{{ symbol.ticker }}</h1>
@@ -439,7 +447,7 @@
   </section>
   {% endif %}
 
-  <h2 class="section-title">Fundamentals{% if symbol.fundamentals_synced_at %}<span class="section-title__asof">synced from SEC {{ symbol.fundamentals_synced_at|ago }}</span>{% endif %}</h2>
+  <h2 class="section-title">Fundamentals{% if fundamentals and fundamentals.ratios and symbol.fundamentals_synced_at %}<span class="section-title__asof">synced from SEC {{ symbol.fundamentals_synced_at|ago }}</span>{% endif %}</h2>
   {% if fundamentals and fundamentals.ratios %}
   {# The rolled-up standing badge sits above the per-ratio cards (Phase 20). #}
   {% if standing %}
@@ -468,8 +476,14 @@
   </section>
   {% else %}
   <div class="fund-pending">
+    {% if symbol.fundamentals_synced_at %}
+    No SEC fundamentals are available for {{ symbol.ticker }}. It may not file
+    financial reports with the SEC (a foreign issuer or non-filer), or the
+    symbol may be delisted. (Checked {{ symbol.fundamentals_synced_at|ago }}.)
+    {% else %}
     SEC fundamentals for {{ symbol.ticker }} have not synced yet. They are pulled
     on demand &mdash; hit <strong>Refresh</strong> above to fetch them now.
+    {% endif %}
   </div>
   {% endif %}
 
@@ -563,7 +577,7 @@
 
   {# About this fund: expense ratio, yield, NAV + premium/discount, family, #}
   {# category, inception, and the issuer's strategy paragraph (Phase 28). #}
-  <h2 class="section-title">About this fund{% if symbol.fund_metadata_synced_at %}<span class="section-title__asof">synced from Yahoo {{ symbol.fund_metadata_synced_at|ago }}</span>{% endif %}</h2>
+  <h2 class="section-title">About this fund{% if fund_meta and symbol.fund_metadata_synced_at %}<span class="section-title__asof">synced from Yahoo {{ symbol.fund_metadata_synced_at|ago }}</span>{% endif %}</h2>
   {% if fund_meta %}
   <section class="panel fund-about">
     <dl class="fund-about__stats">
@@ -606,8 +620,14 @@
   </section>
   {% else %}
   <div class="fund-pending">
-    Fund metadata for {{ symbol.ticker }} has not synced yet. It is pulled on
-    demand &mdash; hit <strong>Refresh</strong> above to fetch it now.
+    {% if symbol.fund_metadata_synced_at %}
+    No fund details are available for {{ symbol.ticker }} from Yahoo. The fund may
+    be delisted or renamed, or Yahoo may not carry details for it.
+    (Checked {{ symbol.fund_metadata_synced_at|ago }}.)
+    {% else %}
+    Fund details for {{ symbol.ticker }} have not synced yet. They are pulled on
+    demand &mdash; hit <strong>Refresh</strong> above to fetch them now.
+    {% endif %}
   </div>
   {% endif %}
 
@@ -641,7 +661,7 @@
   </section>
   {% endif %}
 
-  <h2 class="section-title">Fund profile{% if symbol.fund_synced_at %}<span class="section-title__asof">synced from SEC {{ symbol.fund_synced_at|ago }}</span>{% endif %}</h2>
+  <h2 class="section-title">Fund profile{% if fund and symbol.fund_synced_at %}<span class="section-title__asof">synced from SEC {{ symbol.fund_synced_at|ago }}</span>{% endif %}</h2>
   {% if fund %}
   <section class="panel fund">
     <dl class="fund__stats">
@@ -741,8 +761,14 @@
   {% endif %}
   {% else %}
   <div class="fund-pending">
+    {% if symbol.fund_synced_at %}
+    No fund profile is available for {{ symbol.ticker }} from the SEC. The fund may
+    be delisted or renamed, or it does not file N-PORT portfolio reports.
+    (Checked {{ symbol.fund_synced_at|ago }}.)
+    {% else %}
     The fund profile for {{ symbol.ticker }} has not synced yet. It is pulled on
     demand &mdash; hit <strong>Refresh</strong> above to fetch it now.
+    {% endif %}
   </div>
   {% endif %}
   {% endif %}

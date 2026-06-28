@@ -290,6 +290,27 @@ fn classify(e: &UnitEntry, fye_month: u32) -> Option<(String, i64, Option<i64>)>
     }
 }
 
+/// One candidate us-gaap concept's classified series for a single metric, used
+/// while choosing which concept to pin in `facts`. `rank` is the concept's
+/// index in the metric's candidate list (lower = more preferred); `facts` maps
+/// each period label to the chosen fact for that period.
+struct ConceptSeries {
+    rank: usize,
+    facts: HashMap<String, Fact>,
+}
+
+impl ConceptSeries {
+    /// The newest `period_end` across the series, for picking the concept whose
+    /// data reaches furthest forward. Only built for non-empty series.
+    fn newest_end(&self) -> &str {
+        self.facts
+            .values()
+            .map(|f| f.period_end.as_str())
+            .max()
+            .unwrap_or("")
+    }
+}
+
 // ── submissions ────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -368,20 +389,48 @@ impl FundamentalsProvider for SecProvider {
             return Ok(Vec::new()); // 404: company has no XBRL facts
         };
         let body: CompanyFacts = resp.json().await?;
+        Ok(select_facts(&body, chrono::Utc::now().year() as i64))
+    }
 
-        let fye_month = fiscal_year_end_month(&body);
-        let this_year = chrono::Utc::now().year() as i64;
+    async fn filings(&self, cik: &str) -> Result<Vec<FilingRecord>> {
+        let url = format!("https://data.sec.gov/submissions/CIK{cik}.json");
+        let Some(resp) = self.get(&url).await? else {
+            return Ok(Vec::new()); // 404: no submission history
+        };
+        let body: Submissions = resp.json().await?;
+        Ok(select_filings(body, cik))
+    }
+}
 
-        // Collapse to one fact per (metric, period): a metric can be reported
-        // under several concepts and restated across filings, so the latest
-        // `filed` wins.
-        let mut chosen: HashMap<(String, String), Fact> = HashMap::new();
+/// The pure core of [`SecProvider::facts`]: turn a parsed `companyfacts` body
+/// into our normalised facts, given the current year (passed in for test
+/// determinism). Pins one us-gaap concept per metric so the whole series shares
+/// one definition — see the loop below. Extracted so the concept-pinning logic
+/// is unit-testable without a network round trip.
+fn select_facts(body: &CompanyFacts, this_year: i64) -> Vec<Fact> {
+        let fye_month = fiscal_year_end_month(body);
 
+        // For each metric, pin ONE us-gaap concept and read the whole series
+        // from it. The candidate concepts for a metric are NOT interchangeable
+        // (e.g. `Revenues` can bundle items the contract-revenue tag excludes),
+        // so picking the newest-filed value per period across all candidates can
+        // silently source FY2024 from one concept and FY2023 from another, and
+        // the year-over-year growth then compares two different definitions. By
+        // emitting only the pinned concept's facts, every period of a metric
+        // shares one definition: a year the company did not report under the
+        // pinned concept is left absent (growth reads "no data") rather than
+        // computed against a mismatched figure. Restatements within the pinned
+        // concept are still collapsed to the latest `filed`. See `ConceptSeries`.
+        let mut out: Vec<Fact> = Vec::new();
         for (metric, concepts) in METRIC_CONCEPTS {
-            for concept in *concepts {
+            let mut candidates: Vec<ConceptSeries> = Vec::new();
+            for (rank, concept) in concepts.iter().enumerate() {
                 let Some(concept_data) = body.facts.us_gaap.get(*concept) else {
                     continue;
                 };
+                // This concept's in-window series, deduped by period (a later
+                // filing's restated value wins, by `filed`).
+                let mut series: HashMap<String, Fact> = HashMap::new();
                 for (unit, entries) in &concept_data.units {
                     for e in entries {
                         let Some((period, fiscal_year, fiscal_qtr)) = classify(e, fye_month)
@@ -397,13 +446,13 @@ impl FundamentalsProvider for SecProvider {
                         if fiscal_year < keep_since {
                             continue;
                         }
-                        let key = (metric.to_string(), period.clone());
-                        let newer = chosen.get(&key).map_or(true, |prev| {
-                            e.filed.as_deref().unwrap_or("") > prev.filed_at.as_deref().unwrap_or("")
+                        let newer = series.get(&period).map_or(true, |prev: &Fact| {
+                            e.filed.as_deref().unwrap_or("")
+                                > prev.filed_at.as_deref().unwrap_or("")
                         });
                         if newer {
-                            chosen.insert(
-                                key,
+                            series.insert(
+                                period.clone(),
                                 Fact {
                                     metric: metric.to_string(),
                                     period,
@@ -419,19 +468,31 @@ impl FundamentalsProvider for SecProvider {
                         }
                     }
                 }
+                if !series.is_empty() {
+                    candidates.push(ConceptSeries { rank, facts: series });
+                }
+            }
+            // Pin the best candidate: the concept whose series reaches the most
+            // recent period, then the one covering the most periods, then the
+            // earliest-listed (most-preferred) concept. Emit only its facts.
+            if let Some(best) = candidates.into_iter().max_by(|a, b| {
+                a.newest_end()
+                    .cmp(b.newest_end())
+                    .then_with(|| a.facts.len().cmp(&b.facts.len()))
+                    .then_with(|| b.rank.cmp(&a.rank)) // lower rank (preferred) wins ties
+            }) {
+                out.extend(best.facts.into_values());
             }
         }
 
-        Ok(chosen.into_values().collect())
-    }
+        out
+}
 
-    async fn filings(&self, cik: &str) -> Result<Vec<FilingRecord>> {
-        let url = format!("https://data.sec.gov/submissions/CIK{cik}.json");
-        let Some(resp) = self.get(&url).await? else {
-            return Ok(Vec::new()); // 404: no submission history
-        };
-        let body: Submissions = resp.json().await?;
-        let r = body.filings.recent;
+/// The pure core of [`SecProvider::filings`]: pick the material filings out of a
+/// parsed submissions body, newest first, capped at `MAX_FILINGS`. Extracted to
+/// mirror `select_facts` (the network fetch lives in the method).
+fn select_filings(body: Submissions, cik: &str) -> Vec<FilingRecord> {
+    let r = body.filings.recent;
 
         // EDGAR pads the CIK to 10 digits; the Archives path uses it unpadded.
         let cik_int = cik.trim_start_matches('0');
@@ -481,8 +542,7 @@ impl FundamentalsProvider for SecProvider {
                 break;
             }
         }
-        Ok(out)
-    }
+    out
 }
 
 // ── ETF fund profiles: N-PORT holdings, AUM, filing history (Phase 18) ─────
@@ -1168,4 +1228,146 @@ fn parse_ownership(xml: &[u8]) -> Vec<OwnershipPerson> {
             officer_title: (!o.officer_title.is_empty()).then_some(o.officer_title),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn d(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    #[test]
+    fn normalize_ticker_strips_punctuation() {
+        assert_eq!(normalize_ticker("BRK.B"), "BRKB");
+        assert_eq!(normalize_ticker("BF-B"), "BFB");
+        assert_eq!(normalize_ticker("aapl"), "AAPL");
+    }
+
+    #[test]
+    fn fiscal_year_of_handles_non_calendar_year_end() {
+        // September fiscal-year end: an Oct–Dec quarter is Q1 of the NEXT FY.
+        assert_eq!(fiscal_year_of(d("2024-11-30"), 9), 2025);
+        assert_eq!(fiscal_year_of(d("2024-08-31"), 9), 2024);
+        // Calendar fiscal year: the period's calendar year is its fiscal year.
+        assert_eq!(fiscal_year_of(d("2024-12-31"), 12), 2024);
+    }
+
+    /// Build a duration UnitEntry (an income-statement fact).
+    fn dur(start: &str, end: &str, val: f64, fp: &str, form: Option<&str>) -> UnitEntry {
+        UnitEntry {
+            start: Some(start.to_string()),
+            end: end.to_string(),
+            val,
+            fp: Some(fp.to_string()),
+            form: form.map(str::to_string),
+            filed: Some("2025-02-01".to_string()),
+        }
+    }
+    /// Build an instantaneous UnitEntry (a balance-sheet snapshot).
+    fn inst(end: &str, val: f64, fp: &str, form: Option<&str>) -> UnitEntry {
+        UnitEntry {
+            start: None,
+            end: end.to_string(),
+            val,
+            fp: Some(fp.to_string()),
+            form: form.map(str::to_string),
+            filed: Some("2025-02-01".to_string()),
+        }
+    }
+
+    #[test]
+    fn classify_keeps_full_years_and_discrete_quarters() {
+        // Full fiscal year (≈365-day duration, fp FY).
+        assert_eq!(
+            classify(&dur("2024-01-01", "2024-12-31", 100.0, "FY", Some("10-K")), 12),
+            Some(("FY2024".to_string(), 2024, None))
+        );
+        // Discrete quarter (≈90-day duration).
+        assert_eq!(
+            classify(&dur("2024-01-01", "2024-03-31", 25.0, "Q1", Some("10-Q")), 12),
+            Some(("Q1-2024".to_string(), 2024, Some(1)))
+        );
+        // Year-end balance from an annual report (instantaneous, fp FY, 10-K).
+        assert_eq!(
+            classify(&inst("2024-12-31", 500.0, "FY", Some("10-K")), 12),
+            Some(("FY2024".to_string(), 2024, None))
+        );
+    }
+
+    #[test]
+    fn classify_drops_ytd_rollups_and_quarterly_balances() {
+        // A 6-month year-to-date roll-up is neither a quarter nor a full year.
+        assert_eq!(
+            classify(&dur("2024-01-01", "2024-06-30", 50.0, "Q2", Some("10-Q")), 12),
+            None
+        );
+        // A balance-sheet snapshot from a 10-Q is dropped (it would mislabel a
+        // prior year-end comparative as the filing's own quarter).
+        assert_eq!(
+            classify(&inst("2024-03-31", 480.0, "Q1", Some("10-Q")), 12),
+            None
+        );
+    }
+
+    /// Parse a `companyfacts`-shaped JSON body for the select_facts tests.
+    fn body(json: &str) -> CompanyFacts {
+        serde_json::from_str(json).expect("valid companyfacts json")
+    }
+
+    #[test]
+    fn select_facts_pins_one_concept_per_metric() {
+        // Revenue is reported under TWO non-interchangeable concepts. The newer
+        // concept (RevenueFromContract…) covers FY2023 AND FY2024; the legacy
+        // `Revenues` covers FY2023 only, with a DIFFERENT value. The pinned
+        // concept must be the one reaching the most recent period, and BOTH its
+        // years must come from it — so FY2023 is 1000 (its value), never 999.
+        let b = body(
+            r#"{
+              "facts": { "us-gaap": {
+                "RevenueFromContractWithCustomerExcludingAssessedTax": { "units": { "USD": [
+                  {"start":"2023-01-01","end":"2023-12-31","val":1000,"fp":"FY","form":"10-K","filed":"2024-02-01"},
+                  {"start":"2024-01-01","end":"2024-12-31","val":1200,"fp":"FY","form":"10-K","filed":"2025-02-01"}
+                ] } },
+                "Revenues": { "units": { "USD": [
+                  {"start":"2023-01-01","end":"2023-12-31","val":999,"fp":"FY","form":"10-K","filed":"2024-02-01"}
+                ] } }
+              } }
+            }"#,
+        );
+        let facts = select_facts(&b, 2025);
+        let rev: std::collections::HashMap<i64, f64> = facts
+            .iter()
+            .filter(|f| f.metric == "revenue" && f.fiscal_qtr.is_none())
+            .map(|f| (f.fiscal_year, f.value))
+            .collect();
+        assert_eq!(rev.get(&2024), Some(&1200.0));
+        assert_eq!(
+            rev.get(&2023),
+            Some(&1000.0),
+            "FY2023 must come from the SAME pinned concept, not the mismatched 999"
+        );
+        // Year-over-year growth is then a like-for-like comparison.
+        let growth: f64 = (1200.0 - 1000.0) / 1000.0 * 100.0;
+        assert!((growth - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn select_facts_takes_latest_restatement_within_a_concept() {
+        // The same period reported twice; the later `filed` wins.
+        let b = body(
+            r#"{
+              "facts": { "us-gaap": {
+                "NetIncomeLoss": { "units": { "USD": [
+                  {"start":"2024-01-01","end":"2024-12-31","val":300,"fp":"FY","form":"10-K","filed":"2025-02-01"},
+                  {"start":"2024-01-01","end":"2024-12-31","val":280,"fp":"FY","form":"10-K","filed":"2025-06-01"}
+                ] } }
+              } }
+            }"#,
+        );
+        let facts = select_facts(&b, 2025);
+        let ni = facts.iter().find(|f| f.metric == "net_income" && f.fiscal_year == 2024);
+        assert_eq!(ni.map(|f| f.value), Some(280.0), "the later-filed restatement (280) wins over 300");
+    }
 }

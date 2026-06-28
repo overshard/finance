@@ -204,13 +204,13 @@ fn pe(price: Option<f64>, eps: Option<f64>) -> Ratio {
     // Below 10x the stock is cheap (a bargain, or a warning); 10-25x is the
     // healthy band; 25-40x is paying up for growth; above 40x is steep.
     let (grade, reading) = if v < 10.0 {
-        (Grade::Ok, format!("At {v:.0}x, the stock is priced cheaply against its profits: sometimes a bargain, sometimes a sign of trouble ahead."))
+        (Grade::Ok, format!("At {v:.1}x, the stock is priced cheaply against its profits: sometimes a bargain, sometimes a sign of trouble ahead."))
     } else if v <= 25.0 {
-        (Grade::Good, format!("At {v:.0}x, the price is a reasonable multiple of the company's annual profit."))
+        (Grade::Good, format!("At {v:.1}x, the price is a reasonable multiple of the company's annual profit."))
     } else if v < 40.0 {
-        (Grade::Ok, format!("At {v:.0}x, investors are paying up; a fair amount of future growth is already in the price."))
+        (Grade::Ok, format!("At {v:.1}x, investors are paying up; a fair amount of future growth is already in the price."))
     } else {
-        (Grade::Bad, format!("At {v:.0}x, the price is steep relative to profit; the stock leans heavily on growth that has yet to arrive."))
+        (Grade::Bad, format!("At {v:.1}x, the price is steep relative to profit; the stock leans heavily on growth that has yet to arrive."))
     };
     mk(KEY, LABEL, EXPLAIN, format!("{v:.1}x"), grade, reading)
 }
@@ -1841,5 +1841,80 @@ mod phase28_tests {
         let date_refs: Vec<&str> = dates.iter().map(|s| s.as_str()).collect();
         let evs = drawdown_anomalies(&closes, &date_refs);
         assert!(evs.len() <= 5, "expected dedupe to keep events sparse, got {}", evs.len());
+    }
+
+    // ── fundamental ratios (the figures the owner most distrusts) ──────────────
+
+    #[test]
+    fn change_is_signed_percent_of_prior() {
+        let c = change(110.0, 100.0);
+        assert!((c.abs - 10.0).abs() < 1e-9);
+        assert!((c.pct - 10.0).abs() < 1e-9);
+        // A zero prior never divides by zero.
+        assert_eq!(change(5.0, 0.0).pct, 0.0);
+    }
+
+    #[test]
+    fn pe_bands_and_reading_precision() {
+        // A healthy multiple grades Good; the display carries one decimal.
+        let r = pe(Some(192.0), Some(9.6)); // 20.0x
+        assert!(matches!(r.grade, Grade::Good));
+        assert_eq!(r.display, "20.0x");
+        // Negative earnings → no P/E at all.
+        assert!(matches!(pe(Some(100.0), Some(-1.0)).grade, Grade::Unknown));
+        // The plain-English reading echoes the one-decimal value, not a rounded
+        // whole multiple (the bug where 9.6x read "At 10x …").
+        let cheap = pe(Some(96.0), Some(10.0)); // 9.6x
+        assert!(cheap.reading.contains("9.6x"), "reading was: {}", cheap.reading);
+    }
+
+    #[test]
+    fn revenue_growth_grades_direction() {
+        assert!(matches!(revenue_growth(Some(120.0), Some(100.0)).grade, Grade::Good)); // +20%
+        assert!(matches!(revenue_growth(Some(95.0), Some(100.0)).grade, Grade::Bad)); // shrinking
+        assert!(matches!(revenue_growth(Some(120.0), None).grade, Grade::Unknown));
+        assert!(matches!(revenue_growth(Some(120.0), Some(0.0)).grade, Grade::Unknown));
+    }
+
+    #[test]
+    fn earnings_growth_handles_loss_bases() {
+        // A growth % off a loss-making prior year is meaningless → Unknown.
+        assert!(matches!(earnings_growth(Some(50.0), Some(-10.0)).grade, Grade::Unknown));
+        // A swing to a loss from a profitable year is Bad.
+        assert!(matches!(earnings_growth(Some(-5.0), Some(100.0)).grade, Grade::Bad));
+        // Healthy profit growth is Good.
+        assert!(matches!(earnings_growth(Some(130.0), Some(100.0)).grade, Grade::Good));
+    }
+
+    #[test]
+    fn profit_margin_needs_positive_revenue() {
+        assert!(matches!(profit_margin(Some(10.0), Some(0.0)).grade, Grade::Unknown));
+        assert!(matches!(profit_margin(Some(20.0), Some(100.0)).grade, Grade::Good)); // 20%
+        assert!(matches!(profit_margin(Some(2.0), Some(100.0)).grade, Grade::Bad)); // 2%
+    }
+
+    // ── chart indicators ──────────────────────────────────────────────────────
+
+    #[test]
+    fn moving_averages_warm_up_then_track() {
+        let xs = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let s = sma(&xs, 3);
+        assert_eq!(s[0], None);
+        assert_eq!(s[1], None);
+        assert_eq!(s[2], Some(2.0)); // (1+2+3)/3
+        assert_eq!(s[4], Some(4.0)); // (3+4+5)/3
+        // EMA seeds at the first full window's simple mean, then rises with the
+        // (monotonically increasing) series.
+        let e = ema(&xs, 3);
+        assert_eq!(e[1], None);
+        assert_eq!(e[2], Some(2.0));
+        assert!(e[4].unwrap() > e[2].unwrap());
+    }
+
+    #[test]
+    fn rsi_pegs_at_100_on_an_all_gains_window() {
+        let xs: Vec<f64> = (0..20).map(|i| 100.0 + i as f64).collect();
+        let r = rsi(&xs, 14);
+        assert_eq!(r[14], Some(100.0)); // no losses → RSI is 100
     }
 }

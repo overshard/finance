@@ -10,6 +10,7 @@ mod render;
 mod routes;
 mod scheduler;
 mod seed;
+mod sp500;
 mod stream;
 mod templates;
 mod watchlist;
@@ -79,7 +80,10 @@ async fn serve() -> anyhow::Result<()> {
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("finance listening on http://{addr}");
+    tracing::info!(
+        "finance listening on http://{addr} ({} S&P 500 movers names loaded)",
+        sp500::count()
+    );
     axum::serve(listener, router).await?;
     Ok(())
 }

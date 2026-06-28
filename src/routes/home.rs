@@ -527,8 +527,14 @@ async fn dashboard_refresh(State(state): State<AppState>, headers: HeaderMap) ->
 /// fetched when the dashboard is open and the cache has aged out.
 const MOVERS_TTL_MS: i64 = 8 * 60 * 1000;
 const MOVERS_META_KEY: &str = "movers_json";
-/// Rows per movers list.
-const MOVERS_COUNT: u32 = 10;
+/// Rows shown per movers list.
+const MOVERS_COUNT: usize = 10;
+/// Rows pulled per Yahoo screener before filtering to the S&P 500. Yahoo's
+/// predefined screeners rank the *whole* market, most of it micro-caps the user
+/// has never heard of, so we pull a wide slice and keep only the S&P 500 names
+/// (then the top `MOVERS_COUNT`). Wide enough that a normal day still yields ten
+/// large-cap movers per list.
+const MOVERS_FETCH_COUNT: u32 = 100;
 
 /// The three market-movers lists for the dashboard's "what's driving it" tables.
 #[derive(Serialize, Deserialize)]
@@ -592,10 +598,14 @@ async fn fetch_movers_fresh(state: &AppState, now: i64) -> Option<MoversData> {
             // caller serve the cache rather than push against the guard.
             _ => break,
         }
-        match yahoo.fetch_movers(scr, MOVERS_COUNT).await {
-            Ok(rows) => {
+        match yahoo.fetch_movers(scr, MOVERS_FETCH_COUNT).await {
+            Ok(mut rows) => {
                 let _ = guard.record_success().await;
                 any = true;
+                // Keep only S&P 500 names, then the top MOVERS_COUNT, so the
+                // lists read as recognizable large caps rather than micro-caps.
+                rows.retain(|m| crate::sp500::is_member(&m.symbol));
+                rows.truncate(MOVERS_COUNT);
                 match slot {
                     0 => out.gainers = rows,
                     1 => out.losers = rows,
@@ -631,15 +641,19 @@ fn session_label(s: market::Session) -> &'static str {
 /// (else the latest stored daily close), the close before it, and the epoch-ms
 /// the quote was sourced at (for the freshness chip).
 async fn quote_row(state: &AppState, ticker: &str) -> (Option<f64>, Option<f64>, Option<i64>) {
+    let today = market::et_date(chrono::Utc::now());
     sqlx::query_as(
         "SELECT \
            COALESCE(s.last_price, \
              (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1)), \
            COALESCE(s.prev_close, \
-             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1 OFFSET 1)), \
+             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker \
+                AND p.d < (CASE WHEN s.last_price IS NOT NULL THEN ? ELSE s.history_last_date END) \
+              ORDER BY d DESC LIMIT 1)), \
            s.last_quote_at \
          FROM symbols s WHERE s.ticker = ?",
     )
+    .bind(&today)
     .bind(ticker)
     .fetch_optional(&state.pool)
     .await
@@ -866,7 +880,11 @@ async fn market_reads(state: &AppState) -> MarketReads {
             .ok()
             .flatten();
             if let Some(avg) = avg.filter(|a| *a > 0.0) {
-                let ratio = today as f64 / avg;
+                // `today` is cumulative volume *so far*. Compare it to the volume
+                // typically seen by this point in the session, not the whole-day
+                // average, so the read is not structurally "Light" all morning.
+                let frac = market::volume_session_fraction(chrono::Utc::now());
+                let ratio = today as f64 / (avg * frac);
                 r.volume_ratio = Some(ratio);
                 r.volume_label = Some(
                     if ratio >= 1.15 {
@@ -938,9 +956,11 @@ async fn market_reads(state: &AppState) -> MarketReads {
         }
     }
 
-    // Freshest quote across the baseline reads, for the "prices as of" caption.
+    // Age of the *oldest* baseline read, for the "prices as of" caption. MIN,
+    // not MAX: the caption asserts every read is at least this fresh, so a just-
+    // refreshed SPY must not make a stale VIX or drawdown read as current.
     r.asof = sqlx::query_scalar(
-        "SELECT MAX(fetched_at) FROM quotes WHERE ticker IN (?, ?, ?)",
+        "SELECT MIN(fetched_at) FROM quotes WHERE ticker IN (?, ?, ?)",
     )
     .bind(BASELINE)
     .bind(VIX)
@@ -957,14 +977,18 @@ async fn market_reads(state: &AppState) -> MarketReads {
 /// The latest price and the prior close for one symbol: the live last price
 /// (else the latest stored daily close) and the close before it.
 async fn last_and_prev(state: &AppState, ticker: &str) -> Option<(Option<f64>, Option<f64>)> {
+    let today = market::et_date(chrono::Utc::now());
     sqlx::query_as(
         "SELECT \
            COALESCE(s.last_price, \
              (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1)), \
            COALESCE(s.prev_close, \
-             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1 OFFSET 1)) \
+             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker \
+                AND p.d < (CASE WHEN s.last_price IS NOT NULL THEN ? ELSE s.history_last_date END) \
+              ORDER BY d DESC LIMIT 1)) \
          FROM symbols s WHERE s.ticker = ?",
     )
+    .bind(&today)
     .bind(ticker)
     .fetch_optional(&state.pool)
     .await
@@ -982,16 +1006,21 @@ async fn spark_cards_for(state: &AppState, tickers: &[&str]) -> Vec<SparkCard> {
     }
     // One query for the price rows; the `IN` placeholder count matches `tickers`.
     type SparkRow = (String, String, String, Option<f64>, Option<f64>);
+    let today = market::et_date(chrono::Utc::now());
     let placeholders = vec!["?"; tickers.len()].join(",");
     let sql = format!(
         "SELECT s.ticker, s.name, s.kind, \
            COALESCE(s.last_price, \
              (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1)), \
            COALESCE(s.prev_close, \
-             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker ORDER BY d DESC LIMIT 1 OFFSET 1)) \
+             (SELECT close FROM daily_prices p WHERE p.ticker = s.ticker \
+                AND p.d < (CASE WHEN s.last_price IS NOT NULL THEN ? ELSE s.history_last_date END) \
+              ORDER BY d DESC LIMIT 1)) \
          FROM symbols s WHERE s.ticker IN ({placeholders})"
     );
-    let mut q = sqlx::query_as::<_, SparkRow>(&sql);
+    // The `?` in the prev-close subquery precedes the IN-list placeholders, so
+    // bind today's ET date first, then the tickers.
+    let mut q = sqlx::query_as::<_, SparkRow>(&sql).bind(&today);
     for t in tickers {
         q = q.bind(*t);
     }

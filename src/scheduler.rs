@@ -1144,9 +1144,21 @@ async fn backfill_stock_sec(
     guard: &EndpointGuard,
     ticker: &str,
 ) {
-    let Some(cik) = resolve_one_cik(pool, sec, guard, ticker, false).await else {
-        tracing::info!("[backfill] {ticker}: no SEC CIK, leaving it for the sec job");
-        return;
+    let cik = match resolve_one_cik(pool, sec, guard, ticker, false).await {
+        CikResolution::Found(c) => c,
+        CikResolution::Absent => {
+            // Not in SEC's company map: a non-filer, a foreign issuer, or a
+            // delisted/renamed ticker. Stamp the sections checked so the page
+            // shows an honest "no data" rather than a perpetual pending note.
+            let _ = mark_sec_synced(pool, ticker, "fundamentals_synced_at").await;
+            let _ = mark_sec_synced(pool, ticker, "filings_synced_at").await;
+            tracing::info!("[backfill] {ticker}: not in SEC company map, marked checked");
+            return;
+        }
+        CikResolution::Unavailable => {
+            tracing::info!("[backfill] {ticker}: SEC CIK map unavailable, leaving it for the sec job");
+            return;
+        }
     };
     if let Some(Ok(facts)) = guarded(guard, sec.facts(&cik)).await {
         match store_fundamentals(pool, ticker, &facts).await {
@@ -1209,9 +1221,21 @@ async fn backfill_leadership(
 /// Backfill an ETF's fund profile: resolve its fund CIK, pull the filing list,
 /// then either the N-PORT portfolio or a commodity trust's AUM.
 async fn backfill_etf_sec(pool: &SqlitePool, sec: &SecProvider, guard: &EndpointGuard, ticker: &str) {
-    let Some(cik) = resolve_one_cik(pool, sec, guard, ticker, true).await else {
-        tracing::info!("[backfill] {ticker}: no SEC fund CIK, leaving it for the sec job");
-        return;
+    let cik = match resolve_one_cik(pool, sec, guard, ticker, true).await {
+        CikResolution::Found(c) => c,
+        CikResolution::Absent => {
+            // Not in SEC's mutual-fund map: a delisted/renamed fund (e.g. SPCX,
+            // which renamed to SPCK) or one that does not file N-PORT. Stamp it
+            // checked so the page shows an honest "no fund profile available"
+            // rather than a pending note Refresh can never clear.
+            let _ = mark_fund_synced(pool, ticker).await;
+            tracing::info!("[backfill] {ticker}: not in SEC fund map (delisted/renamed?), marked checked");
+            return;
+        }
+        CikResolution::Unavailable => {
+            tracing::info!("[backfill] {ticker}: SEC fund map unavailable, leaving it for the sec job");
+            return;
+        }
     };
     // `resolve_fund_ciks` stored the series id alongside the CIK.
     let series_id: Option<String> =
@@ -1251,29 +1275,63 @@ async fn backfill_etf_sec(pool: &SqlitePool, sec: &SecProvider, guard: &Endpoint
     }
 }
 
+/// Outcome of resolving a symbol's SEC CIK from the bulk ticker map.
+enum CikResolution {
+    /// A CIK is on file for this symbol (resolved now or on a prior run).
+    Found(String),
+    /// The bulk map was fetched successfully but does not list this ticker:
+    /// the company/fund genuinely has no SEC entry (delisted, renamed, a
+    /// foreign issuer, or a non-filer). The caller stamps the affected section
+    /// *checked* so the page shows an honest "no data available" instead of a
+    /// perpetual "not synced yet, hit Refresh".
+    Absent,
+    /// The map could not be fetched (guard denied / network error): nothing was
+    /// learned, so the caller leaves the section unsynced for a later retry.
+    Unavailable,
+}
+
 /// Resolve and store a freshly-added symbol's SEC CIK from the bulk ticker map.
 /// `fund` selects the mutual-fund map (ETFs) over the operating-company map
-/// (stocks). Returns the stored CIK on success.
+/// (stocks). Distinguishes a genuinely-absent ticker from an unreachable map so
+/// the caller can render an honest empty state (see [`CikResolution`]).
 async fn resolve_one_cik(
     pool: &SqlitePool,
     sec: &SecProvider,
     guard: &EndpointGuard,
     ticker: &str,
     fund: bool,
-) -> Option<String> {
-    if fund {
-        if let Some(Ok(map)) = guarded(guard, sec.fund_ticker_map()).await {
-            let _ = resolve_fund_ciks(pool, &map).await;
+) -> CikResolution {
+    // Whether the bulk map was actually fetched this call (vs guard-denied /
+    // errored). A symbol may already carry a CIK from a prior run regardless.
+    let fetched = if fund {
+        match guarded(guard, sec.fund_ticker_map()).await {
+            Some(Ok(map)) => {
+                let _ = resolve_fund_ciks(pool, &map).await;
+                true
+            }
+            _ => false,
         }
-    } else if let Some(Ok(map)) = guarded(guard, sec.cik_map()).await {
-        let _ = resolve_ciks(pool, &map).await;
+    } else {
+        match guarded(guard, sec.cik_map()).await {
+            Some(Ok(map)) => {
+                let _ = resolve_ciks(pool, &map).await;
+                true
+            }
+            _ => false,
+        }
+    };
+    let cik: Option<String> =
+        sqlx::query_scalar::<_, Option<String>>("SELECT cik FROM symbols WHERE ticker = ?")
+            .bind(ticker)
+            .fetch_one(pool)
+            .await
+            .ok()
+            .flatten();
+    match (cik, fetched) {
+        (Some(c), _) => CikResolution::Found(c),
+        (None, true) => CikResolution::Absent,
+        (None, false) => CikResolution::Unavailable,
     }
-    sqlx::query_scalar::<_, Option<String>>("SELECT cik FROM symbols WHERE ticker = ?")
-        .bind(ticker)
-        .fetch_one(pool)
-        .await
-        .ok()
-        .flatten()
 }
 
 /// Prune aged rows once per `PRUNE_INTERVAL_SECS`. `intraday_bars` keeps a
